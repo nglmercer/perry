@@ -209,6 +209,17 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
             // Check for module.Class.staticMethod() pattern (e.g.,
             // ethers.Wallet.createRandom()). Modelled after the
             // process.hrtime.bigint() handler above.
+            //
+            // Some "module.foo.method()" shapes are NOT class statics —
+            // they're sub-namespaces with dedicated codegen arms in
+            // `crates/perry-codegen/src/expr.rs` (e.g. fs.promises.X
+            // routes to the sync counterpart + js_promise_resolved).
+            // Skip them here so the existing codegen path keeps working.
+            // v0.5.385 (#299) introduced this arm; v0.5.386 (this fix)
+            // adds the exclusion list after fs.promises.readFile silently
+            // started returning `undefined` because the new HIR shape
+            // bypassed the old codegen arm and fell into the
+            // "unhandled fs.<method>()" warn-and-undef path.
             if let ast::Expr::Member(outer_member) = expr.as_ref() {
                 if let ast::Expr::Member(inner_member) = outer_member.obj.as_ref() {
                     if let ast::Expr::Ident(mod_ident) = inner_member.obj.as_ref() {
@@ -216,15 +227,26 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         if let Some((module_name, _)) = ctx.lookup_native_module(&mod_name) {
                             if let ast::MemberProp::Ident(class_ident) = &inner_member.prop {
                                 let class_name = class_ident.sym.to_string();
-                                if let ast::MemberProp::Ident(method_ident) = &outer_member.prop {
-                                    let method_name = method_ident.sym.to_string();
-                                    return Ok(Expr::NativeMethodCall {
-                                        module: module_name.to_string(),
-                                        class_name: Some(class_name),
-                                        object: None,
-                                        method: method_name,
-                                        args,
-                                    });
+                                let is_sub_namespace = matches!(
+                                    (module_name, class_name.as_str()),
+                                    ("fs", "promises")
+                                        | ("fs", "constants")
+                                        | ("path", "posix")
+                                        | ("path", "win32")
+                                );
+                                if !is_sub_namespace {
+                                    if let ast::MemberProp::Ident(method_ident) =
+                                        &outer_member.prop
+                                    {
+                                        let method_name = method_ident.sym.to_string();
+                                        return Ok(Expr::NativeMethodCall {
+                                            module: module_name.to_string(),
+                                            class_name: Some(class_name),
+                                            object: None,
+                                            method: method_name,
+                                            args,
+                                        });
+                                    }
                                 }
                             }
                         }
