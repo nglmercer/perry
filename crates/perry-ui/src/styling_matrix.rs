@@ -479,14 +479,18 @@ pub const MATRIX: &[MatrixRow] = &[
         // Phase B shadow closure — landed across all 9 platforms in
         // v0.5.296 (Apple CALayer.shadow*) → v0.5.297 (Web CSS
         // `box-shadow`) → v0.5.298 (GTK4 CSS box-shadow + Android
-        // `setElevation` + Windows stub-with-state).
-        // Windows is `Stub`: the FFI symbol resolves and parameters are
-        // stored in `SHADOW_PARAMS`, but no paint pass consumes them
-        // yet (DirectComposition / WM_PAINT alpha-blit work deferred).
+        // `setElevation`). Windows wired in #210 closure (v0.5.401)
+        // via a parent-window WM_PAINT subclass that renders the
+        // shadow into a 32bpp DIB section + AlphaBlends onto the
+        // parent's surface; per-pixel quadratic Gaussian-approx
+        // falloff. See `crates/perry-ui-windows/src/widgets/mod.rs`'s
+        // `paint_shadow_for_child`.
         // Android honors blur via Material elevation + (API 28+) shadow
         // tinting; offset is intentionally ignored because Android's
         // device-level light source owns shadow direction.
-        statuses: [Wired, Wired, Wired, Wired, Wired, Wired, Wired, Stub, Wired],
+        statuses: [
+            Wired, Wired, Wired, Wired, Wired, Wired, Wired, Wired, Wired,
+        ],
     },
     MatrixRow {
         widget: "text",

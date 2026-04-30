@@ -207,6 +207,7 @@ fn layout_stack(handle: i64, width: i32, height: i32, vertical: bool) {
                 }
                 // Apply deferred corner radius now that widget has its final size
                 widgets::apply_corner_radius(child);
+                widgets::apply_shadow(child);
                 // Reload bitmap for Image widgets so it matches the layout size
                 if let Some(ci) = ci_info {
                     if matches!(ci.kind, WidgetKind::Image) {
@@ -244,6 +245,7 @@ fn layout_scrollview(handle: i64, width: i32, height: i32) {
                     let _ = MoveWindow(child_hwnd, 0, 0, width, content_height, true);
                 }
                 widgets::apply_corner_radius(child);
+                widgets::apply_shadow(child);
                 layout_widget(child, width, content_height);
 
                 // Update scroll info
@@ -277,6 +279,7 @@ fn layout_zstack(handle: i64, width: i32, height: i32) {
                         let _ = MoveWindow(child_hwnd, 0, 0, width, height, true);
                     }
                     widgets::apply_corner_radius(child);
+                    widgets::apply_shadow(child);
                     layout_widget(child, width, height);
                 }
             }
@@ -303,6 +306,7 @@ fn layout_navstack(handle: i64, width: i32, height: i32) {
                         let _ = MoveWindow(child_hwnd, 0, 0, width, height, true);
                     }
                     widgets::apply_corner_radius(child);
+                    widgets::apply_shadow(child);
                     layout_widget(child, width, height);
                 }
             }

@@ -30,7 +30,7 @@ Legend: `✓` Wired (real native impl), `~` Stub (symbol exists, no-op), `✗` M
 | `animate_opacity` | `perry_ui_widget_animate_opacity` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `animate_position` | `perry_ui_widget_animate_position` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `context_menu` | `perry_ui_widget_set_context_menu` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `shadow` | `perry_ui_widget_set_shadow` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ |
+| `shadow` | `perry_ui_widget_set_shadow` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ## `button` widget
 
@@ -88,6 +88,6 @@ Legend: `✓` Wired (real native impl), `~` Stub (symbol exists, no-op), `✗` M
 | watchOS | 43 | 0 | 0 | 0 |
 | Android | 43 | 0 | 0 | 0 |
 | GTK4 | 43 | 0 | 0 | 0 |
-| Windows | 42 | 1 | 0 | 0 |
+| Windows | 43 | 0 | 0 | 0 |
 | Web | 43 | 0 | 0 | 0 |
 

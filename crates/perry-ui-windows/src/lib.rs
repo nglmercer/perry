@@ -632,13 +632,12 @@ pub extern "C" fn perry_ui_widget_set_corner_radius(handle: i64, radius: f64) {
     widgets::set_corner_radius(handle, radius);
 }
 
-/// Set drop shadow on a widget (issue #185 Phase B closure).
+/// Set drop shadow on a widget (issue #185 Phase B / #210 closure).
 ///
-/// Currently a stub-with-state: params are stored in `SHADOW_PARAMS`
-/// but no paint pass consumes them yet. Real Windows shadows need
-/// either DirectComposition or a custom WM_PAINT pass — separate
-/// follow-up. The matrix marks Windows as `Stub` for this prop so
-/// users know the symbol resolves but rendering is deferred.
+/// Wired via a parent-window WM_PAINT subclass that renders the shadow
+/// onto the parent's surface using `AlphaBlend` against a 32bpp DIB
+/// section. Per-pixel falloff is a quadratic Gaussian approximation —
+/// see `widgets::paint_shadow_for_child` for the rendering math.
 #[no_mangle]
 pub extern "C" fn perry_ui_widget_set_shadow(
     handle: i64,

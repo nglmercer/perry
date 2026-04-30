@@ -849,23 +849,23 @@ pub fn set_corner_radius(handle: i64, radius: f64) {
 static SHADOW_PARAMS: std::sync::Mutex<Vec<(i64, (f64, f64, f64, f64, f64, f64, f64))>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Set drop shadow on a widget (issue #185 Phase B closure).
+/// Set drop shadow on a widget (issue #185 Phase B / #210 closure).
 ///
-/// **Currently a stub-with-state**: parameters are stored in `SHADOW_PARAMS`
-/// (matching the `CORNER_RADII` deferred-application pattern) but no
-/// rendering pass consumes them yet. Real shadow rendering on Windows
-/// needs either DirectComposition (`IDCompositionVisual` + `DropShadowEffect`)
-/// or a custom alpha-blended `WM_PAINT` pass — multi-day work that
-/// belongs in its own follow-up. Storing the params here means:
-///   - User code that calls `widgetSetShadow(...)` compiles + links
-///     cleanly across all platforms (cross-platform code is portable).
-///   - The styling-matrix drift check passes (the FFI symbol is exported).
-///   - When the rendering pass lands, every previously-stored handle
-///     gets its shadow applied automatically — no API change needed.
+/// Stores params in `SHADOW_PARAMS` (mirroring the `CORNER_RADII`
+/// deferred-application pattern) and, on Windows, registers the widget
+/// with its parent HWND's shadow-paint subclass via `apply_shadow`. The
+/// subclass intercepts `WM_PAINT` on the parent and renders the shadow
+/// after the parent's own paint runs but BEFORE child controls layer
+/// on top — so the shadow lands behind the widget exactly as CSS
+/// `box-shadow` would.
 ///
-/// Reflected in `crates/perry-ui/src/styling_matrix.rs` as `Status::Stub`
-/// for Windows, distinct from `Wired` so users know the prop is honored
-/// but not yet visible.
+/// **Visual fidelity**: the falloff is a quadratic approximation of a
+/// Gaussian blur (`alpha = base * (1 - d/blur)^2` per pixel where `d`
+/// is the distance to the un-blurred shadow rect). This produces a
+/// recognizable soft shadow without needing DirectComposition. True
+/// Gaussian + GPU-accelerated rendering (`IDCompositionVisual` +
+/// `DropShadowEffect`) is a separate follow-up; the API contract is
+/// the same so a future swap-in is non-breaking.
 pub fn set_shadow(
     handle: i64,
     r: f64,
@@ -884,16 +884,368 @@ pub fn set_shadow(
             shadows.push((handle, entry));
         }
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        apply_shadow(handle);
+    }
 }
 
 /// Read back the stored shadow params for a widget. Returns `None` if no
-/// shadow has been set. The eventual paint pass calls this; today it's
-/// also a useful introspection hook for tests.
+/// shadow has been set. The paint pass calls this; it's also a useful
+/// introspection hook for tests.
 pub fn get_shadow(handle: i64) -> Option<(f64, f64, f64, f64, f64, f64, f64)> {
     SHADOW_PARAMS
         .lock()
         .ok()
         .and_then(|s| s.iter().find(|e| e.0 == handle).map(|e| e.1))
+}
+
+/// Per-parent registry of shadowed children. The shadow paint subclass
+/// installed on a parent walks this Vec on each `WM_PAINT` to find which
+/// children's shadows to render. Keyed by parent HWND-as-isize for Send
+/// safety — we only hold the Mutex across the registry update, never
+/// across the actual paint cycle.
+#[cfg(target_os = "windows")]
+static PARENT_SHADOW_REGISTRY: std::sync::Mutex<Vec<(isize, Vec<i64>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Track which parent HWNDs already have the shadow paint subclass
+/// installed. Subclass id is fixed (`SHADOW_SUBCLASS_ID`) — uniqueness
+/// is per-HWND, not across HWNDs. Different from `BORDER_SUBCLASSED`
+/// because shadows install on PARENTS while borders install on the
+/// widget HWNDs themselves.
+#[cfg(target_os = "windows")]
+thread_local! {
+    static SHADOW_SUBCLASSED_PARENTS: RefCell<std::collections::HashSet<isize>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+#[cfg(target_os = "windows")]
+const SHADOW_SUBCLASS_ID: usize = 0x70_72_73_68; // 'p','r','s','h'
+
+/// Register `child_handle` as having a shadow that should be painted by
+/// `parent_key`'s subclass. Idempotent.
+#[cfg(target_os = "windows")]
+fn register_shadow_for_parent(parent_key: isize, child_handle: i64) {
+    if let Ok(mut reg) = PARENT_SHADOW_REGISTRY.lock() {
+        if let Some(slot) = reg.iter_mut().find(|e| e.0 == parent_key) {
+            if !slot.1.contains(&child_handle) {
+                slot.1.push(child_handle);
+            }
+        } else {
+            reg.push((parent_key, vec![child_handle]));
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_shadowed_children(parent_key: isize) -> Vec<i64> {
+    PARENT_SHADOW_REGISTRY
+        .lock()
+        .ok()
+        .and_then(|r| r.iter().find(|e| e.0 == parent_key).map(|e| e.1.clone()))
+        .unwrap_or_default()
+}
+
+/// Apply a stored drop shadow: ensure the widget's parent HWND has the
+/// shadow paint subclass installed and that this widget is in the
+/// parent's shadow set. Idempotent — safe to call repeatedly from the
+/// layout engine (mirrors `apply_corner_radius`'s call pattern).
+#[cfg(target_os = "windows")]
+pub fn apply_shadow(handle: i64) {
+    let has = SHADOW_PARAMS
+        .lock()
+        .ok()
+        .map(|s| s.iter().any(|e| e.0 == handle))
+        .unwrap_or(false);
+    if !has {
+        return;
+    }
+    let child = match get_hwnd_safe(handle) {
+        Some(h) => h,
+        None => return,
+    };
+    let parent = unsafe { GetParent(child) };
+    let parent_hwnd = match parent {
+        Ok(p) if !p.0.is_null() => p,
+        _ => return,
+    };
+    let parent_key = parent_hwnd.0 as isize;
+    register_shadow_for_parent(parent_key, handle);
+    ensure_shadow_subclass(parent_hwnd);
+    unsafe {
+        let _ = InvalidateRect(parent_hwnd, None, true);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_shadow_subclass(parent_hwnd: HWND) {
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    let key = parent_hwnd.0 as isize;
+    let installed = SHADOW_SUBCLASSED_PARENTS.with(|s| s.borrow().contains(&key));
+    if !installed {
+        unsafe {
+            let _ = SetWindowSubclass(
+                parent_hwnd,
+                Some(shadow_subclass_proc),
+                SHADOW_SUBCLASS_ID,
+                0,
+            );
+        }
+        SHADOW_SUBCLASSED_PARENTS.with(|s| {
+            s.borrow_mut().insert(key);
+        });
+    }
+}
+
+/// Subclass proc on a parent window. We let the parent paint itself
+/// first (`DefSubclassProc`), then on `WM_PAINT` we walk the registered
+/// shadowed children and stamp soft-edge shadows directly onto the
+/// parent's surface via `AlphaBlend`. Win32's WS_CLIPCHILDREN flag
+/// keeps the shadow from overdrawing the children's own surfaces (the
+/// children paint last in their own message cycles), so the shadow
+/// shows up only in the area BETWEEN/AROUND the child — exactly the
+/// CSS `box-shadow` behavior.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn shadow_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _refdata: usize,
+) -> LRESULT {
+    use windows::Win32::UI::Shell::DefSubclassProc;
+
+    let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+
+    if msg == WM_PAINT {
+        let parent_key = hwnd.0 as isize;
+        let children = get_shadowed_children(parent_key);
+        if !children.is_empty() {
+            paint_shadows(hwnd, &children);
+        }
+    }
+
+    result
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn paint_shadows(parent_hwnd: HWND, children: &[i64]) {
+    use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
+    let hdc = GetDC(parent_hwnd);
+    if hdc.is_invalid() {
+        return;
+    }
+    for &child in children {
+        if let Some(shadow) = get_shadow(child) {
+            paint_shadow_for_child(parent_hwnd, hdc, child, shadow);
+        }
+    }
+    ReleaseDC(parent_hwnd, hdc);
+}
+
+/// Render one widget's drop shadow into a 32bpp DIB then `AlphaBlend`
+/// onto the parent's DC. Per-pixel alpha follows a quadratic falloff
+/// from the un-blurred shadow rect (`alpha = base * (1 - d/blur)^2`)
+/// which is a cheap visible approximation of a Gaussian box-shadow.
+/// Pixels INSIDE the widget bounds stay fully transparent so the
+/// child's own painting layers on top.
+#[cfg(target_os = "windows")]
+unsafe fn paint_shadow_for_child(
+    parent_hwnd: HWND,
+    parent_dc: HDC,
+    child_handle: i64,
+    shadow: (f64, f64, f64, f64, f64, f64, f64),
+) {
+    use windows::Win32::Graphics::Gdi::{
+        AlphaBlend, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, ScreenToClient,
+        SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        BLENDFUNCTION, DIB_RGB_COLORS, RGBQUAD,
+    };
+
+    let (r, g, b, a, blur, ox, oy) = shadow;
+
+    let alpha_base = a.clamp(0.0, 1.0);
+    if alpha_base <= 0.0 {
+        return;
+    }
+
+    let child_hwnd = match get_hwnd_safe(child_handle) {
+        Some(h) => h,
+        None => return,
+    };
+
+    // Get child window rect (screen coords) → translate to parent client coords.
+    let mut child_rect = RECT::default();
+    if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(child_hwnd, &mut child_rect).is_err()
+    {
+        return;
+    }
+    let mut tl = POINT {
+        x: child_rect.left,
+        y: child_rect.top,
+    };
+    let mut br = POINT {
+        x: child_rect.right,
+        y: child_rect.bottom,
+    };
+    let _ = ScreenToClient(parent_hwnd, &mut tl);
+    let _ = ScreenToClient(parent_hwnd, &mut br);
+
+    let widget_w = br.x - tl.x;
+    let widget_h = br.y - tl.y;
+    if widget_w <= 0 || widget_h <= 0 {
+        return;
+    }
+
+    // Clamp to bounded ranges so a malicious / buggy caller can't request
+    // a 10000×10000 alloca-equivalent.
+    let blur_px = blur.round().max(0.0).min(64.0) as i32;
+    let ox_px = ox.round().clamp(-256.0, 256.0) as i32;
+    let oy_px = oy.round().clamp(-256.0, 256.0) as i32;
+
+    // Bitmap covers the union of widget rect and shadow rect (each padded
+    // by `blur_px` for falloff). Position widget within the bitmap so that
+    // both the widget rect and its offset shadow fit.
+    let pad = blur_px;
+    let widget_l_in_bmp = (-ox_px.min(0)) + pad;
+    let widget_t_in_bmp = (-oy_px.min(0)) + pad;
+    let bmp_w = widget_w + 2 * pad + ox_px.abs();
+    let bmp_h = widget_h + 2 * pad + oy_px.abs();
+    if bmp_w <= 0 || bmp_h <= 0 {
+        return;
+    }
+
+    let widget_r_in_bmp = widget_l_in_bmp + widget_w;
+    let widget_b_in_bmp = widget_t_in_bmp + widget_h;
+    let shadow_l_in_bmp = widget_l_in_bmp + ox_px;
+    let shadow_t_in_bmp = widget_t_in_bmp + oy_px;
+    let shadow_r_in_bmp = shadow_l_in_bmp + widget_w;
+    let shadow_b_in_bmp = shadow_t_in_bmp + widget_h;
+
+    // Where the bitmap lands in parent client coords.
+    let dest_x = tl.x - widget_l_in_bmp;
+    let dest_y = tl.y - widget_t_in_bmp;
+
+    let mem_dc = CreateCompatibleDC(parent_dc);
+    if mem_dc.is_invalid() {
+        return;
+    }
+
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: bmp_w,
+            biHeight: -bmp_h, // top-down DIB → row 0 is top
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        },
+        bmiColors: [RGBQUAD::default()],
+    };
+
+    let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    let null_section = windows::Win32::Foundation::HANDLE(std::ptr::null_mut());
+    let dib = match CreateDIBSection(
+        parent_dc,
+        &bmi,
+        DIB_RGB_COLORS,
+        &mut bits_ptr,
+        null_section,
+        0,
+    ) {
+        Ok(d) if !bits_ptr.is_null() => d,
+        _ => {
+            let _ = DeleteDC(mem_dc);
+            return;
+        }
+    };
+
+    let old_obj = SelectObject(mem_dc, dib);
+
+    // Render shadow: per-pixel falloff from the (un-blurred) shadow rect.
+    // 32bpp ARGB layout (little-endian u32): 0xAARRGGBB where bytes go
+    // BB GG RR AA in memory. AlphaBlend with AC_SRC_ALPHA + premultiplied
+    // alpha is the standard Win32 path for soft-edge drop shadows.
+    let pixels =
+        std::slice::from_raw_parts_mut(bits_ptr as *mut u32, (bmp_w as usize) * (bmp_h as usize));
+    let blur_f = blur_px as f64;
+    for py in 0..bmp_h {
+        for px in 0..bmp_w {
+            // Inside widget rect → fully transparent (widget paints itself).
+            if px >= widget_l_in_bmp
+                && px < widget_r_in_bmp
+                && py >= widget_t_in_bmp
+                && py < widget_b_in_bmp
+            {
+                pixels[(py * bmp_w + px) as usize] = 0;
+                continue;
+            }
+
+            // Distance to the (un-blurred) shadow rect, in pixels.
+            let dx = if px < shadow_l_in_bmp {
+                shadow_l_in_bmp - px
+            } else if px >= shadow_r_in_bmp {
+                px - shadow_r_in_bmp + 1
+            } else {
+                0
+            };
+            let dy = if py < shadow_t_in_bmp {
+                shadow_t_in_bmp - py
+            } else if py >= shadow_b_in_bmp {
+                py - shadow_b_in_bmp + 1
+            } else {
+                0
+            };
+            let d2 = (dx * dx + dy * dy) as f64;
+            let d = d2.sqrt();
+
+            let alpha = if blur_px == 0 {
+                if d == 0.0 {
+                    alpha_base
+                } else {
+                    0.0
+                }
+            } else {
+                let t = (d / blur_f).min(1.0);
+                let f = 1.0 - t;
+                alpha_base * f * f
+            };
+
+            if alpha <= 0.0 {
+                pixels[(py * bmp_w + px) as usize] = 0;
+                continue;
+            }
+
+            let pa = (alpha * 255.0).round().clamp(0.0, 255.0) as u32;
+            let pr = (r * alpha * 255.0).round().clamp(0.0, 255.0) as u32;
+            let pg = (g * alpha * 255.0).round().clamp(0.0, 255.0) as u32;
+            let pb = (b * alpha * 255.0).round().clamp(0.0, 255.0) as u32;
+            pixels[(py * bmp_w + px) as usize] = (pa << 24) | (pr << 16) | (pg << 8) | pb;
+        }
+    }
+
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+
+    let _ = AlphaBlend(
+        parent_dc, dest_x, dest_y, bmp_w, bmp_h, mem_dc, 0, 0, bmp_w, bmp_h, blend,
+    );
+
+    SelectObject(mem_dc, old_obj);
+    let _ = DeleteObject(dib);
+    let _ = DeleteDC(mem_dc);
 }
 
 /// Stored opacity values per widget handle. Kept separately from
