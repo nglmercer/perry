@@ -169,7 +169,7 @@ fn main() -> Result<()> {
     let builder = std::thread::Builder::new()
         .name("perry-main".into())
         .stack_size(64 * 1024 * 1024);
-    let handler = builder.spawn(|| main_inner()).unwrap();
+    let handler = builder.spawn(main_inner).unwrap();
     handler.join().unwrap()
 }
 

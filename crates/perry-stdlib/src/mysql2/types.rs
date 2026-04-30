@@ -1,9 +1,9 @@
 //! Type conversions between MySQL types and JSValue
 
 use perry_runtime::{
-    js_array_alloc, js_array_push, js_object_alloc, js_object_get_field,
-    js_object_get_field_by_name, js_object_set_field, js_object_set_keys, js_string_from_bytes,
-    JSValue, ObjectHeader, StringHeader,
+    js_array_alloc, js_array_push, js_object_alloc, js_object_get_field_by_name,
+    js_object_set_field, js_object_set_keys, js_string_from_bytes, JSValue, ObjectHeader,
+    StringHeader,
 };
 use sqlx::mysql::MySqlRow;
 use sqlx::{Column, Row, TypeInfo};

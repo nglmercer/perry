@@ -4,9 +4,7 @@
 //! Provides HTTP client functionality with a promise-based API.
 
 use crate::common::{get_handle, register_handle, spawn_for_promise, Handle};
-use perry_runtime::{
-    js_promise_new, js_string_from_bytes, JSValue, ObjectHeader, Promise, StringHeader,
-};
+use perry_runtime::{js_promise_new, js_string_from_bytes, Promise, StringHeader};
 
 /// Helper to extract string from StringHeader pointer
 unsafe fn string_from_header(ptr: *const StringHeader) -> Option<String> {

@@ -26,15 +26,15 @@ const PARENT_PORT_HANDLE: i64 = 1;
 
 thread_local! {
     /// Callback closure for 'message' events
-    static MESSAGE_CALLBACK: RefCell<Option<i64>> = RefCell::new(None);
+    static MESSAGE_CALLBACK: RefCell<Option<i64>> = const { RefCell::new(None) };
     /// Callback closure for 'close' events
-    static CLOSE_CALLBACK: RefCell<Option<i64>> = RefCell::new(None);
+    static CLOSE_CALLBACK: RefCell<Option<i64>> = const { RefCell::new(None) };
     /// Queue of pending messages (raw JSON strings) from stdin
-    static PENDING_MESSAGES: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static PENDING_MESSAGES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Whether the stdin reader has been started
-    static STDIN_READER_STARTED: RefCell<bool> = RefCell::new(false);
+    static STDIN_READER_STARTED: RefCell<bool> = const { RefCell::new(false) };
     /// Whether stdin has reached EOF
-    static STDIN_EOF: RefCell<bool> = RefCell::new(false);
+    static STDIN_EOF: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Get workerData from PERRY_WORKER_DATA environment variable

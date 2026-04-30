@@ -59,7 +59,7 @@ fn collect_ts_files(path: &PathBuf) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     if path.is_file() {
-        if path.extension().map_or(false, |ext| ext == "ts") {
+        if path.extension().is_some_and(|ext| ext == "ts") {
             files.push(path.clone());
         }
         return Ok(files);
@@ -77,7 +77,7 @@ fn collect_ts_files(path: &PathBuf) -> Result<Vec<PathBuf>> {
             continue;
         }
 
-        if path.is_file() && path.extension().map_or(false, |ext| ext == "ts") {
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "ts") {
             // Skip declaration files
             if !path.to_string_lossy().ends_with(".d.ts") {
                 files.push(path.to_path_buf());
@@ -197,13 +197,13 @@ pub fn run(args: CheckArgs, format: OutputFormat, use_color: bool, verbose: u8) 
                         DiagnosticCode::AnyTypeUsage,
                         format!("{} (--fix to apply)", issue.message),
                     )
-                    .with_span(issue.span.clone())
+                    .with_span(issue.span)
                     .build(),
                     super::fixer::FixableKind::TemplateLiteral => Diagnostic::warning(
                         DiagnosticCode::UnsupportedFeature,
                         format!("{} (--fix to apply)", issue.message),
                     )
-                    .with_span(issue.span.clone())
+                    .with_span(issue.span)
                     .build(),
                 };
                 all_diagnostics.push(diag);
@@ -268,7 +268,7 @@ pub fn run(args: CheckArgs, format: OutputFormat, use_color: bool, verbose: u8) 
         if !unresolved.is_empty() {
             let unresolved_diags = unresolved_imports_to_diagnostics(unresolved, &source_cache);
             dep_issues_count += unresolved_diags.error_count();
-            all_diagnostics.extend(unresolved_diags.into_iter());
+            all_diagnostics.extend(unresolved_diags);
         }
 
         // Check for Node.js built-in imports (fs, path, http, etc.)
@@ -278,7 +278,7 @@ pub fn run(args: CheckArgs, format: OutputFormat, use_color: bool, verbose: u8) 
         );
         if builtin_diags.has_errors() {
             dep_issues_count += builtin_diags.error_count();
-            all_diagnostics.extend(builtin_diags.into_iter());
+            all_diagnostics.extend(builtin_diags);
         }
 
         // Check package compatibility
@@ -306,7 +306,7 @@ pub fn run(args: CheckArgs, format: OutputFormat, use_color: bool, verbose: u8) 
 
                 let compat_diags = compatibility_to_diagnostics(&packages);
                 dep_issues_count += compat_diags.error_count();
-                all_diagnostics.extend(compat_diags.into_iter());
+                all_diagnostics.extend(compat_diags);
             }
             Err(e) => {
                 if verbose > 0 {

@@ -247,7 +247,7 @@ pub extern "C" fn js_fs_readdir_sync(path_value: f64) -> f64 {
         let path_ptr = extract_string_ptr(path_value);
         if path_ptr.is_null() {
             let arr = js_array_alloc(0);
-            return std::mem::transmute::<i64, f64>(arr as i64);
+            return f64::from_bits(i64::cast_unsigned(arr as i64));
         }
 
         let len = (*path_ptr).byte_len as usize;
@@ -258,18 +258,16 @@ pub extern "C" fn js_fs_readdir_sync(path_value: f64) -> f64 {
             Ok(s) => s,
             Err(_) => {
                 let arr = js_array_alloc(0);
-                return std::mem::transmute::<i64, f64>(arr as i64);
+                return f64::from_bits(i64::cast_unsigned(arr as i64));
             }
         };
 
         match fs::read_dir(path_str) {
             Ok(entries) => {
                 let mut names: Vec<String> = Vec::new();
-                for entry in entries {
-                    if let Ok(e) = entry {
-                        if let Some(name) = e.file_name().to_str() {
-                            names.push(name.to_string());
-                        }
+                for e in entries.flatten() {
+                    if let Some(name) = e.file_name().to_str() {
+                        names.push(name.to_string());
                     }
                 }
                 names.sort();
@@ -281,11 +279,11 @@ pub extern "C" fn js_fs_readdir_sync(path_value: f64) -> f64 {
                     let str_f64 = js_nanbox_string(str_ptr as i64);
                     arr = js_array_push_f64(arr, str_f64);
                 }
-                std::mem::transmute::<i64, f64>(arr as i64)
+                f64::from_bits(i64::cast_unsigned(arr as i64))
             }
             Err(_) => {
                 let arr = js_array_alloc(0);
-                std::mem::transmute::<i64, f64>(arr as i64)
+                f64::from_bits(i64::cast_unsigned(arr as i64))
             }
         }
     }
@@ -1106,7 +1104,7 @@ extern "C" fn read_stream_close_impl(_closure: *const ClosureHeader) -> f64 {
 fn extract_closure_ptr(v: f64) -> *const ClosureHeader {
     let bits = v.to_bits();
     let top16 = bits >> 48;
-    let raw = if top16 >= 0x7FF8 && top16 <= 0x7FFF {
+    let raw = if (0x7FF8..=0x7FFF).contains(&top16) {
         // Tagged NaN-box — mask off the tag.
         (bits & 0x0000_FFFF_FFFF_FFFF) as usize
     } else {

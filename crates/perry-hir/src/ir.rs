@@ -172,21 +172,16 @@ pub fn requires_stdlib(module: &str) -> bool {
 }
 
 /// The kind of module being imported, determining how it's executed
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModuleKind {
     /// Native TypeScript compiled to machine code (default for .ts/.tsx files)
+    #[default]
     NativeCompiled,
     /// Native Rust stdlib implementation (mysql2, pg, etc.)
     NativeRust,
     /// V8-interpreted JavaScript (fallback for .js modules)
     /// This requires explicit opt-in and user confirmation
     Interpreted,
-}
-
-impl Default for ModuleKind {
-    fn default() -> Self {
-        ModuleKind::NativeCompiled
-    }
 }
 
 /// Determine the module kind for a given import path

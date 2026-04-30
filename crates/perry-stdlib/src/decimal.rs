@@ -436,7 +436,7 @@ pub unsafe extern "C" fn js_decimal_coerce_to_handle(value: f64) -> Handle {
     }
     // Plain double: top16 < 0x7FF8 (positive numerics) or >= 0x8000 (negative
     // — sign-extended). Matches the value.rs canonicalization tag-band check.
-    if tag < 0x7FF8 || tag >= 0x8000 {
+    if !(0x7FF8..0x8000).contains(&tag) {
         return js_decimal_from_number(value);
     }
     // undefined / null / true / false / etc. — coerce to zero.

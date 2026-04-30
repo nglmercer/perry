@@ -857,7 +857,7 @@ pub unsafe extern "C" fn js_ws_on(
     entry
         .listeners
         .entry(event_name)
-        .or_insert_with(Vec::new)
+        .or_default()
         .push(callback_ptr);
 
     handle

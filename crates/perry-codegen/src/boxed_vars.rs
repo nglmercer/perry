@@ -337,10 +337,8 @@ fn collect_self_recursive_closure_ids(
             // just check if the id is in the already-computed
             // closure_refs set (which includes all ids referenced
             // from any closure body in these stmts).
-            if matches!(init_expr, perry_hir::Expr::Closure { .. }) {
-                if closure_refs.contains(id) {
-                    out.insert(*id);
-                }
+            if matches!(init_expr, perry_hir::Expr::Closure { .. }) && closure_refs.contains(id) {
+                out.insert(*id);
             }
         }
         // Recurse into nested blocks.

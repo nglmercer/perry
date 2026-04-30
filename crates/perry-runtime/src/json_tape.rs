@@ -908,7 +908,7 @@ pub unsafe fn alloc_lazy_array(
     cached_length: u32,
     blob_str: *const crate::StringHeader,
 ) -> *mut LazyArrayHeader {
-    let tape_bytes = tape_entries.len() * std::mem::size_of::<TapeEntry>();
+    let tape_bytes = std::mem::size_of_val(tape_entries);
     let total = std::mem::size_of::<LazyArrayHeader>() + tape_bytes;
     let raw = crate::arena::arena_alloc_gc(total, 8, crate::gc::GC_TYPE_LAZY_ARRAY);
     let hdr = raw as *mut LazyArrayHeader;
@@ -945,7 +945,7 @@ pub unsafe fn alloc_lazy_array(
         // cross-parse ghost cache hit.
         std::ptr::write_bytes(cache_raw, 0, cache_bytes);
         (*hdr).materialized_elements = cache_raw as *mut crate::value::JSValue;
-        let bitmap_words = ((cached_length as usize) + 63) / 64;
+        let bitmap_words = (cached_length as usize).div_ceil(64);
         let bitmap_bytes = bitmap_words * 8;
         let bitmap_raw = crate::arena::arena_alloc_gc(bitmap_bytes, 8, crate::gc::GC_TYPE_STRING);
         std::ptr::write_bytes(bitmap_raw, 0, bitmap_bytes);
@@ -1122,7 +1122,7 @@ pub unsafe fn force_materialize_lazy(hdr: *mut LazyArrayHeader) -> *mut crate::a
     let bitmap = (*hdr).materialized_bitmap;
     let cache = (*hdr).materialized_elements;
     let has_cache_hits = if !bitmap.is_null() && cached_length > 0 {
-        let words = (cached_length as usize + 63) / 64;
+        let words = (cached_length as usize).div_ceil(64);
         let mut any = false;
         for w in 0..words {
             if *bitmap.add(w) != 0 {

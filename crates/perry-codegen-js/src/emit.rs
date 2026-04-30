@@ -54,12 +54,9 @@ impl JsEmitter {
     pub fn emit_module(mut self, module: &Module) -> String {
         // Collect exported names
         for export in &module.exports {
-            match export {
-                Export::Named { local, exported } => {
-                    self.exported_names.insert(exported.clone());
-                    let _ = local; // used below during function/class naming
-                }
-                _ => {}
+            if let Export::Named { local, exported } = export {
+                self.exported_names.insert(exported.clone());
+                let _ = local; // used below during function/class naming
             }
         }
 
@@ -391,7 +388,7 @@ impl JsEmitter {
         // Getters
         for (prop_name, func) in &class.getters {
             self.write_indent();
-            let _ = write!(self.output, "get {}() {{\n", prop_name);
+            let _ = writeln!(self.output, "get {}() {{", prop_name);
             self.indent += 1;
             for stmt in &func.body {
                 self.emit_stmt(stmt);
@@ -662,11 +659,11 @@ impl JsEmitter {
             }
             Stmt::LabeledBreak(label) => {
                 self.write_indent();
-                let _ = write!(self.output, "break {};\n", label);
+                let _ = writeln!(self.output, "break {};", label);
             }
             Stmt::LabeledContinue(label) => {
                 self.write_indent();
-                let _ = write!(self.output, "continue {};\n", label);
+                let _ = writeln!(self.output, "continue {};", label);
             }
             Stmt::Throw(expr) => {
                 self.write_indent();
@@ -689,7 +686,7 @@ impl JsEmitter {
                     self.write_indent();
                     if let Some((id, name)) = &catch_clause.param {
                         let var_name = self.make_local_name(name, *id);
-                        let _ = write!(self.output, "}} catch ({}) {{\n", var_name);
+                        let _ = writeln!(self.output, "}} catch ({}) {{", var_name);
                     } else {
                         self.output.push_str("} catch {\n");
                     }
@@ -2000,7 +1997,7 @@ impl JsEmitter {
             Expr::MapNewFromArray(expr) => {
                 self.output.push_str("new Map(");
                 self.emit_expr(expr);
-                self.output.push_str(")");
+                self.output.push(')');
             }
             Expr::MapSet { map, key, value } => {
                 self.emit_expr(map);
@@ -2057,7 +2054,7 @@ impl JsEmitter {
             Expr::SetNewFromArray(expr) => {
                 self.output.push_str("new Set(");
                 self.emit_expr(expr);
-                self.output.push_str(")");
+                self.output.push(')');
             }
             Expr::SetAdd { set_id, value } => {
                 let name = self.get_local_name(*set_id);
@@ -3267,7 +3264,7 @@ impl JsEmitter {
                 self.output.push(')');
                 return;
             }
-            "get" if class_name.map_or(false, |c| c == "State") => {
+            "get" if class_name == Some("State") => {
                 self.output.push_str("__perry.stateGet(");
                 if let Some(obj) = object {
                     self.emit_expr(obj);
@@ -3275,7 +3272,7 @@ impl JsEmitter {
                 self.output.push(')');
                 return;
             }
-            "set" if class_name.map_or(false, |c| c == "State") => {
+            "set" if class_name == Some("State") => {
                 self.output.push_str("__perry.stateSet(");
                 if let Some(obj) = object {
                     self.emit_expr(obj);
@@ -3287,7 +3284,7 @@ impl JsEmitter {
                 self.output.push(')');
                 return;
             }
-            "value" if class_name.map_or(false, |c| c == "State") => {
+            "value" if class_name == Some("State") => {
                 self.output.push_str("__perry.stateGet(");
                 if let Some(obj) = object {
                     self.emit_expr(obj);

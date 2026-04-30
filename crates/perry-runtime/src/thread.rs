@@ -664,7 +664,7 @@ unsafe fn parallel_map_impl(array_val: f64, closure_val: f64) -> i64 {
     };
 
     // ── 6. Split into chunks and process in parallel ─────────────────
-    let chunk_size = (len + num_threads - 1) / num_threads;
+    let chunk_size = len.div_ceil(num_threads);
 
     // Use a Vec of chunks that we can pass to scoped threads
     let mut chunks: Vec<Vec<SerializedValue>> = Vec::with_capacity(num_threads);
@@ -685,7 +685,7 @@ unsafe fn parallel_map_impl(array_val: f64, closure_val: f64) -> i64 {
     }
 
     // Wrap captures in Arc for sharing across threads
-    let captures_arc = serialized_captures.map(|c| std::sync::Arc::new(c));
+    let captures_arc = serialized_captures.map(std::sync::Arc::new);
     let func_usize = func as usize;
 
     // Scoped threads: all threads must complete before we return.
@@ -858,7 +858,7 @@ unsafe fn parallel_filter_impl(array_val: f64, closure_val: f64) -> i64 {
     };
 
     // Split into chunks
-    let chunk_size = (len + num_threads - 1) / num_threads;
+    let chunk_size = len.div_ceil(num_threads);
     let mut chunks: Vec<Vec<SerializedValue>> = Vec::with_capacity(num_threads);
     let mut remaining = serialized_elements;
     for _ in 0..num_threads {
@@ -876,7 +876,7 @@ unsafe fn parallel_filter_impl(array_val: f64, closure_val: f64) -> i64 {
         }
     }
 
-    let captures_arc = serialized_captures.map(|c| std::sync::Arc::new(c));
+    let captures_arc = serialized_captures.map(std::sync::Arc::new);
     let func_usize = func as usize;
 
     // Each thread returns (index, kept_elements) — kept elements in original order

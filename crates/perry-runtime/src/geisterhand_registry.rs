@@ -569,7 +569,7 @@ pub extern "C" fn perry_geisterhand_get_registry_json(out_len: *mut usize) -> *m
     };
     let bytes = json.into_bytes();
     let len = bytes.len();
-    let ptr = bytes.as_ptr();
+    let _ptr = bytes.as_ptr();
     let boxed = bytes.into_boxed_slice();
     let raw = Box::into_raw(boxed);
     unsafe {
@@ -583,7 +583,7 @@ pub extern "C" fn perry_geisterhand_get_registry_json(out_len: *mut usize) -> *m
 pub extern "C" fn perry_geisterhand_free_string(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
         unsafe {
-            let _ = Box::from_raw(std::slice::from_raw_parts_mut(ptr, len));
+            let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len));
         }
     }
 }

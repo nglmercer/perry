@@ -277,11 +277,9 @@ pub(super) fn extract_compile_package_dir(
     let path_str = resolved_path.to_string_lossy();
     let needle = format!("node_modules/{}", package_name);
     // Use rfind to handle deeply nested node_modules
-    if let Some(idx) = path_str.rfind(&needle) {
-        Some(PathBuf::from(&path_str[..idx + needle.len()]))
-    } else {
-        None
-    }
+    path_str
+        .rfind(&needle)
+        .map(|idx| PathBuf::from(&path_str[..idx + needle.len()]))
 }
 
 /// Check if a file path is inside a package listed in compile_packages
@@ -574,7 +572,7 @@ pub(super) fn resolve_package_source_entry(
                 } else {
                     rel.strip_prefix("dist")
                 };
-                if let Some(rest) = stripped.ok() {
+                if let Ok(rest) = stripped {
                     let src_equiv = package_dir.join("src").join(rest).with_extension("ts");
                     if src_equiv.exists() {
                         return Some(src_equiv);

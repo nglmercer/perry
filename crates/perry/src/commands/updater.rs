@@ -153,8 +153,7 @@ fn run_keygen(args: KeygenArgs) -> Result<()> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ =
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
             }
             eprintln!("wrote keypair to {}", path.display());
         }
@@ -242,7 +241,10 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
         .decode(args.signature.trim())
         .context("signature is not valid base64")?;
     if sig_bytes.len() != 64 {
-        bail!("signature must decode to 64 bytes (got {})", sig_bytes.len());
+        bail!(
+            "signature must decode to 64 bytes (got {})",
+            sig_bytes.len()
+        );
     }
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(&sig_bytes);
@@ -256,8 +258,8 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
     }
     let mut pk_arr = [0u8; 32];
     pk_arr.copy_from_slice(&pk_bytes);
-    let verifying = VerifyingKey::from_bytes(&pk_arr)
-        .context("pubkey is not a valid Ed25519 point")?;
+    let verifying =
+        VerifyingKey::from_bytes(&pk_arr).context("pubkey is not a valid Ed25519 point")?;
 
     let (digest, _size) = sha256_file(&args.binary)?;
     let mut payload = Vec::with_capacity(32 + args.version.len());
@@ -276,8 +278,8 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
 
 fn sha256_file(path: &std::path::Path) -> Result<([u8; 32], u64)> {
     use std::io::Read;
-    let mut file = std::fs::File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     let mut total: u64 = 0;
@@ -306,10 +308,14 @@ mod tests {
     #[test]
     fn keygen_sign_verify_roundtrip() {
         // 1) Keygen — to a tmp file.
-        let dir = std::env::temp_dir().join(format!("perry-updater-cli-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("perry-updater-cli-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let kp_path = dir.join("kp.json");
-        run_keygen(KeygenArgs { output: Some(kp_path.clone()) }).unwrap();
+        run_keygen(KeygenArgs {
+            output: Some(kp_path.clone()),
+        })
+        .unwrap();
         let kp_raw = std::fs::read_to_string(&kp_path).unwrap();
         let kp: KeypairJson = serde_json::from_str(&kp_raw).unwrap();
         assert_eq!(
@@ -368,7 +374,8 @@ mod tests {
     /// invariant in `perry_updater_verify_signature_v2`).
     #[test]
     fn empty_version_rejected() {
-        let dir = std::env::temp_dir().join(format!("perry-updater-cli-empty-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("perry-updater-cli-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let bin_path = dir.join("payload.bin");
         std::fs::write(&bin_path, b"x").unwrap();
@@ -377,9 +384,7 @@ mod tests {
             binary: bin_path,
             version: String::new(),
             secret_key: None,
-            secret_key_b64: Some(
-                base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
-            ),
+            secret_key_b64: Some(base64::engine::general_purpose::STANDARD.encode([7u8; 32])),
         });
         assert!(r.is_err());
         let _ = std::fs::remove_dir_all(&dir);

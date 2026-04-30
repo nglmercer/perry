@@ -50,13 +50,13 @@ pub fn compile_widget(widget: &WidgetDecl, app_bundle_id: &str) -> Result<Widget
     if !widget.config_params.is_empty() {
         swift_source.push_str("import AppIntents\n");
     }
-    swift_source.push_str("\n");
+    swift_source.push('\n');
     swift_source.push_str(&entry_struct);
-    swift_source.push_str("\n");
+    swift_source.push('\n');
     swift_source.push_str(&view_body);
-    swift_source.push_str("\n");
+    swift_source.push('\n');
     swift_source.push_str(&provider);
-    swift_source.push_str("\n");
+    swift_source.push('\n');
     swift_source.push_str(&widget_bundle);
 
     let mut swift_files = vec![(format!("{}.swift", safe_name), swift_source)];

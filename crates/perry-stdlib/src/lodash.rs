@@ -4,9 +4,8 @@
 //! Provides array, object, string, and utility operations.
 
 use perry_runtime::{
-    js_array_alloc, js_array_get, js_array_length, js_array_push, js_object_alloc,
-    js_object_get_field, js_object_set_field, js_string_from_bytes, ArrayHeader, JSValue,
-    ObjectHeader, StringHeader,
+    js_array_alloc, js_array_get, js_array_length, js_array_push, js_string_from_bytes,
+    ArrayHeader, JSValue, StringHeader,
 };
 use std::collections::HashSet;
 
@@ -182,7 +181,7 @@ pub unsafe extern "C" fn js_lodash_drop_right(
 
     let n = n.max(0.0) as u32;
     let len = js_array_length(arr_ptr);
-    let end = if n >= len { 0 } else { len - n };
+    let end = len.saturating_sub(n);
 
     for i in 0..end {
         js_array_push(result, js_array_get(arr_ptr, i));
@@ -197,7 +196,7 @@ pub unsafe extern "C" fn js_lodash_drop_right(
 #[no_mangle]
 pub unsafe extern "C" fn js_lodash_fill(
     arr_ptr: *mut ArrayHeader,
-    value: JSValue,
+    _value: JSValue,
     start: f64,
     end: f64,
 ) -> *mut ArrayHeader {
@@ -209,12 +208,12 @@ pub unsafe extern "C" fn js_lodash_fill(
     let start = start as i32;
     let end = if end.is_nan() { len } else { end as i32 };
 
-    let start = if start < 0 {
+    let _start = if start < 0 {
         (len + start).max(0)
     } else {
         start.min(len)
     } as u32;
-    let end = if end < 0 {
+    let _end = if end < 0 {
         (len + end).max(0)
     } else {
         end.min(len)
@@ -371,7 +370,7 @@ pub unsafe extern "C" fn js_lodash_take_right(
 
     let n = n.max(0.0) as u32;
     let len = js_array_length(arr_ptr);
-    let start = if n >= len { 0 } else { len - n };
+    let start = len.saturating_sub(n);
 
     for i in start..len {
         js_array_push(result, js_array_get(arr_ptr, i));

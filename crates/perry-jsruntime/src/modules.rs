@@ -362,7 +362,7 @@ impl ModuleLoader for NodeModuleLoader {
         let canonical = std::fs::canonicalize(&resolved_path).unwrap_or(resolved_path);
 
         ModuleSpecifier::from_file_path(&canonical)
-            .map_err(|_| anyhow!("Failed to create module specifier for {:?}", canonical).into())
+            .map_err(|_| anyhow!("Failed to create module specifier for {:?}", canonical))
     }
 
     fn load(
@@ -386,15 +386,13 @@ impl ModuleLoader for NodeModuleLoader {
 
         let path = match module_specifier.to_file_path() {
             Ok(p) => p,
-            Err(_) => return ModuleLoadResponse::Sync(Err(anyhow!("Invalid file path").into())),
+            Err(_) => return ModuleLoadResponse::Sync(Err(anyhow!("Invalid file path"))),
         };
 
         let code = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                return ModuleLoadResponse::Sync(
-                    Err(anyhow!("Failed to read module: {}", e).into()),
-                )
+                return ModuleLoadResponse::Sync(Err(anyhow!("Failed to read module: {}", e)))
             }
         };
 

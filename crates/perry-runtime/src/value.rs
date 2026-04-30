@@ -288,7 +288,7 @@ impl JSValue {
         // A value is a number if upper 16 bits are not in our tagged range 0x7FFC-0x7FFF
         // This allows IEEE NaN (0x7FF8), negative numbers, and all other f64 through
         let upper = self.bits >> 48;
-        upper < 0x7FFC || upper > 0x7FFF
+        !(0x7FFC..=0x7FFF).contains(&upper)
     }
 
     /// Check if this is undefined
@@ -613,7 +613,7 @@ pub extern "C" fn js_nanbox_string(ptr: i64) -> f64 {
 pub extern "C" fn js_checkpoint(n: i32) {
     use std::io::Write;
     let mut stderr = std::io::stderr();
-    let _ = write!(stderr, "[CHECKPOINT] {}\n", n);
+    let _ = writeln!(stderr, "[CHECKPOINT] {}", n);
     let _ = stderr.flush();
 }
 
@@ -1311,7 +1311,7 @@ pub extern "C" fn js_jsvalue_equals(a: f64, b: f64) -> i32 {
     #[inline(always)]
     fn is_plain_number(bits: u64) -> bool {
         let tag = bits >> 48;
-        tag < 0x7FF8 || tag > 0x7FFF
+        !(0x7FF8..=0x7FFF).contains(&tag)
     }
 
     // INT32 comparison: one or both operands may be NaN-boxed INT32 (0x7FFE tag).
@@ -1379,7 +1379,7 @@ pub extern "C" fn js_jsvalue_loose_equals(a: f64, b: f64) -> i32 {
     #[inline(always)]
     fn is_plain_number(bits: u64) -> bool {
         let tag = bits >> 48;
-        tag < 0x7FF8 || tag > 0x7FFF
+        !(0x7FF8..=0x7FFF).contains(&tag)
     }
 
     // Helper: convert a JSValue to f64 for numeric comparison
@@ -1516,17 +1516,15 @@ pub extern "C" fn js_jsvalue_compare(a: f64, b: f64) -> i32 {
         let a_view = crate::string::str_bytes_from_jsvalue(a, &mut a_scratch);
         let b_view = crate::string::str_bytes_from_jsvalue(b, &mut b_scratch);
         if let (Some((a_ptr, a_len)), Some((b_ptr, b_len))) = (a_view, b_view) {
-            if !a_ptr.is_null() || a_len == 0 {
-                if !b_ptr.is_null() || b_len == 0 {
-                    unsafe {
-                        let a_bytes = std::slice::from_raw_parts(a_ptr, a_len as usize);
-                        let b_bytes = std::slice::from_raw_parts(b_ptr, b_len as usize);
-                        return match a_bytes.cmp(b_bytes) {
-                            std::cmp::Ordering::Less => -1,
-                            std::cmp::Ordering::Equal => 0,
-                            std::cmp::Ordering::Greater => 1,
-                        };
-                    }
+            if (!a_ptr.is_null() || a_len == 0) && (!b_ptr.is_null() || b_len == 0) {
+                unsafe {
+                    let a_bytes = std::slice::from_raw_parts(a_ptr, a_len as usize);
+                    let b_bytes = std::slice::from_raw_parts(b_ptr, b_len as usize);
+                    return match a_bytes.cmp(b_bytes) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    };
                 }
             }
         }
@@ -1555,7 +1553,7 @@ pub extern "C" fn js_jsvalue_compare(a: f64, b: f64) -> i32 {
         a_val.as_int32() as f64
     } else if a_val.is_bigint() {
         crate::bigint::js_bigint_to_f64(a_val.as_bigint_ptr())
-    } else if a_tag < 0x7FF8 || a_tag > 0x7FFF {
+    } else if !(0x7FF8..=0x7FFF).contains(&a_tag) {
         a
     } else {
         return 2;
@@ -1564,7 +1562,7 @@ pub extern "C" fn js_jsvalue_compare(a: f64, b: f64) -> i32 {
         b_val.as_int32() as f64
     } else if b_val.is_bigint() {
         crate::bigint::js_bigint_to_f64(b_val.as_bigint_ptr())
-    } else if b_tag < 0x7FF8 || b_tag > 0x7FFF {
+    } else if !(0x7FF8..=0x7FFF).contains(&b_tag) {
         b
     } else {
         return 2;
@@ -1781,7 +1779,7 @@ pub extern "C" fn js_dynamic_array_get(value: f64, index: i32) -> f64 {
     // Call the native array get function
     let result_bits =
         crate::array::js_array_get_jsvalue(ptr as *const crate::array::ArrayHeader, index as u32);
-    let result_top16 = result_bits >> 48;
+    let _result_top16 = result_bits >> 48;
     // debug: DYNAMIC-ARRAY-GET-DEBUG disabled
     f64::from_bits(result_bits)
 }
@@ -1790,7 +1788,7 @@ pub extern "C" fn js_dynamic_array_get(value: f64, index: i32) -> f64 {
 #[no_mangle]
 pub extern "C" fn js_dynamic_array_length(arr_value: f64) -> i32 {
     let bits = arr_value.to_bits();
-    let top16 = bits >> 48;
+    let _top16 = bits >> 48;
 
     // Check if this is a JS handle
     if is_js_handle(arr_value) {
@@ -2058,11 +2056,7 @@ pub unsafe extern "C" fn js_dynamic_object_get_property(
     // Check if this is a handle-based object (small integer, not a real heap pointer)
     if ptr < 0x100000 {
         if let Some(dispatch) = crate::object::HANDLE_PROPERTY_DISPATCH {
-            return dispatch(
-                ptr as i64,
-                property_name_ptr as *const u8,
-                property_name_len,
-            );
+            return dispatch(ptr, property_name_ptr as *const u8, property_name_len);
         }
         return f64::from_bits(TAG_UNDEFINED);
     }
@@ -2205,12 +2199,11 @@ pub unsafe extern "C" fn js_dynamic_object_get_property(
         crate::string::js_string_from_bytes(property_name.as_ptr(), property_name.len() as u32);
 
     // Call native object property access
-    let result = crate::object::js_object_get_field_by_name_f64(
+
+    crate::object::js_object_get_field_by_name_f64(
         ptr as *const crate::object::ObjectHeader,
         key_ptr,
-    );
-
-    result
+    )
 }
 
 /// Dynamic method dispatch for Map/Set collection types.

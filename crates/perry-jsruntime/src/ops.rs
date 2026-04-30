@@ -83,7 +83,7 @@ fn op_perry_fetch(
                 "body": resp_body,
             }))
         }
-        Err(e) => Err(anyhow::anyhow!("fetch error: {}", e).into()),
+        Err(e) => Err(anyhow::anyhow!("fetch error: {}", e)),
     }
 }
 

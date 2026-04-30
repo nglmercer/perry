@@ -136,7 +136,7 @@ pub fn transform_js_imports(module: &mut Module) {
             js_imports.insert(
                 import.source.clone(),
                 JsImportInfo {
-                    handle_var_id: next_handle_id.into(),
+                    handle_var_id: next_handle_id,
                     path,
                     exports,
                 },
@@ -843,7 +843,7 @@ fn transform_expr(
                 if is_js_object_expr(obj, tracker, extern_func_to_js) {
                     let method_name = method.clone();
                     let object_expr = std::mem::replace(obj.as_mut(), Expr::Undefined);
-                    let args_owned: Vec<Expr> = args.drain(..).collect();
+                    let args_owned: Vec<Expr> = std::mem::take(args);
                     *expr = Expr::JsCallMethod {
                         object: Box::new(object_expr),
                         method_name,
@@ -862,13 +862,12 @@ fn transform_expr(
                             module_handle: Box::new(Expr::JsLoadModule { path: info.path.clone() }),
                             export_name: export_name.clone(),
                         };
-                        let args_owned: Vec<Expr> = args.drain(..).collect();
+                        let args_owned: Vec<Expr> = std::mem::take(args);
                         *expr = Expr::JsCallMethod {
                             object: Box::new(module_expr),
                             method_name,
                             args: args_owned,
                         };
-                        return;
                     }
                 }
             }
@@ -1854,7 +1853,7 @@ fn fix_native_instance_expr(
                     for arg in args.iter_mut() {
                         fix_native_instance_expr(arg, native_instances, local_id_instances);
                     }
-                    let args_owned: Vec<Expr> = args.drain(..).collect();
+                    let args_owned: Vec<Expr> = std::mem::take(args);
                     let object_expr = std::mem::replace(object.as_mut(), Expr::Undefined);
 
                     // Transform to NativeMethodCall
@@ -1971,7 +1970,7 @@ fn fix_native_instance_expr(
                         for arg in args.iter_mut() {
                             fix_native_instance_expr(arg, native_instances, local_id_instances);
                         }
-                        let args_owned: Vec<Expr> = args.drain(..).collect();
+                        let args_owned: Vec<Expr> = std::mem::take(args);
                         let object_expr = std::mem::replace(object.as_mut(), Expr::Undefined);
 
                         // Replace the inner Call with NativeMethodCall (wrapped by Await)
@@ -2380,7 +2379,7 @@ fn fix_native_instance_expr_with_locals(
                                 local_id_instances,
                             );
                         }
-                        let args_owned: Vec<Expr> = args.drain(..).collect();
+                        let args_owned: Vec<Expr> = std::mem::take(args);
                         let object_expr = std::mem::replace(object.as_mut(), Expr::Undefined);
 
                         // Transform to NativeMethodCall
@@ -2405,7 +2404,7 @@ fn fix_native_instance_expr_with_locals(
                                 local_id_instances,
                             );
                         }
-                        let args_owned: Vec<Expr> = args.drain(..).collect();
+                        let args_owned: Vec<Expr> = std::mem::take(args);
                         let object_expr = std::mem::replace(object.as_mut(), Expr::Undefined);
 
                         // Transform to NativeMethodCall
@@ -2444,7 +2443,7 @@ fn fix_native_instance_expr_with_locals(
                                     local_id_instances,
                                 );
                             }
-                            let args_owned: Vec<Expr> = args.drain(..).collect();
+                            let args_owned: Vec<Expr> = std::mem::take(args);
                             let object_expr = std::mem::replace(object.as_mut(), Expr::Undefined);
 
                             // Replace the inner Call with NativeMethodCall (wrapped by Await)
@@ -2469,7 +2468,7 @@ fn fix_native_instance_expr_with_locals(
                                     local_id_instances,
                                 );
                             }
-                            let args_owned: Vec<Expr> = args.drain(..).collect();
+                            let args_owned: Vec<Expr> = std::mem::take(args);
                             let object_expr = std::mem::replace(object.as_mut(), Expr::Undefined);
 
                             // Replace the inner Call with NativeMethodCall (wrapped by Await)

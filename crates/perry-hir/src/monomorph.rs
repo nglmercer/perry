@@ -195,7 +195,7 @@ impl MonomorphizationContext {
 fn mangle_type_args(type_args: &[Type]) -> String {
     type_args
         .iter()
-        .map(|t| mangle_type(t))
+        .map(mangle_type)
         .collect::<Vec<_>>()
         .join("_")
 }
@@ -207,7 +207,7 @@ fn generate_specialized_name(base_name: &str, type_args: &[Type]) -> String {
         return base_name.to_string();
     }
 
-    let type_suffix: Vec<String> = type_args.iter().map(|t| mangle_type(t)).collect();
+    let type_suffix: Vec<String> = type_args.iter().map(mangle_type).collect();
 
     format!("{}${}", base_name, type_suffix.join("_"))
 }
@@ -225,7 +225,7 @@ fn mangle_type(ty: &Type) -> String {
         Type::Symbol => "sym".to_string(),
         Type::Array(elem) => format!("arr_{}", mangle_type(elem)),
         Type::Tuple(elems) => {
-            let parts: Vec<String> = elems.iter().map(|e| mangle_type(e)).collect();
+            let parts: Vec<String> = elems.iter().map(mangle_type).collect();
             format!("tup_{}", parts.join("_"))
         }
         Type::Promise(inner) => format!("promise_{}", mangle_type(inner)),
@@ -235,11 +235,11 @@ fn mangle_type(ty: &Type) -> String {
         Type::Named(name) => name.replace('.', "_"),
         Type::TypeVar(name) => name.clone(),
         Type::Generic { base, type_args } => {
-            let args: Vec<String> = type_args.iter().map(|t| mangle_type(t)).collect();
+            let args: Vec<String> = type_args.iter().map(mangle_type).collect();
             format!("{}_{}", base, args.join("_"))
         }
         Type::Union(types) => {
-            let parts: Vec<String> = types.iter().map(|t| mangle_type(t)).collect();
+            let parts: Vec<String> = types.iter().map(mangle_type).collect();
             format!("union_{}", parts.join("_"))
         }
         Type::Object(_) => "obj".to_string(),

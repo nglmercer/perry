@@ -84,11 +84,11 @@ struct SmallBufSlab {
 }
 
 thread_local! {
-    static SMALL_BUF_SLAB: RefCell<SmallBufSlab> = RefCell::new(SmallBufSlab {
+    static SMALL_BUF_SLAB: RefCell<SmallBufSlab> = const { RefCell::new(SmallBufSlab {
         current: 0,
         end: 0,
         ranges: Vec::new(),
-    });
+    }) };
 }
 
 fn buffer_alloc_small(capacity: u32) -> *mut BufferHeader {
@@ -422,7 +422,7 @@ pub extern "C" fn js_uint8array_new(val: f64) -> *mut BufferHeader {
         return js_uint8array_from_array(raw as *const ArrayHeader);
     }
     // Plain IEEE double (upper16 < 0x7FFC or > 0x7FFF) — numeric length.
-    if top16 < 0x7FFC || top16 > 0x7FFF {
+    if !(0x7FFC..=0x7FFF).contains(&top16) {
         let len = if val.is_finite() && val >= 0.0 {
             val as i32
         } else {
@@ -1125,7 +1125,7 @@ pub extern "C" fn js_buffer_fill_random(buf_ptr: f64) -> f64 {
         let len = (*buf).length as usize;
         let data = buffer_data_mut(buf);
         let mut bytes = std::slice::from_raw_parts_mut(data, len);
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::thread_rng().fill_bytes(bytes);
     }
     buf_ptr
 }
@@ -1139,7 +1139,7 @@ pub extern "C" fn js_buffer_swap16(buf_ptr: f64) {
     }
     unsafe {
         let len = (*buf).length as usize;
-        if len % 2 != 0 {
+        if !len.is_multiple_of(2) {
             return;
         }
         let data = buffer_data_mut(buf);
@@ -1160,7 +1160,7 @@ pub extern "C" fn js_buffer_swap32(buf_ptr: f64) {
     }
     unsafe {
         let len = (*buf).length as usize;
-        if len % 4 != 0 {
+        if !len.is_multiple_of(4) {
             return;
         }
         let data = buffer_data_mut(buf);
@@ -1186,7 +1186,7 @@ pub extern "C" fn js_buffer_swap64(buf_ptr: f64) {
     }
     unsafe {
         let len = (*buf).length as usize;
-        if len % 8 != 0 {
+        if !len.is_multiple_of(8) {
             return;
         }
         let data = buffer_data_mut(buf);
@@ -1647,7 +1647,7 @@ fn decode_base64(input: &[u8]) -> Vec<u8> {
 fn encode_base64(input: &[u8]) -> Vec<u8> {
     const ENCODE_TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-    let mut result = Vec::with_capacity((input.len() + 2) / 3 * 4);
+    let mut result = Vec::with_capacity(input.len().div_ceil(3) * 4);
     let mut i = 0;
 
     while i + 2 < input.len() {

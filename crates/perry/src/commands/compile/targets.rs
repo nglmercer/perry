@@ -63,7 +63,7 @@ pub(super) fn compile_for_ios_widget(
 
     // Collect all widget declarations from all modules
     let mut widgets: Vec<&perry_hir::ir::WidgetDecl> = Vec::new();
-    for (_, hir_module) in &ctx.native_modules {
+    for hir_module in ctx.native_modules.values() {
         for widget in &hir_module.widgets {
             widgets.push(widget);
         }
@@ -176,7 +176,7 @@ pub(super) fn compile_for_watchos_widget(
         .ok_or_else(|| anyhow!("--app-bundle-id is required for watchos-widget target"))?;
 
     let mut widgets: Vec<&perry_hir::ir::WidgetDecl> = Vec::new();
-    for (_, hir_module) in &ctx.native_modules {
+    for hir_module in ctx.native_modules.values() {
         for widget in &hir_module.widgets {
             widgets.push(widget);
         }
@@ -478,7 +478,7 @@ pub(super) fn compile_for_android_widget(
     format: OutputFormat,
 ) -> Result<CompileResult> {
     let mut widgets: Vec<&perry_hir::ir::WidgetDecl> = Vec::new();
-    for (_, hir_module) in &ctx.native_modules {
+    for hir_module in ctx.native_modules.values() {
         for widget in &hir_module.widgets {
             widgets.push(widget);
         }
@@ -584,7 +584,7 @@ pub(super) fn compile_for_wearos_tile(
     format: OutputFormat,
 ) -> Result<CompileResult> {
     let mut widgets: Vec<&perry_hir::ir::WidgetDecl> = Vec::new();
-    for (_, hir_module) in &ctx.native_modules {
+    for hir_module in ctx.native_modules.values() {
         for widget in &hir_module.widgets {
             widgets.push(widget);
         }
@@ -908,7 +908,7 @@ pub(super) fn compile_for_wasm(
 
     // Determine output format: .html (default) or .wasm (raw binary)
     let output_path = if let Some(ref out) = args.output {
-        if out.extension().map_or(false, |e| e == "wasm") {
+        if out.extension().is_some_and(|e| e == "wasm") {
             out.clone()
         } else if out.extension().is_none() {
             out.with_extension("html")
@@ -924,7 +924,7 @@ pub(super) fn compile_for_wasm(
         PathBuf::from(format!("{}.html", stem))
     };
 
-    if output_path.extension().map_or(false, |e| e == "wasm") {
+    if output_path.extension().is_some_and(|e| e == "wasm") {
         // Raw WASM binary output
         let wasm = perry_codegen_wasm::compile_modules_to_wasm(&modules)?;
         fs::write(&output_path, &wasm)?;

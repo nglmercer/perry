@@ -134,7 +134,6 @@ pub unsafe extern "C" fn js_pg_pool_query(pool_handle: Handle, sql_ptr: *const u
 
     // Determine command type from SQL
     let command = sql
-        .trim()
         .split_whitespace()
         .next()
         .unwrap_or("SELECT")

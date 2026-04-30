@@ -46,7 +46,7 @@ use std::cell::UnsafeCell;
 ///   `bench_json_roundtrip` hits that point at roughly the same
 ///   iteration as it did with 16 × 8 MB blocks — the adaptive step
 ///   shrinks appropriately on the first productive collection.
-const BLOCK_SIZE: usize = 1 * 1024 * 1024;
+const BLOCK_SIZE: usize = 1024 * 1024;
 
 /// Create a block of at least the given size (for oversized allocations)
 fn alloc_block(min_size: usize) -> ArenaBlock {
@@ -54,7 +54,7 @@ fn alloc_block(min_size: usize) -> ArenaBlock {
         BLOCK_SIZE
     } else {
         // Round up to next multiple of BLOCK_SIZE
-        ((min_size + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE
+        min_size.div_ceil(BLOCK_SIZE) * BLOCK_SIZE
     };
     let layout = Layout::from_size_align(size, 16).unwrap();
     let data = unsafe { alloc(layout) };
@@ -265,11 +265,11 @@ thread_local! {
     /// (data=0, offset=8, size=16). The codegen reads/writes these fields
     /// directly via fixed GEPs, so changing the struct layout would
     /// silently break every emitted `new ClassName()`.
-    static INLINE_STATE: UnsafeCell<InlineArenaState> = UnsafeCell::new(InlineArenaState {
+    static INLINE_STATE: UnsafeCell<InlineArenaState> = const { UnsafeCell::new(InlineArenaState {
         data: std::ptr::null_mut(),
         offset: 0,
         size: 0,
-    });
+    }) };
 }
 
 /// Inline bump-allocator state. The codegen emits inline LLVM IR that
@@ -660,7 +660,7 @@ pub fn arena_walk_objects(mut callback: impl FnMut(*mut u8)) {
 
                     // Only process if this looks like a valid GC object
                     let obj_type = (*header).obj_type;
-                    if obj_type >= 1 && obj_type <= 9 {
+                    if (1..=9).contains(&obj_type) {
                         callback(header_ptr);
                     }
 
@@ -718,7 +718,7 @@ pub fn arena_walk_objects_with_block_index(mut callback: impl FnMut(*mut u8, usi
                         break;
                     }
                     let obj_type = (*header).obj_type;
-                    if obj_type >= 1 && obj_type <= 9 {
+                    if (1..=9).contains(&obj_type) {
                         callback(header_ptr, block_idx);
                     }
                     offset = aligned + total_size;
@@ -761,10 +761,10 @@ pub fn arena_walk_objects_filtered(
     sync_inline_arena_state();
 
     let general_n = ARENA.with(|a| unsafe { (*a.get()).blocks.len() });
-    let mut walk_region = |blocks: &[ArenaBlock],
-                           base: usize,
-                           block_filter: &mut dyn FnMut(usize) -> bool,
-                           callback: &mut dyn FnMut(*mut u8, usize)| {
+    let walk_region = |blocks: &[ArenaBlock],
+                       base: usize,
+                       block_filter: &mut dyn FnMut(usize) -> bool,
+                       callback: &mut dyn FnMut(*mut u8, usize)| {
         for (i, block) in blocks.iter().enumerate() {
             let block_idx = base + i;
             if !block_filter(block_idx) {
@@ -784,7 +784,7 @@ pub fn arena_walk_objects_filtered(
                         break;
                     }
                     let obj_type = (*header).obj_type;
-                    if obj_type >= 1 && obj_type <= 9 {
+                    if (1..=9).contains(&obj_type) {
                         callback(header_ptr, block_idx);
                     }
                     offset = aligned + total_size;

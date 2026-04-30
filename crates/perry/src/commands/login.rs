@@ -108,10 +108,7 @@ async fn run_async(args: LoginArgs, format: OutputFormat, _use_color: bool) -> R
             .args(["/c", "start", &authorize_url])
             .spawn()
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "unsupported platform",
-        ))
+        Err(std::io::Error::other("unsupported platform"))
     };
 
     if open_result.is_err() {

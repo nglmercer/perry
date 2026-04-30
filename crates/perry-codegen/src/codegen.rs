@@ -1105,7 +1105,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 .map(|n| n + 1)
                 .unwrap_or(6);
             let param_types: Vec<crate::types::LlvmType> =
-                std::iter::repeat(DOUBLE).take(arity).collect();
+                std::iter::repeat_n(DOUBLE, arity).collect();
             llmod.declare_function(&llvm_fn, DOUBLE, &param_types);
         }
 
@@ -1173,8 +1173,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 .or_insert_with(|| llvm_fn.clone());
             // Declare conservatively with 6 double params; LLVM's direct-call
             // resolution doesn't require an exact arity match for declarations.
-            let param_types: Vec<crate::types::LlvmType> =
-                std::iter::repeat(DOUBLE).take(6).collect();
+            let param_types: Vec<crate::types::LlvmType> = std::iter::repeat_n(DOUBLE, 6).collect();
             llmod.declare_function(&llvm_fn, DOUBLE, &param_types);
         }
     }
@@ -1739,7 +1738,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             // function is actually CALLED — if it's only referenced as
             // a value, the declare would be missing without this.
             let param_types: Vec<crate::types::LlvmType> =
-                std::iter::repeat(DOUBLE).take(param_count).collect();
+                std::iter::repeat_n(DOUBLE, param_count).collect();
             llmod.declare_function(&target_name, DOUBLE, &param_types);
             // Wrapper: `define internal double @__perry_wrap_extern_<src>__<name>(
             //              i64 %this_closure, double %a0, …, double %aN-1)`
@@ -2883,7 +2882,7 @@ fn compile_module_entry(
             imported_class_ctors: &cross_module.imported_class_ctors,
             func_signatures,
             boxed_vars: main_boxed_vars,
-            closure_rest_params: &closure_rest_params,
+            closure_rest_params: closure_rest_params,
             local_closure_func_ids: HashMap::new(),
             namespace_imports: &cross_module.namespace_imports,
             imported_async_funcs: &cross_module.imported_async_funcs,
@@ -3120,7 +3119,7 @@ fn compile_module_entry(
             imported_class_ctors: &cross_module.imported_class_ctors,
             func_signatures,
             boxed_vars: init_boxed_vars,
-            closure_rest_params: &closure_rest_params,
+            closure_rest_params: closure_rest_params,
             local_closure_func_ids: HashMap::new(),
             namespace_imports: &cross_module.namespace_imports,
             imported_async_funcs: &cross_module.imported_async_funcs,

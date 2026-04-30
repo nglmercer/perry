@@ -313,13 +313,11 @@ fn parse_and_dispatch(handle: Handle, args: &[String]) {
             std::process::exit(0);
         }
         // --version / -V: print version and exit (only if a version was set).
-        if arg == "--version" || arg == "-V" {
-            if !snapshot.version.is_empty() {
-                println!("{}", snapshot.version);
-                std::process::exit(0);
-            }
-            // No version registered: fall through to the unknown-flag path.
+        if (arg == "--version" || arg == "-V") && !snapshot.version.is_empty() {
+            println!("{}", snapshot.version);
+            std::process::exit(0);
         }
+        // No version registered: fall through to the unknown-flag path.
 
         // Subcommand dispatch: when no positional has been collected yet,
         // a bare token matching a registered subcommand recurses with the

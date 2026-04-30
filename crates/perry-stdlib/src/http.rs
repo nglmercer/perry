@@ -350,7 +350,7 @@ pub unsafe extern "C" fn js_http_request(options_f64: f64, callback_i64: i64) ->
 
     let timeout_ms = get_object_number_field(options_f64, "timeout").map(|n| n as u64);
 
-    let handle = register_handle(ClientRequestHandle {
+    register_handle(ClientRequestHandle {
         method,
         url,
         headers,
@@ -359,9 +359,7 @@ pub unsafe extern "C" fn js_http_request(options_f64: f64, callback_i64: i64) ->
         listeners: HashMap::new(),
         timeout_ms,
         ended: false,
-    });
-
-    handle
+    })
 }
 
 /// https.request(options, callback) -> ClientRequest handle
@@ -398,7 +396,7 @@ pub unsafe extern "C" fn js_https_request(options_f64: f64, callback_i64: i64) -
 
     let timeout_ms = get_object_number_field(options_f64, "timeout").map(|n| n as u64);
 
-    let handle = register_handle(ClientRequestHandle {
+    register_handle(ClientRequestHandle {
         method,
         url,
         headers,
@@ -407,9 +405,7 @@ pub unsafe extern "C" fn js_https_request(options_f64: f64, callback_i64: i64) -
         listeners: HashMap::new(),
         timeout_ms,
         ended: false,
-    });
-
-    handle
+    })
 }
 
 /// http.get(url_or_options, callback) -> ClientRequest handle

@@ -75,7 +75,7 @@ fn lookup(proxy_boxed: f64) -> Option<u64> {
     if (bits >> 48) != (POINTER_TAG >> 48) {
         return None;
     }
-    let lower48 = (bits & POINTER_MASK) as u64;
+    let lower48 = (bits & POINTER_MASK);
     // Real heap pointers live >= 0x1_0000_0000 on macOS/iOS arenas.
     if lower48 >= 0x1_0000_0000 {
         return None;
@@ -519,7 +519,7 @@ pub extern "C" fn js_proxy_construct(proxy_boxed: f64, args_array: f64, _new_tar
 /// to the regular field getter.
 #[no_mangle]
 pub extern "C" fn js_reflect_get(target: f64, key: f64) -> f64 {
-    if let Some(_) = lookup(target) {
+    if lookup(target).is_some() {
         return js_proxy_get(target, key);
     }
     target_get(target, key)
@@ -528,7 +528,7 @@ pub extern "C" fn js_reflect_get(target: f64, key: f64) -> f64 {
 /// `Reflect.set(target, key, value)` — always returns TAG_TRUE.
 #[no_mangle]
 pub extern "C" fn js_reflect_set(target: f64, key: f64, value: f64) -> f64 {
-    if let Some(_) = lookup(target) {
+    if lookup(target).is_some() {
         return js_proxy_set(target, key, value);
     }
     target_set(target, key, value);
@@ -538,7 +538,7 @@ pub extern "C" fn js_reflect_set(target: f64, key: f64, value: f64) -> f64 {
 /// `Reflect.has(target, key)` — bool.
 #[no_mangle]
 pub extern "C" fn js_reflect_has(target: f64, key: f64) -> f64 {
-    if let Some(_) = lookup(target) {
+    if lookup(target).is_some() {
         return js_proxy_has(target, key);
     }
     crate::object::js_object_has_property(target, key)
@@ -547,7 +547,7 @@ pub extern "C" fn js_reflect_has(target: f64, key: f64) -> f64 {
 /// `Reflect.deleteProperty(target, key)` — bool.
 #[no_mangle]
 pub extern "C" fn js_reflect_delete(target: f64, key: f64) -> f64 {
-    if let Some(_) = lookup(target) {
+    if lookup(target).is_some() {
         return js_proxy_delete(target, key);
     }
     unsafe {

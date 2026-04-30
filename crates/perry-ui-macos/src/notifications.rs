@@ -397,7 +397,7 @@ pub fn schedule_interval(
             triggerWithTimeInterval: interval,
             repeats: repeats_bool
         ];
-        submit_request(id, &*content, &*trigger);
+        submit_request(id, &content, &trigger);
     }
 }
 
@@ -447,7 +447,7 @@ pub fn schedule_calendar(
             triggerWithDateMatchingComponents: &*comps,
             repeats: false
         ];
-        submit_request(id, &*content, &*trigger);
+        submit_request(id, &content, &trigger);
     }
 }
 

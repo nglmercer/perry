@@ -19,8 +19,8 @@ thread_local! {
     /// Last exec result metadata: (index, groups_object_ptr)
     /// Stored per-thread so that `m.index` and `m.groups` can retrieve them
     /// after the exec call.
-    static LAST_EXEC_INDEX: RefCell<f64> = RefCell::new(0.0);
-    static LAST_EXEC_GROUPS: RefCell<*mut ObjectHeader> = RefCell::new(ptr::null_mut());
+    static LAST_EXEC_INDEX: RefCell<f64> = const { RefCell::new(0.0) };
+    static LAST_EXEC_GROUPS: RefCell<*mut ObjectHeader> = const { RefCell::new(ptr::null_mut()) };
 
     /// Set of all RegExpHeader pointers ever allocated in this thread.
     /// Used by callers (e.g. `js_string_split`) to distinguish a regex

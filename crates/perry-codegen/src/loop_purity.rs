@@ -55,7 +55,7 @@ pub(crate) fn body_needs_asm_barrier(body: &[Stmt]) -> bool {
 fn stmt_is_pure(s: &Stmt) -> bool {
     match s {
         Stmt::Expr(e) => expr_is_pure(e),
-        Stmt::Let { init, .. } => init.as_ref().map_or(true, expr_is_pure),
+        Stmt::Let { init, .. } => init.as_ref().is_none_or(expr_is_pure),
         Stmt::Return(_) | Stmt::Throw(_) => false,
         Stmt::If {
             condition,
@@ -66,7 +66,7 @@ fn stmt_is_pure(s: &Stmt) -> bool {
                 && then_branch.iter().all(stmt_is_pure)
                 && else_branch
                     .as_ref()
-                    .map_or(true, |b| b.iter().all(stmt_is_pure))
+                    .is_none_or(|b| b.iter().all(stmt_is_pure))
         }
         // Nested loops: their own lowering applies the same analysis,
         // so reporting the outer body as pure when the inner is pure
@@ -81,9 +81,9 @@ fn stmt_is_pure(s: &Stmt) -> bool {
             update,
             body,
         } => {
-            init.as_deref().map_or(true, stmt_is_pure)
-                && condition.as_ref().map_or(true, expr_is_pure)
-                && update.as_ref().map_or(true, expr_is_pure)
+            init.as_deref().is_none_or(stmt_is_pure)
+                && condition.as_ref().is_none_or(expr_is_pure)
+                && update.as_ref().is_none_or(expr_is_pure)
                 && body.iter().all(stmt_is_pure)
         }
         Stmt::Labeled { body, .. } => stmt_is_pure(body),
@@ -170,10 +170,10 @@ fn stmt_writes_outside(s: &Stmt, body_locals: &HashSet<u32>) -> bool {
         Stmt::Expr(e) | Stmt::Throw(e) => expr_writes_outside(e, body_locals),
         Stmt::Let { init, .. } => init
             .as_ref()
-            .map_or(false, |e| expr_writes_outside(e, body_locals)),
+            .is_some_and(|e| expr_writes_outside(e, body_locals)),
         Stmt::Return(opt) => opt
             .as_ref()
-            .map_or(false, |e| expr_writes_outside(e, body_locals)),
+            .is_some_and(|e| expr_writes_outside(e, body_locals)),
         Stmt::If {
             condition,
             then_branch,
@@ -183,7 +183,7 @@ fn stmt_writes_outside(s: &Stmt, body_locals: &HashSet<u32>) -> bool {
                 || body_writes_outside(then_branch, body_locals)
                 || else_branch
                     .as_ref()
-                    .map_or(false, |eb| body_writes_outside(eb, body_locals))
+                    .is_some_and(|eb| body_writes_outside(eb, body_locals))
         }
         Stmt::While { condition, body } => {
             expr_writes_outside(condition, body_locals) || body_writes_outside(body, body_locals)
@@ -198,13 +198,13 @@ fn stmt_writes_outside(s: &Stmt, body_locals: &HashSet<u32>) -> bool {
             body,
         } => {
             init.as_deref()
-                .map_or(false, |s| stmt_writes_outside(s, body_locals))
+                .is_some_and(|s| stmt_writes_outside(s, body_locals))
                 || condition
                     .as_ref()
-                    .map_or(false, |e| expr_writes_outside(e, body_locals))
+                    .is_some_and(|e| expr_writes_outside(e, body_locals))
                 || update
                     .as_ref()
-                    .map_or(false, |e| expr_writes_outside(e, body_locals))
+                    .is_some_and(|e| expr_writes_outside(e, body_locals))
                 || body_writes_outside(body, body_locals)
         }
         Stmt::Labeled { body, .. } => stmt_writes_outside(body, body_locals),

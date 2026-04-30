@@ -5,10 +5,10 @@
 
 use crate::common::{get_handle, register_handle, Handle};
 use perry_runtime::{
-    js_array_alloc, js_array_push, js_object_alloc, js_object_alloc_with_shape,
-    js_object_set_field, js_string_from_bytes, ArrayHeader, JSValue, ObjectHeader, StringHeader,
+    js_array_alloc, js_array_push, js_object_alloc_with_shape, js_object_set_field,
+    js_string_from_bytes, ArrayHeader, JSValue, ObjectHeader, StringHeader,
 };
-use rusqlite::{params_from_iter, types::Value as SqliteValue, Connection};
+use rusqlite::{types::Value as SqliteValue, Connection};
 use std::sync::Mutex;
 
 /// Helper to extract string from StringHeader pointer

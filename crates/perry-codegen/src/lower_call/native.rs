@@ -426,14 +426,14 @@ pub(crate) fn lower_native_method_call(
     // returning TAG_UNDEFINED.
     if module == "fs" && object.is_none() {
         match method {
-            "readdirSync" if args.len() >= 1 => {
+            "readdirSync" if !args.is_empty() => {
                 let p = lower_expr(ctx, &args[0])?;
                 let blk = ctx.block();
                 let raw = blk.call(DOUBLE, "js_fs_readdir_sync", &[(DOUBLE, &p)]);
                 let raw_bits = blk.bitcast_double_to_i64(&raw);
                 return Ok(nanbox_pointer_inline(blk, &raw_bits));
             }
-            "statSync" if args.len() >= 1 => {
+            "statSync" if !args.is_empty() => {
                 let p = lower_expr(ctx, &args[0])?;
                 return Ok(ctx.block().call(DOUBLE, "js_fs_stat_sync", &[(DOUBLE, &p)]));
             }
@@ -444,17 +444,17 @@ pub(crate) fn lower_native_method_call(
                     .call_void("js_fs_rename_sync", &[(DOUBLE, &from), (DOUBLE, &to)]);
                 return Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)));
             }
-            "unlinkSync" if args.len() >= 1 => {
+            "unlinkSync" if !args.is_empty() => {
                 let p = lower_expr(ctx, &args[0])?;
                 ctx.block().call_void("js_fs_unlink_sync", &[(DOUBLE, &p)]);
                 return Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)));
             }
-            "mkdirSync" if args.len() >= 1 => {
+            "mkdirSync" if !args.is_empty() => {
                 let p = lower_expr(ctx, &args[0])?;
                 ctx.block().call_void("js_fs_mkdir_sync", &[(DOUBLE, &p)]);
                 return Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)));
             }
-            "rmdirSync" if args.len() >= 1 => {
+            "rmdirSync" if !args.is_empty() => {
                 let p = lower_expr(ctx, &args[0])?;
                 ctx.block().call_void("js_fs_rmdir_sync", &[(DOUBLE, &p)]);
                 return Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)));
@@ -512,7 +512,7 @@ pub(crate) fn lower_native_method_call(
             if module == "perry/thread" {
                 let closure_arg = match method {
                     "parallelMap" | "parallelFilter" => args.get(1),
-                    "spawn" => args.get(0),
+                    "spawn" => args.first(),
                     _ => None,
                 };
                 if let Some(callback) = closure_arg {

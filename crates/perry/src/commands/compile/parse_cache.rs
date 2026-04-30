@@ -92,10 +92,7 @@ pub(super) fn parse_cached<'a>(
     source: &str,
     filename: &str,
 ) -> Result<&'a swc_ecma_ast::Module> {
-    let fresh = cache
-        .entries
-        .get(path)
-        .map_or(false, |e| e.source == source);
+    let fresh = cache.entries.get(path).is_some_and(|e| e.source == source);
     if fresh {
         cache.hits += 1;
     } else {

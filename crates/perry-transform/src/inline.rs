@@ -305,10 +305,8 @@ fn body_contains_super_call(stmts: &[Stmt]) -> bool {
                 then_expr,
                 else_expr,
             } => check_expr(condition) || check_expr(then_expr) || check_expr(else_expr),
-            Expr::Call { callee, args, .. } => {
-                check_expr(callee) || args.iter().any(|a| check_expr(a))
-            }
-            Expr::Array(elements) => elements.iter().any(|e| check_expr(e)),
+            Expr::Call { callee, args, .. } => check_expr(callee) || args.iter().any(check_expr),
+            Expr::Array(elements) => elements.iter().any(check_expr),
             Expr::IndexGet { object, index } => check_expr(object) || check_expr(index),
             Expr::IndexSet {
                 object,
@@ -337,7 +335,7 @@ fn body_contains_super_call(stmts: &[Stmt]) -> bool {
                     || then_branch.iter().any(check_stmt)
                     || else_branch
                         .as_ref()
-                        .map_or(false, |b| b.iter().any(check_stmt))
+                        .is_some_and(|b| b.iter().any(check_stmt))
             }
             Stmt::While { condition, body } => check_expr(condition) || body.iter().any(check_stmt),
             Stmt::For {
@@ -346,9 +344,9 @@ fn body_contains_super_call(stmts: &[Stmt]) -> bool {
                 update,
                 body,
             } => {
-                init.as_ref().map_or(false, |i| check_stmt(i))
-                    || condition.as_ref().map_or(false, |c| check_expr(c))
-                    || update.as_ref().map_or(false, |u| check_expr(u))
+                init.as_ref().is_some_and(|i| check_stmt(i))
+                    || condition.as_ref().is_some_and(check_expr)
+                    || update.as_ref().is_some_and(check_expr)
                     || body.iter().any(check_stmt)
             }
             _ => false,
@@ -432,7 +430,7 @@ fn body_contains_closure_capturing(
                     || then_branch.iter().any(|s| check_stmt(s, captured_ids))
                     || else_branch
                         .as_ref()
-                        .map_or(false, |b| b.iter().any(|s| check_stmt(s, captured_ids)))
+                        .is_some_and(|b| b.iter().any(|s| check_stmt(s, captured_ids)))
             }
             Stmt::While { condition, body } => {
                 check_expr(condition, captured_ids)
@@ -444,13 +442,11 @@ fn body_contains_closure_capturing(
                 update,
                 body,
             } => {
-                init.as_ref().map_or(false, |i| check_stmt(i, captured_ids))
+                init.as_ref().is_some_and(|i| check_stmt(i, captured_ids))
                     || condition
                         .as_ref()
-                        .map_or(false, |c| check_expr(c, captured_ids))
-                    || update
-                        .as_ref()
-                        .map_or(false, |u| check_expr(u, captured_ids))
+                        .is_some_and(|c| check_expr(c, captured_ids))
+                    || update.as_ref().is_some_and(|u| check_expr(u, captured_ids))
                     || body.iter().any(|s| check_stmt(s, captured_ids))
             }
             _ => false,
@@ -546,7 +542,7 @@ fn is_pure_function(func: &Function) -> bool {
                     && then_branch.iter().all(|s| stmt_is_pure(s, known))
                     && else_branch
                         .as_ref()
-                        .map_or(true, |b| b.iter().all(|s| stmt_is_pure(s, known)))
+                        .is_none_or(|b| b.iter().all(|s| stmt_is_pure(s, known)))
             }
             Stmt::While { condition, body } | Stmt::DoWhile { condition, body } => {
                 expr_is_pure(condition, known) && body.iter().all(|s| stmt_is_pure(s, known))
@@ -557,9 +553,9 @@ fn is_pure_function(func: &Function) -> bool {
                 update,
                 body,
             } => {
-                init.as_ref().map_or(true, |i| stmt_is_pure(i, known))
-                    && condition.as_ref().map_or(true, |c| expr_is_pure(c, known))
-                    && update.as_ref().map_or(true, |u| expr_is_pure(u, known))
+                init.as_ref().is_none_or(|i| stmt_is_pure(i, known))
+                    && condition.as_ref().is_none_or(|c| expr_is_pure(c, known))
+                    && update.as_ref().is_none_or(|u| expr_is_pure(u, known))
                     && body.iter().all(|s| stmt_is_pure(s, known))
             }
             Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => true,
@@ -836,7 +832,7 @@ fn inline_calls_in_stmts(
                                         then_branch.iter().any(stmt_has_return)
                                             || else_branch
                                                 .as_ref()
-                                                .map_or(false, |eb| eb.iter().any(stmt_has_return))
+                                                .is_some_and(|eb| eb.iter().any(stmt_has_return))
                                     }
                                     _ => false,
                                 }
@@ -1636,11 +1632,11 @@ fn try_inline_call(
                 // Collect all LocalIds from Let statements in the body and remap them
                 let body_local_ids = collect_body_local_ids(&inlined_body);
                 for old_id in body_local_ids {
-                    if !param_map.contains_key(&old_id) {
+                    param_map.entry(old_id).or_insert_with(|| {
                         let new_id = *next_local_id;
                         *next_local_id += 1;
-                        param_map.insert(old_id, Expr::LocalGet(new_id));
-                    }
+                        Expr::LocalGet(new_id)
+                    });
                 }
 
                 substitute_locals_in_stmts(&mut inlined_body, &param_map, next_local_id);
@@ -1697,11 +1693,11 @@ fn try_inline_call(
                         // Collect all LocalIds from Let statements in the body and remap them
                         let body_local_ids = collect_body_local_ids(&inlined_body);
                         for old_id in body_local_ids {
-                            if !param_map.contains_key(&old_id) {
+                            param_map.entry(old_id).or_insert_with(|| {
                                 let new_id = *next_local_id;
                                 *next_local_id += 1;
-                                param_map.insert(old_id, Expr::LocalGet(new_id));
-                            }
+                                Expr::LocalGet(new_id)
+                            });
                         }
 
                         substitute_locals_in_stmts(&mut inlined_body, &param_map, next_local_id);

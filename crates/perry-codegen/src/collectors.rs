@@ -248,7 +248,7 @@ fn expr_has_mutation(e: &perry_hir::Expr, id: u32) -> bool {
                 || expr_has_mutation(start, id)
                 || delete_count
                     .as_ref()
-                    .map_or(false, |d| expr_has_mutation(d, id))
+                    .is_some_and(|d| expr_has_mutation(d, id))
                 || items.iter().any(|it| expr_has_mutation(it, id))
         }
         _ => false,
@@ -3213,7 +3213,7 @@ fn i64s_stmts(ss: &[Stmt], sid: u32) -> bool {
         } => {
             i64s_expr(condition, sid)
                 && i64s_stmts(then_branch, sid)
-                && else_branch.as_ref().map_or(true, |eb| i64s_stmts(eb, sid))
+                && else_branch.as_ref().is_none_or(|eb| i64s_stmts(eb, sid))
         }
         Stmt::Expr(e) | Stmt::Let { init: Some(e), .. } => i64s_expr(e, sid),
         Stmt::Let { init: None, .. } => true,
@@ -4501,7 +4501,7 @@ fn find_array_candidates(
             } => {
                 if !boxed_vars.contains(id) && !module_globals.contains_key(id) {
                     let n = elements.len();
-                    if n >= 1 && n <= MAX_SCALAR_ARRAY_LEN {
+                    if (1..=MAX_SCALAR_ARRAY_LEN).contains(&n) {
                         candidates.insert(*id, n as u32);
                     }
                 }

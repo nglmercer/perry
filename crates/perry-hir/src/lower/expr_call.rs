@@ -267,7 +267,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 "cwd" => return Ok(Expr::ProcessCwd),
                                 "memoryUsage" => return Ok(Expr::ProcessMemoryUsage),
                                 "nextTick" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ProcessNextTick(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -285,14 +285,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "chdir" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ProcessChdir(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "kill" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut iter = args.into_iter();
                                         let pid = iter.next().unwrap();
                                         let signal = iter.next().map(Box::new);
@@ -310,7 +310,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     // end the event loop (e.g. `main().then(() =>
                                     // process.exit(0))` in a net-socket driver) would
                                     // hang with the socket still keeping the loop alive.
-                                    let code = if args.len() >= 1 {
+                                    let code = if !args.is_empty() {
                                         Some(Box::new(args.into_iter().next().unwrap()))
                                     } else {
                                         None
@@ -353,7 +353,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "from" => {
-                                    let data = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let data = args.first().cloned().unwrap_or(Expr::Undefined);
                                     let encoding = args.get(1).cloned().map(Box::new);
                                     return Ok(Expr::BufferFrom {
                                         data: Box::new(data),
@@ -361,7 +361,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     });
                                 }
                                 "alloc" => {
-                                    let size = args.get(0).cloned().unwrap_or(Expr::Number(0.0));
+                                    let size = args.first().cloned().unwrap_or(Expr::Number(0.0));
                                     let fill = args.get(1).cloned().map(Box::new);
                                     return Ok(Expr::BufferAlloc {
                                         size: Box::new(size),
@@ -369,20 +369,20 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     });
                                 }
                                 "allocUnsafe" => {
-                                    let size = args.get(0).cloned().unwrap_or(Expr::Number(0.0));
+                                    let size = args.first().cloned().unwrap_or(Expr::Number(0.0));
                                     return Ok(Expr::BufferAllocUnsafe(Box::new(size)));
                                 }
                                 "concat" => {
-                                    let list = args.get(0).cloned().unwrap_or(Expr::Array(vec![]));
+                                    let list = args.first().cloned().unwrap_or(Expr::Array(vec![]));
                                     return Ok(Expr::BufferConcat(Box::new(list)));
                                 }
                                 "isBuffer" => {
-                                    let obj = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let obj = args.first().cloned().unwrap_or(Expr::Undefined);
                                     return Ok(Expr::BufferIsBuffer(Box::new(obj)));
                                 }
                                 "byteLength" => {
                                     let data = args
-                                        .get(0)
+                                        .first()
                                         .cloned()
                                         .unwrap_or(Expr::String("".to_string()));
                                     return Ok(Expr::BufferByteLength(Box::new(data)));
@@ -415,7 +415,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "from" => {
-                                    let data = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let data = args.first().cloned().unwrap_or(Expr::Undefined);
                                     return Ok(Expr::Uint8ArrayFrom(Box::new(data)));
                                 }
                                 _ => {} // Fall through to generic handling
@@ -429,15 +429,15 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "keys" => {
-                                    let obj = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let obj = args.first().cloned().unwrap_or(Expr::Undefined);
                                     return Ok(Expr::ObjectKeys(Box::new(obj)));
                                 }
                                 "values" => {
-                                    let obj = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let obj = args.first().cloned().unwrap_or(Expr::Undefined);
                                     return Ok(Expr::ObjectValues(Box::new(obj)));
                                 }
                                 "entries" => {
-                                    let obj = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let obj = args.first().cloned().unwrap_or(Expr::Undefined);
                                     return Ok(Expr::ObjectEntries(Box::new(obj)));
                                 }
                                 // Object.assign(target, src1, src2, ...) - treat as object spread
@@ -735,11 +735,11 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "isArray" => {
-                                    let value = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let value = args.first().cloned().unwrap_or(Expr::Undefined);
                                     return Ok(Expr::ArrayIsArray(Box::new(value)));
                                 }
                                 "from" => {
-                                    let value = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let value = args.first().cloned().unwrap_or(Expr::Undefined);
                                     // `Array.from(iterable, mapFn)` uses a dedicated HIR
                                     // variant so codegen can handle Map/Set/Array sources
                                     // uniformly (materialize + js_array_map).
@@ -773,7 +773,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "createServer" => {
-                                    let options = args.get(0).cloned().map(Box::new);
+                                    let options = args.first().cloned().map(Box::new);
                                     let connection_listener = args.get(1).cloned().map(Box::new);
                                     return Ok(Expr::NetCreateServer {
                                         options,
@@ -861,7 +861,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             }
                             // Private static method: WithPrivateStatic.#helper()
                             ast::MemberProp::PrivateName(priv_ident) => {
-                                let method_name = format!("#{}", priv_ident.name.to_string());
+                                let method_name = format!("#{}", priv_ident.name);
                                 if ctx.has_static_method(&obj_name, &method_name) {
                                     return Ok(Expr::StaticMethodCall {
                                         class_name: obj_name,
@@ -884,7 +884,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                     let native_instance = ctx
                         .lookup_native_instance(&obj_name)
                         .map(|(m, c)| (m.to_string(), c.to_string()));
-                    if obj_name == "pool" {}
+
                     if let Some((module_name, class_name)) = native_instance {
                         if let ast::MemberProp::Ident(method_ident) = &member.prop {
                             let method_name = method_ident.sym.to_string();
@@ -919,19 +919,17 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     | "ForEach"
                                     | "Label"
                                     | "Gauge"
+                            ) && matches!(
+                                ctx.lookup_native_module(widget_name),
+                                Some(("perry/ui", _))
                             ) {
-                                if matches!(
-                                    ctx.lookup_native_module(widget_name),
-                                    Some(("perry/ui", _))
-                                ) {
-                                    if let ast::MemberProp::Ident(method_ident) = &member.prop {
-                                        let modifier_name = method_ident.sym.as_ref();
-                                        if is_widget_modifier_name(modifier_name) {
-                                            return Err(anyhow!(
+                                if let ast::MemberProp::Ident(method_ident) = &member.prop {
+                                    let modifier_name = method_ident.sym.as_ref();
+                                    if is_widget_modifier_name(modifier_name) {
+                                        return Err(anyhow!(
                                                         "modifier '{}' must be passed as an option-object on the widget constructor; use: {}(\"...\", {{ {}: ... }})",
                                                         modifier_name, widget_name, modifier_name
                                                     ));
-                                        }
                                     }
                                 }
                             }
@@ -1101,35 +1099,35 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "existsSync" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::FsExistsSync(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "mkdirSync" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::FsMkdirSync(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "unlinkSync" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::FsUnlinkSync(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "readFileBuffer" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::FsReadFileBinary(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "rmRecursive" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::FsRmRecursive(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1161,7 +1159,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "dirname" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::PathDirname(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1177,21 +1175,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             Box::new(ext_arg),
                                         ));
                                     }
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::PathBasename(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "extname" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::PathExtname(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "resolve" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         // path.resolve(a, b, c) => resolve(join(a, b, c))
                                         // For single arg, just resolve directly
                                         let mut iter = args.into_iter();
@@ -1207,7 +1205,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "isAbsolute" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::PathIsAbsolute(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1225,21 +1223,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "normalize" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::PathNormalize(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "parse" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::PathParse(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "format" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::PathFormat(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1264,7 +1262,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             Box::new(text),
                                             Box::new(reviver),
                                         ));
-                                    } else if args.len() >= 1 {
+                                    } else if !args.is_empty() {
                                         let text = args.into_iter().next().unwrap();
                                         // Issue #179 typed-parse plan: if the call site
                                         // provides a TypeScript type argument (e.g.
@@ -1365,21 +1363,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "floor" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathFloor(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "ceil" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathCeil(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "round" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathRound(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1387,7 +1385,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                                 "trunc" => {
                                     // Math.trunc(x) = x >= 0 ? floor(x) : ceil(x)
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let arg = args.into_iter().next().unwrap();
                                         return Ok(Expr::Conditional {
                                             condition: Box::new(Expr::Compare {
@@ -1404,7 +1402,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                                 "sign" => {
                                     // Math.sign(x) = x > 0 ? 1 : x < 0 ? -1 : 0 (or x for NaN)
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let arg = args.into_iter().next().unwrap();
                                         return Ok(Expr::Conditional {
                                             condition: Box::new(Expr::Compare {
@@ -1426,35 +1424,35 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "abs" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathAbs(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "sqrt" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathSqrt(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "log" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathLog(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "log2" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathLog2(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "log10" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathLog10(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1496,42 +1494,42 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "sin" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathSin(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "cos" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathCos(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "tan" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathTan(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "asin" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathAsin(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "acos" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathAcos(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "atan" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathAtan(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1546,7 +1544,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "cbrt" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathCbrt(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1556,77 +1554,77 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     return Ok(Expr::MathHypot(args));
                                 }
                                 "fround" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathFround(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "clz32" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathClz32(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "expm1" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathExpm1(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "log1p" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathLog1p(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "sinh" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathSinh(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "cosh" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathCosh(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "tanh" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathTanh(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "asinh" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathAsinh(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "acosh" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathAcosh(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "atanh" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathAtanh(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "exp" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::MathExp(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1643,28 +1641,28 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "isNaN" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::NumberIsNaN(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "isFinite" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::NumberIsFinite(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "isInteger" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::NumberIsInteger(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "isSafeInteger" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::NumberIsSafeInteger(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1672,7 +1670,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                                 "parseFloat" => {
                                     // Number.parseFloat is the same as global parseFloat
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ParseFloat(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1762,7 +1760,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "randomBytes" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::CryptoRandomBytes(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1772,14 +1770,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     return Ok(Expr::CryptoRandomUUID);
                                 }
                                 "sha256" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::CryptoSha256(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "md5" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::CryptoMd5(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1792,7 +1790,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 // perry-runtime/src/object.rs) handles it via
                                 // `js_buffer_fill_random`.
                                 "getRandomValues" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let buf_arg = args.into_iter().next().unwrap();
                                         return Ok(Expr::Call {
                                             callee: Box::new(Expr::PropertyGet {
@@ -1866,7 +1864,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "from" => {
-                                    let data = args.get(0).cloned().unwrap_or(Expr::Undefined);
+                                    let data = args.first().cloned().unwrap_or(Expr::Undefined);
                                     let encoding = args.get(1).cloned().map(Box::new);
                                     return Ok(Expr::BufferFrom {
                                         data: Box::new(data),
@@ -1874,7 +1872,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     });
                                 }
                                 "alloc" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let size = args_iter.next().unwrap();
                                         let fill = args_iter.next().map(Box::new);
@@ -1885,28 +1883,28 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "allocUnsafe" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::BufferAllocUnsafe(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "concat" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::BufferConcat(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "isBuffer" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::BufferIsBuffer(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "byteLength" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::BufferByteLength(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -1945,7 +1943,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "execSync" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let command = args_iter.next().unwrap();
                                         let options = args_iter.next().map(Box::new);
@@ -1956,7 +1954,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "spawnSync" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let command = args_iter.next().unwrap();
                                         let spawn_args = args_iter.next().map(Box::new);
@@ -1969,7 +1967,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "spawn" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let command = args_iter.next().unwrap();
                                         let spawn_args = args_iter.next().map(Box::new);
@@ -1982,7 +1980,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "exec" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let command = args_iter.next().unwrap();
                                         let options = args_iter.next().map(Box::new);
@@ -2010,14 +2008,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "getProcessStatus" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ChildProcessGetProcessStatus(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
                                     }
                                 }
                                 "killProcess" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ChildProcessKillProcess(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -2073,12 +2071,10 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             if method_name == "now" {
                                 return Ok(Expr::DateNow);
                             }
-                            if method_name == "parse" {
-                                if args.len() >= 1 {
-                                    return Ok(Expr::DateParse(Box::new(
-                                        args.into_iter().next().unwrap(),
-                                    )));
-                                }
+                            if method_name == "parse" && !args.is_empty() {
+                                return Ok(Expr::DateParse(Box::new(
+                                    args.into_iter().next().unwrap(),
+                                )));
                             }
                             if method_name == "UTC" {
                                 return Ok(Expr::DateUtc(args));
@@ -2196,7 +2192,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         // UTC setters — mutate the local variable in place
                         "setUTCFullYear" | "setUTCMonth" | "setUTCDate" | "setUTCHours"
                         | "setUTCMinutes" | "setUTCSeconds" | "setUTCMilliseconds" => {
-                            if args.len() >= 1 {
+                            if !args.is_empty() {
                                 let value_expr = args.into_iter().next().unwrap();
                                 let date_expr = lower_expr(ctx, &member.obj)?;
                                 let setter_call = match method_name {
@@ -2272,7 +2268,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "unregister" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let token = args.into_iter().next().unwrap();
                                         return Ok(Expr::FinalizationRegistryUnregister {
                                             registry: Box::new(Expr::LocalGet(registry_id)),
@@ -2315,7 +2311,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             match method_name {
                                 "set" if args.len() >= 2 => {
                                     let key_is_primitive_lit = matches!(
-                                        call.args.get(0).map(|a| a.expr.as_ref()),
+                                        call.args.first().map(|a| a.expr.as_ref()),
                                         Some(ast::Expr::Lit(_))
                                     );
                                     if key_is_primitive_lit {
@@ -2329,19 +2325,19 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         vec![recv, key, value],
                                     ));
                                 }
-                                "get" if args.len() >= 1 => {
+                                "get" if !args.is_empty() => {
                                     return Ok(make_extern_call(
                                         "js_weakmap_get",
                                         vec![recv, args.into_iter().next().unwrap()],
                                     ));
                                 }
-                                "has" if args.len() >= 1 => {
+                                "has" if !args.is_empty() => {
                                     return Ok(make_extern_call(
                                         "js_weakmap_has",
                                         vec![recv, args.into_iter().next().unwrap()],
                                     ));
                                 }
-                                "delete" if args.len() >= 1 => {
+                                "delete" if !args.is_empty() => {
                                     return Ok(make_extern_call(
                                         "js_weakmap_delete",
                                         vec![recv, args.into_iter().next().unwrap()],
@@ -2354,9 +2350,9 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let set_id = ctx.lookup_local(&recv_name).unwrap_or(0);
                             let recv = Expr::LocalGet(set_id);
                             match method_name {
-                                "add" if args.len() >= 1 => {
+                                "add" if !args.is_empty() => {
                                     let value_is_primitive_lit = matches!(
-                                        call.args.get(0).map(|a| a.expr.as_ref()),
+                                        call.args.first().map(|a| a.expr.as_ref()),
                                         Some(ast::Expr::Lit(_))
                                     );
                                     if value_is_primitive_lit {
@@ -2367,13 +2363,13 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         vec![recv, args.into_iter().next().unwrap()],
                                     ));
                                 }
-                                "has" if args.len() >= 1 => {
+                                "has" if !args.is_empty() => {
                                     return Ok(make_extern_call(
                                         "js_weakset_has",
                                         vec![recv, args.into_iter().next().unwrap()],
                                     ));
                                 }
-                                "delete" if args.len() >= 1 => {
+                                "delete" if !args.is_empty() => {
                                     return Ok(make_extern_call(
                                         "js_weakset_delete",
                                         vec![recv, args.into_iter().next().unwrap()],
@@ -2508,7 +2504,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             if let Some(array_id) = ctx.lookup_local(&arr_name) {
                                 match method_name {
                                     "push" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             // Check if any argument has spread operator —
                                             // when present, route through the spread path.
                                             // Multi-arg push without spread is desugared to a
@@ -2556,7 +2552,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         return Ok(Expr::ArrayShift(array_id));
                                     }
                                     "unshift" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             return Ok(Expr::ArrayUnshift {
                                                 array_id,
                                                 value: Box::new(args.into_iter().next().unwrap()),
@@ -2564,7 +2560,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         }
                                     }
                                     "indexOf" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             return Ok(Expr::ArrayIndexOf {
                                                 array: Box::new(Expr::LocalGet(array_id)),
                                                 value: Box::new(args.into_iter().next().unwrap()),
@@ -2572,7 +2568,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         }
                                     }
                                     "includes" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             return Ok(Expr::ArrayIncludes {
                                                 array: Box::new(Expr::LocalGet(array_id)),
                                                 value: Box::new(args.into_iter().next().unwrap()),
@@ -2587,7 +2583,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             .lookup_local_type(&arr_name)
                                             .map(|ty| matches!(ty, Type::Array(_)))
                                             .unwrap_or(false);
-                                        if is_definitely_array && args.len() >= 1 {
+                                        if is_definitely_array && !args.is_empty() {
                                             let mut args_iter = args.into_iter();
                                             let start = args_iter.next().unwrap();
                                             let end = args_iter.next();
@@ -2601,7 +2597,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                     "splice" => {
                                         // arr.splice(start, deleteCount?, ...items) - returns deleted elements
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             let mut args_iter = args.into_iter();
                                             let start = args_iter.next().unwrap();
                                             let delete_count = args_iter.next();
@@ -2619,7 +2615,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         let is_map_or_set = ctx.lookup_local_type(&arr_name)
                                                 .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map" || base == "Set"))
                                                 .unwrap_or(false);
-                                        if !is_map_or_set && args.len() >= 1 {
+                                        if !is_map_or_set && !args.is_empty() {
                                             let cb = args.into_iter().next().unwrap();
                                             let cb =
                                                 ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
@@ -2665,7 +2661,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                                 .unwrap_or(false);
                                         if !is_class_instance {
                                             if method_name == "at" {
-                                                if args.len() >= 1 {
+                                                if !args.is_empty() {
                                                     return Ok(Expr::ArrayAt {
                                                         array: Box::new(Expr::LocalGet(array_id)),
                                                         index: Box::new(
@@ -2673,7 +2669,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                                         ),
                                                     });
                                                 }
-                                            } else if args.len() >= 1 {
+                                            } else if !args.is_empty() {
                                                 let cb = args.into_iter().next().unwrap();
                                                 let cb = ctx
                                                     .maybe_wrap_builtin_callback(cb, &call.args[0]);
@@ -2702,7 +2698,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         }
                                     }
                                     "flatMap" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             let cb = args.into_iter().next().unwrap();
                                             let cb =
                                                 ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
@@ -2713,7 +2709,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         }
                                     }
                                     "sort" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             return Ok(Expr::ArraySort {
                                                 array: Box::new(Expr::LocalGet(array_id)),
                                                 comparator: Box::new(
@@ -2723,7 +2719,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         }
                                     }
                                     "reduce" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             let mut args_iter = args.into_iter();
                                             let callback = args_iter.next().unwrap();
                                             let initial = args_iter.next().map(Box::new);
@@ -2749,7 +2745,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         });
                                     }
                                     "reduceRight" => {
-                                        if args.len() >= 1 {
+                                        if !args.is_empty() {
                                             let mut args_iter = args.into_iter();
                                             let callback = args_iter.next().unwrap();
                                             let initial = args_iter.next().map(Box::new);
@@ -2882,7 +2878,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         let is_map = ctx.lookup_local_type(&arr_name)
                                                 .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map"))
                                                 .unwrap_or(false);
-                                        if is_map && args.len() >= 1 {
+                                        if is_map && !args.is_empty() {
                                             // map.get(key) - returns value or undefined
                                             return Ok(Expr::MapGet {
                                                 map: Box::new(Expr::LocalGet(array_id)),
@@ -2898,7 +2894,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         let is_map = ctx.lookup_local_type(&arr_name)
                                                 .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map"))
                                                 .unwrap_or(false);
-                                        if (is_set || is_map) && args.len() >= 1 {
+                                        if (is_set || is_map) && !args.is_empty() {
                                             let value = args.into_iter().next().unwrap();
                                             if is_set {
                                                 return Ok(Expr::SetHas {
@@ -2921,7 +2917,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         let is_map = ctx.lookup_local_type(&arr_name)
                                                 .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map"))
                                                 .unwrap_or(false);
-                                        if (is_set || is_map) && args.len() >= 1 {
+                                        if (is_set || is_map) && !args.is_empty() {
                                             let value = args.into_iter().next().unwrap();
                                             if is_set {
                                                 return Ok(Expr::SetDelete {
@@ -3000,7 +2996,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         let is_set = ctx.lookup_local_type(&arr_name)
                                                 .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Set"))
                                                 .unwrap_or(false);
-                                        if is_set && args.len() >= 1 {
+                                        if is_set && !args.is_empty() {
                                             // set.add(value) - returns the set for chaining
                                             let value = args.into_iter().next().unwrap();
                                             return Ok(Expr::SetAdd {
@@ -3019,7 +3015,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 if is_url_search_params {
                                     match method_name {
                                         "get" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 return Ok(Expr::UrlSearchParamsGet {
                                                     params: Box::new(Expr::LocalGet(array_id)),
                                                     name: Box::new(
@@ -3029,7 +3025,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "has" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 return Ok(Expr::UrlSearchParamsHas {
                                                     params: Box::new(Expr::LocalGet(array_id)),
                                                     name: Box::new(
@@ -3063,7 +3059,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "delete" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 return Ok(Expr::UrlSearchParamsDelete {
                                                     params: Box::new(Expr::LocalGet(array_id)),
                                                     name: Box::new(
@@ -3078,7 +3074,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             )));
                                         }
                                         "getAll" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 return Ok(Expr::UrlSearchParamsGetAll {
                                                     params: Box::new(Expr::LocalGet(array_id)),
                                                     name: Box::new(
@@ -3096,20 +3092,17 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         .map(|ty| matches!(ty, Type::Named(name) if name == "TextEncoder"))
                                         .unwrap_or(false);
                                 if is_text_encoder {
-                                    match method_name {
-                                        "encode" => {
-                                            if args.len() >= 1 {
-                                                return Ok(Expr::TextEncoderEncode(Box::new(
-                                                    args.into_iter().next().unwrap(),
-                                                )));
-                                            } else {
-                                                // encode() with no args encodes empty string
-                                                return Ok(Expr::TextEncoderEncode(Box::new(
-                                                    Expr::String(String::new()),
-                                                )));
-                                            }
+                                    if method_name == "encode" {
+                                        if !args.is_empty() {
+                                            return Ok(Expr::TextEncoderEncode(Box::new(
+                                                args.into_iter().next().unwrap(),
+                                            )));
+                                        } else {
+                                            // encode() with no args encodes empty string
+                                            return Ok(Expr::TextEncoderEncode(Box::new(
+                                                Expr::String(String::new()),
+                                            )));
                                         }
-                                        _ => {}
                                     }
                                 }
 
@@ -3118,18 +3111,15 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         .map(|ty| matches!(ty, Type::Named(name) if name == "TextDecoder"))
                                         .unwrap_or(false);
                                 if is_text_decoder {
-                                    match method_name {
-                                        "decode" => {
-                                            if args.len() >= 1 {
-                                                return Ok(Expr::TextDecoderDecode(Box::new(
-                                                    args.into_iter().next().unwrap(),
-                                                )));
-                                            } else {
-                                                // decode() with no args returns empty string
-                                                return Ok(Expr::String(String::new()));
-                                            }
+                                    if method_name == "decode" {
+                                        if !args.is_empty() {
+                                            return Ok(Expr::TextDecoderDecode(Box::new(
+                                                args.into_iter().next().unwrap(),
+                                            )));
+                                        } else {
+                                            // decode() with no args returns empty string
+                                            return Ok(Expr::String(String::new()));
                                         }
-                                        _ => {}
                                     }
                                 }
                             }
@@ -3144,15 +3134,12 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             // Lower the object expression (e.g., 'this' or a local variable)
                             let _object_expr = lower_expr(ctx, &obj_member.obj)?;
 
-                            match method_name {
-                                "push" => {
-                                    if args.len() >= 1 {
-                                        // For now, fall through to generic Call handling
-                                        // We'll compile this in codegen using inline property access
-                                        // property-based push: object.{property}.push()
-                                    }
+                            if method_name == "push" {
+                                if !args.is_empty() {
+                                    // For now, fall through to generic Call handling
+                                    // We'll compile this in codegen using inline property access
+                                    // property-based push: object.{property}.push()
                                 }
-                                _ => {}
                             }
                         }
                     }
@@ -3190,7 +3177,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             });
                                         }
                                         "map" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 let cb = args.into_iter().next().unwrap();
                                                 let cb = ctx
                                                     .maybe_wrap_builtin_callback(cb, &call.args[0]);
@@ -3201,7 +3188,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "filter" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 let cb = args.into_iter().next().unwrap();
                                                 let cb = ctx
                                                     .maybe_wrap_builtin_callback(cb, &call.args[0]);
@@ -3212,7 +3199,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "forEach" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 let cb = args.into_iter().next().unwrap();
                                                 let cb = ctx
                                                     .maybe_wrap_builtin_callback(cb, &call.args[0]);
@@ -3223,7 +3210,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "find" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 let cb = args.into_iter().next().unwrap();
                                                 let cb = ctx
                                                     .maybe_wrap_builtin_callback(cb, &call.args[0]);
@@ -3234,7 +3221,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "sort" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 return Ok(Expr::ArraySort {
                                                     array: Box::new(extern_ref),
                                                     comparator: Box::new(
@@ -3244,7 +3231,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "indexOf" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 return Ok(Expr::ArrayIndexOf {
                                                     array: Box::new(extern_ref),
                                                     value: Box::new(
@@ -3254,7 +3241,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "includes" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 return Ok(Expr::ArrayIncludes {
                                                     array: Box::new(extern_ref),
                                                     value: Box::new(
@@ -3264,7 +3251,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "slice" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 let mut args_iter = args.into_iter();
                                                 let start = args_iter.next().unwrap();
                                                 let end = args_iter.next();
@@ -3276,7 +3263,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             }
                                         }
                                         "reduce" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 let mut args_iter = args.into_iter();
                                                 let callback = args_iter.next().unwrap();
                                                 let initial = args_iter.next().map(Box::new);
@@ -3293,7 +3280,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             });
                                         }
                                         "reduceRight" => {
-                                            if args.len() >= 1 {
+                                            if !args.is_empty() {
                                                 let mut args_iter = args.into_iter();
                                                 let callback = args_iter.next().unwrap();
                                                 let initial = args_iter.next().map(Box::new);
@@ -3378,7 +3365,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     });
                                 }
                                 "map" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let cb = args.into_iter().next().unwrap();
                                         let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                         return Ok(Expr::ArrayMap {
@@ -3388,7 +3375,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "filter" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let cb = args.into_iter().next().unwrap();
                                         let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                         return Ok(Expr::ArrayFilter {
@@ -3398,7 +3385,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "forEach" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let cb = args.into_iter().next().unwrap();
                                         let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                         return Ok(Expr::ArrayForEach {
@@ -3408,7 +3395,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "find" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let cb = args.into_iter().next().unwrap();
                                         let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                         return Ok(Expr::ArrayFind {
@@ -3418,7 +3405,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "sort" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ArraySort {
                                             array: Box::new(array_expr),
                                             comparator: Box::new(args.into_iter().next().unwrap()),
@@ -3426,7 +3413,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "indexOf" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ArrayIndexOf {
                                             array: Box::new(array_expr),
                                             value: Box::new(args.into_iter().next().unwrap()),
@@ -3434,7 +3421,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "includes" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::ArrayIncludes {
                                             array: Box::new(array_expr),
                                             value: Box::new(args.into_iter().next().unwrap()),
@@ -3442,7 +3429,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "slice" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let start = args_iter.next().unwrap();
                                         let end = args_iter.next();
@@ -3454,7 +3441,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     }
                                 }
                                 "reduce" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let callback = args_iter.next().unwrap();
                                         let initial = args_iter.next().map(Box::new);
@@ -3471,7 +3458,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     });
                                 }
                                 "reduceRight" => {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         let mut args_iter = args.into_iter();
                                         let callback = args_iter.next().unwrap();
                                         let initial = args_iter.next().map(Box::new);
@@ -3547,7 +3534,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref() {
                                 let class_name = class_ident.sym.as_ref();
                                 if class_name == "TextEncoder" && method_name == "encode" {
-                                    let str_arg = if args.len() >= 1 {
+                                    let str_arg = if !args.is_empty() {
                                         args.into_iter().next().unwrap()
                                     } else {
                                         Expr::String(String::new())
@@ -3555,7 +3542,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     return Ok(Expr::TextEncoderEncode(Box::new(str_arg)));
                                 }
                                 if class_name == "TextDecoder" && method_name == "decode" {
-                                    if args.len() >= 1 {
+                                    if !args.is_empty() {
                                         return Ok(Expr::TextDecoderDecode(Box::new(
                                             args.into_iter().next().unwrap(),
                                         )));
@@ -3573,7 +3560,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 .map(|ty| matches!(ty, Type::Named(name) if name == "TextEncoder"))
                                 .unwrap_or(false);
                             if is_text_encoder && method_name == "encode" {
-                                let str_arg = if args.len() >= 1 {
+                                let str_arg = if !args.is_empty() {
                                     args.into_iter().next().unwrap()
                                 } else {
                                     Expr::String(String::new())
@@ -3585,7 +3572,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 .map(|ty| matches!(ty, Type::Named(name) if name == "TextDecoder"))
                                 .unwrap_or(false);
                             if is_text_decoder && method_name == "decode" {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::TextDecoderDecode(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
@@ -3644,7 +3631,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             _ => false,
                         };
                         match method_name {
-                            "reduce" if args.len() >= 1 && !recv_is_class => {
+                            "reduce" if !args.is_empty() && !recv_is_class => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
                                 let mut args_iter = args.into_iter();
                                 let callback = args_iter.next().unwrap();
@@ -3655,7 +3642,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     initial,
                                 });
                             }
-                            "map" if args.len() >= 1 && !recv_is_class => {
+                            "map" if !args.is_empty() && !recv_is_class => {
                                 let cb = args.into_iter().next().unwrap();
                                 let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                 let array_expr = lower_expr(ctx, &member.obj)?;
@@ -3664,7 +3651,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     callback: Box::new(cb),
                                 });
                             }
-                            "filter" if args.len() >= 1 && !recv_is_class => {
+                            "filter" if !args.is_empty() && !recv_is_class => {
                                 let cb = args.into_iter().next().unwrap();
                                 let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                 let array_expr = lower_expr(ctx, &member.obj)?;
@@ -3673,12 +3660,12 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     callback: Box::new(cb),
                                 });
                             }
-                            "forEach" if args.len() >= 1 && !recv_is_class => {
+                            "forEach" if !args.is_empty() && !recv_is_class => {
                                 // Check if the receiver is a Map or Set - if so, don't use ArrayForEach
                                 let is_map_or_set = if let ast::Expr::Ident(ident) =
                                     member.obj.as_ref()
                                 {
-                                    ctx.lookup_local_type(&ident.sym.to_string())
+                                    ctx.lookup_local_type(ident.sym.as_ref())
                                                 .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map" || base == "Set"))
                                                 .unwrap_or(false)
                                 } else {
@@ -3694,7 +3681,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     });
                                 }
                             }
-                            "find" if args.len() >= 1 && !recv_is_class => {
+                            "find" if !args.is_empty() && !recv_is_class => {
                                 let cb = args.into_iter().next().unwrap();
                                 let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                 let array_expr = lower_expr(ctx, &member.obj)?;
@@ -3703,7 +3690,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     callback: Box::new(cb),
                                 });
                             }
-                            "findIndex" if args.len() >= 1 && !recv_is_class => {
+                            "findIndex" if !args.is_empty() && !recv_is_class => {
                                 let cb = args.into_iter().next().unwrap();
                                 let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
                                 let array_expr = lower_expr(ctx, &member.obj)?;
@@ -3712,7 +3699,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     callback: Box::new(cb),
                                 });
                             }
-                            "sort" if args.len() >= 1 => {
+                            "sort" if !args.is_empty() => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
                                 return Ok(Expr::ArraySort {
                                     array: Box::new(array_expr),
@@ -3728,7 +3715,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             // through `js_native_call_method` which can't unwrap it properly,
                             // producing an "object" with the right .length but Array.isArray
                             // returns false and JSON.stringify segfaults.
-                            "slice" if args.len() >= 1 => {
+                            "slice" if !args.is_empty() => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
                                 if matches!(
                                     &array_expr,
@@ -3776,7 +3763,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     separator,
                                 });
                             }
-                            "indexOf" if args.len() >= 1 => {
+                            "indexOf" if !args.is_empty() => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
                                 if matches!(
                                     &array_expr,
@@ -3798,7 +3785,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     });
                                 }
                             }
-                            "includes" if args.len() >= 1 => {
+                            "includes" if !args.is_empty() => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
                                 // Don't treat error string properties as arrays
                                 let is_error_string_prop = matches!(&array_expr,
@@ -3833,7 +3820,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     array: Box::new(array_expr),
                                 });
                             }
-                            "reduceRight" if args.len() >= 1 => {
+                            "reduceRight" if !args.is_empty() => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
                                 let mut args_iter = args.into_iter();
                                 let callback = args_iter.next().unwrap();
@@ -3882,14 +3869,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     value: Box::new(value),
                                 });
                             }
-                            "push" if args.len() >= 1 => {
+                            "push" if !args.is_empty() => {
                                 // Generic expr.push(value) or expr.push(...spread)
                                 // GUARD: Skip if the receiver is a user-defined class instance
                                 // (e.g. Stack<T>.push()), or an object type literal (e.g.
                                 // { push: (v) => void, ... }), so its method dispatches correctly.
                                 let is_user_class_receiver = match member.obj.as_ref() {
                                     ast::Expr::Ident(ident) => {
-                                        ctx.lookup_local_type(&ident.sym.to_string())
+                                        ctx.lookup_local_type(ident.sym.as_ref())
                                             .map(|ty| {
                                                 match ty {
                                                     Type::Named(name) => {
@@ -3914,13 +3901,13 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 };
                                 if !is_user_class_receiver {
                                     let array_expr = lower_expr(ctx, &member.obj)?;
-                                    if call.args.len() >= 1 && call.args[0].spread.is_some() {
+                                    if !call.args.is_empty() && call.args[0].spread.is_some() {
                                         return Ok(Expr::NativeMethodCall {
                                             module: "array".to_string(),
                                             method: "push_spread".to_string(),
                                             class_name: None,
                                             object: Some(Box::new(array_expr)),
-                                            args: args,
+                                            args,
                                         });
                                     } else {
                                         return Ok(Expr::NativeMethodCall {
@@ -3928,7 +3915,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             method: "push_single".to_string(),
                                             class_name: None,
                                             object: Some(Box::new(array_expr)),
-                                            args: args,
+                                            args,
                                         });
                                     }
                                 }
@@ -3949,7 +3936,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let is_regex_obj = match member.obj.as_ref() {
                                 ast::Expr::Lit(ast::Lit::Regex(_)) => true,
                                 ast::Expr::Ident(ident) => ctx
-                                    .lookup_local_type(&ident.sym.to_string())
+                                    .lookup_local_type(ident.sym.as_ref())
                                     .map(|ty| {
                                         matches!(ty, Type::Any | Type::Unknown)
                                             || matches!(ty, Type::Named(n) if n == "RegExp")
@@ -3995,7 +3982,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let arg_is_regex = match call.args.first().map(|a| a.expr.as_ref()) {
                                 Some(ast::Expr::Lit(ast::Lit::Regex(_))) => true,
                                 Some(ast::Expr::Ident(ident)) => {
-                                    match ctx.lookup_local_type(&ident.sym.to_string()) {
+                                    match ctx.lookup_local_type(ident.sym.as_ref()) {
                                         // Known regex local
                                         Some(Type::Named(n)) if n == "RegExp" => true,
                                         // Unknown type — assume could be regex
@@ -4034,7 +4021,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                 let func_name = ident.sym.as_ref();
                 match func_name {
                     "parseInt" => {
-                        let string_arg = if args.len() >= 1 {
+                        let string_arg = if !args.is_empty() {
                             Box::new(args.remove(0))
                         } else {
                             return Err(anyhow!("parseInt requires at least one argument"));
@@ -4050,14 +4037,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         });
                     }
                     "parseFloat" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::ParseFloat(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("parseFloat requires one argument"));
                         }
                     }
                     "Number" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::NumberCoerce(Box::new(args.remove(0))));
                         } else {
                             // Number() with no args returns 0
@@ -4065,7 +4052,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         }
                     }
                     "BigInt" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::BigIntCoerce(Box::new(args.remove(0))));
                         } else {
                             // BigInt() with no args returns 0n
@@ -4073,7 +4060,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         }
                     }
                     "String" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::StringCoerce(Box::new(args.remove(0))));
                         } else {
                             // String() with no args returns ""
@@ -4081,7 +4068,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         }
                     }
                     "Boolean" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::BooleanCoerce(Box::new(args.remove(0))));
                         } else {
                             // Boolean() with no args returns false
@@ -4089,70 +4076,70 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         }
                     }
                     "isNaN" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::IsNaN(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("isNaN requires one argument"));
                         }
                     }
                     "isFinite" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::IsFinite(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("isFinite requires one argument"));
                         }
                     }
                     "atob" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::Atob(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("atob requires one argument"));
                         }
                     }
                     "btoa" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::Btoa(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("btoa requires one argument"));
                         }
                     }
                     "encodeURI" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::EncodeURI(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("encodeURI requires one argument"));
                         }
                     }
                     "decodeURI" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::DecodeURI(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("decodeURI requires one argument"));
                         }
                     }
                     "encodeURIComponent" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::EncodeURIComponent(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("encodeURIComponent requires one argument"));
                         }
                     }
                     "decodeURIComponent" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::DecodeURIComponent(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("decodeURIComponent requires one argument"));
                         }
                     }
                     "structuredClone" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::StructuredClone(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("structuredClone requires one argument"));
                         }
                     }
                     "queueMicrotask" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::QueueMicrotask(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("queueMicrotask requires one argument"));
@@ -4167,7 +4154,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         }
                     }
                     "perryResolveStaticPlugin" => {
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             return Ok(Expr::StaticPluginResolve(Box::new(args.remove(0))));
                         } else {
                             return Err(anyhow!("perryResolveStaticPlugin requires one argument"));
@@ -4212,14 +4199,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                     "fetch" => {
                         // Handle fetch(url) and fetch(url, options)
                         // Extract URL (first argument)
-                        let url = if args.len() >= 1 {
+                        let url = if !args.is_empty() {
                             args.remove(0)
                         } else {
                             return Err(anyhow!("fetch requires at least a URL argument"));
                         };
 
                         // Check if there's an options object (second argument)
-                        if args.len() >= 1 {
+                        if !args.is_empty() {
                             // Extract options from the object literal
                             // We need to get the original AST to extract the object properties
                             if let Some(options_arg) = call.args.get(1) {
@@ -4333,7 +4320,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                     if module_name == "child_process" {
                         match func_name {
                             "execSync" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     let mut args_iter = args.into_iter();
                                     let command = args_iter.next().unwrap();
                                     let options = args_iter.next().map(Box::new);
@@ -4344,7 +4331,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "spawnSync" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     let mut args_iter = args.into_iter();
                                     let command = args_iter.next().unwrap();
                                     let spawn_args = args_iter.next().map(Box::new);
@@ -4357,7 +4344,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "spawn" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     let mut args_iter = args.into_iter();
                                     let command = args_iter.next().unwrap();
                                     let spawn_args = args_iter.next().map(Box::new);
@@ -4370,7 +4357,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "exec" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     let mut args_iter = args.into_iter();
                                     let command = args_iter.next().unwrap();
                                     let options = args_iter.next().map(Box::new);
@@ -4398,14 +4385,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "getProcessStatus" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::ChildProcessGetProcessStatus(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "killProcess" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::ChildProcessKillProcess(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
@@ -4430,7 +4417,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "dirname" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::PathDirname(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
@@ -4446,21 +4433,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         Box::new(ext_arg),
                                     ));
                                 }
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::PathBasename(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "extname" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::PathExtname(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "resolve" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     let mut iter = args.into_iter();
                                     let first = iter.next().unwrap();
                                     let mut joined = first;
@@ -4472,7 +4459,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "isAbsolute" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::PathIsAbsolute(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
@@ -4487,21 +4474,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "normalize" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::PathNormalize(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "parse" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::PathParse(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "format" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::PathFormat(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
@@ -4515,7 +4502,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                     if module_name == "url" {
                         match func_name {
                             "fileURLToPath" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::FileURLToPath(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
@@ -4553,21 +4540,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "existsSync" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::FsExistsSync(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "mkdirSync" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::FsMkdirSync(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "unlinkSync" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::FsUnlinkSync(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
@@ -4585,14 +4572,14 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                 }
                             }
                             "readFileBuffer" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::FsReadFileBinary(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));
                                 }
                             }
                             "rmRecursive" => {
-                                if args.len() >= 1 {
+                                if !args.is_empty() {
                                     return Ok(Expr::FsRmRecursive(Box::new(
                                         args.into_iter().next().unwrap(),
                                     )));

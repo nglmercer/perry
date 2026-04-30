@@ -2944,7 +2944,7 @@ pub(crate) fn report_beta_error(command: &str, error: &str, target: Option<&str>
     let should_report = config
         .beta
         .as_ref()
-        .map_or(false, |b| b.acknowledged && b.report_errors);
+        .is_some_and(|b| b.acknowledged && b.report_errors);
 
     if !should_report {
         return;

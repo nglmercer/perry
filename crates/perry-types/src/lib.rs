@@ -81,7 +81,7 @@ pub struct TypeParam {
 }
 
 /// Object type with property information
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ObjectType {
     /// Optional name (for classes/interfaces)
     pub name: Option<String>,
@@ -131,15 +131,5 @@ impl Type {
     /// Check if this type could be undefined/null
     pub fn is_nullable(&self) -> bool {
         matches!(self, Type::Void | Type::Null | Type::Any | Type::Unknown)
-    }
-}
-
-impl Default for ObjectType {
-    fn default() -> Self {
-        Self {
-            name: None,
-            properties: HashMap::new(),
-            index_signature: None,
-        }
     }
 }

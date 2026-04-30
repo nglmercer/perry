@@ -87,9 +87,18 @@ pub fn install_crash_hooks() {
     // Signal handlers for catastrophic failures (segfault, bus error, abort).
     // These bypass Rust's panic machinery entirely.
     unsafe {
-        libc::signal(libc::SIGSEGV, signal_handler as libc::sighandler_t);
-        libc::signal(libc::SIGBUS, signal_handler as libc::sighandler_t);
-        libc::signal(libc::SIGABRT, signal_handler as libc::sighandler_t);
+        libc::signal(
+            libc::SIGSEGV,
+            signal_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGBUS,
+            signal_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGABRT,
+            signal_handler as *const () as libc::sighandler_t,
+        );
     }
 }
 

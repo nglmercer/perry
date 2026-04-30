@@ -107,7 +107,7 @@ pub fn create(placeholder_ptr: *const u8, on_change: f64) -> i64 {
             )
         ];
 
-        let tf_ref: &NSTextField = &*Retained::cast_unchecked::<NSTextField>(text_field.clone());
+        let tf_ref: &NSTextField = &Retained::cast_unchecked::<NSTextField>(text_field.clone());
         tf_ref.setPlaceholderString(Some(&ns_placeholder));
         tf_ref.setEditable(true);
         tf_ref.setBezeled(true);

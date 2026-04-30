@@ -645,7 +645,7 @@ pub(crate) fn ios_wizard(saved: &mut PerryConfig) -> Result<()> {
             println!("{}", style("not found, creating...").yellow());
             // Register new bundle ID
             let jwt = generate_asc_jwt(&key_id, &issuer_id, &p8_content)?;
-            let app_name = bundle_id.split('.').last().unwrap_or("app");
+            let app_name = bundle_id.split('.').next_back().unwrap_or("app");
             let create_body = serde_json::json!({
                 "data": {
                     "type": "bundleIds",

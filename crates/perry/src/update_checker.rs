@@ -74,10 +74,10 @@ fn save_cache(cache: &UpdateCache) {
 }
 
 pub fn should_skip_check() -> bool {
-    if std::env::var("PERRY_NO_UPDATE_CHECK").map_or(false, |v| v == "1" || v == "true") {
+    if std::env::var("PERRY_NO_UPDATE_CHECK").is_ok_and(|v| v == "1" || v == "true") {
         return true;
     }
-    if std::env::var("CI").map_or(false, |v| v == "true" || v == "1") {
+    if std::env::var("CI").is_ok_and(|v| v == "true" || v == "1") {
         return true;
     }
     if !atty::is(atty::Stream::Stderr) {
@@ -145,7 +145,7 @@ fn chrono_parse_rfc3339(s: &str) -> Option<u64> {
 
 /// Days from 1970-01-01
 fn days_from_civil(year: u64, month: u64, day: u64) -> Option<u64> {
-    if month < 1 || month > 12 || day < 1 || day > 31 {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     let mut y = year as i64;
@@ -539,11 +539,13 @@ fn find_binary_in_dir(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
     }
 
     // Search recursively
-    for entry in walkdir::WalkDir::new(dir).max_depth(3) {
-        if let Ok(entry) = entry {
-            if entry.file_name().to_string_lossy() == name && entry.file_type().is_file() {
-                return Some(entry.path().to_path_buf());
-            }
+    for entry in walkdir::WalkDir::new(dir)
+        .max_depth(3)
+        .into_iter()
+        .flatten()
+    {
+        if entry.file_name().to_string_lossy() == name && entry.file_type().is_file() {
+            return Some(entry.path().to_path_buf());
         }
     }
     None

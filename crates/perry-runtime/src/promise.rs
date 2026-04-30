@@ -56,7 +56,7 @@ impl Promise {
 // that prints inside multiple parallel promise chains.
 thread_local! {
     static TASK_QUEUE: RefCell<std::collections::VecDeque<(*mut Promise, f64, bool)>>
-        = RefCell::new(std::collections::VecDeque::new());
+        = const { RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Allocate a new Promise
@@ -91,8 +91,8 @@ pub extern "C" fn js_promise_value(promise: *mut Promise) -> f64 {
     if promise.is_null() {
         return 0.0;
     }
-    let val = unsafe { (*promise).value };
-    val
+
+    unsafe { (*promise).value }
 }
 
 /// Get promise reason (if rejected)
@@ -865,7 +865,7 @@ pub extern "C" fn js_value_is_promise(value: f64) -> i32 {
 
 // Queue for scheduled promise resolutions
 thread_local! {
-    static SCHEDULED_RESOLVES: RefCell<Vec<(*mut Promise, f64)>> = RefCell::new(Vec::new());
+    static SCHEDULED_RESOLVES: RefCell<Vec<(*mut Promise, f64)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Schedule a promise to be resolved with a value when microtasks run
@@ -920,8 +920,8 @@ pub extern "C" fn js_promise_new_with_executor(
     // Call the executor with (resolve_closure, reject_closure)
     // The closures are passed as f64 by bitcasting the pointer bits
     // This preserves the exact bits of the pointer when passed through f64 ABI
-    let resolve_f64: f64 = unsafe { std::mem::transmute(resolve_closure as i64) };
-    let reject_f64: f64 = unsafe { std::mem::transmute(reject_closure as i64) };
+    let resolve_f64: f64 = unsafe { f64::from_bits(i64::cast_unsigned(resolve_closure as i64)) };
+    let reject_f64: f64 = unsafe { f64::from_bits(i64::cast_unsigned(reject_closure as i64)) };
     unsafe {
         js_closure_call2(executor, resolve_f64, reject_f64);
     }
@@ -958,9 +958,7 @@ extern "C" fn promise_reject_fn(closure: *const crate::closure::ClosureHeader, r
 /// Returns: a new Promise that resolves with an array of results
 #[no_mangle]
 pub extern "C" fn js_promise_all(promises_arr: *const crate::array::ArrayHeader) -> *mut Promise {
-    use crate::array::{
-        js_array_alloc, js_array_get_f64, js_array_length, js_array_set_f64, ArrayHeader,
-    };
+    use crate::array::{js_array_alloc, js_array_get_f64, js_array_length, js_array_set_f64};
     use crate::closure::{
         js_closure_alloc, js_closure_set_capture_f64, js_closure_set_capture_ptr,
     };

@@ -25,15 +25,15 @@ pub mod vstack;
 pub mod zstack;
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, Sel};
-use objc2::{define_class, msg_send, AnyThread, DefinedClass};
+use objc2::runtime::{AnyClass, AnyObject};
+use objc2::{msg_send, AnyThread, DefinedClass};
 use objc2_app_kit::{NSStackView, NSView};
-use objc2_foundation::{NSObject, NSObjectProtocol};
+use objc2_foundation::NSObjectProtocol;
 use std::cell::RefCell;
 
 thread_local! {
     /// Map from widget handle (1-based) to NSView
-    static WIDGETS: RefCell<Vec<Retained<NSView>>> = RefCell::new(Vec::new());
+    static WIDGETS: RefCell<Vec<Retained<NSView>>> = const { RefCell::new(Vec::new()) };
     /// Stored width constraints per widget handle, so set_width can update instead of duplicate.
     static WIDTH_CONSTRAINTS: RefCell<std::collections::HashMap<i64, Retained<AnyObject>>> = RefCell::new(std::collections::HashMap::new());
     /// Stored height constraints per widget handle, so set_height can update instead of duplicate.

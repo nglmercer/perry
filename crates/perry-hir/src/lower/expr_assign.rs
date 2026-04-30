@@ -285,7 +285,7 @@ pub(super) fn lower_assign(ctx: &mut LoweringContext, assign: &ast::AssignExpr) 
                     let is_regex_obj = match member.obj.as_ref() {
                         ast::Expr::Lit(ast::Lit::Regex(_)) => true,
                         ast::Expr::Ident(ident) => ctx
-                            .lookup_local_type(&ident.sym.to_string())
+                            .lookup_local_type(ident.sym.as_ref())
                             .map(|ty| matches!(ty, Type::Named(n) if n == "RegExp"))
                             .unwrap_or(false),
                         _ => false,
@@ -338,7 +338,7 @@ pub(super) fn lower_assign(ctx: &mut LoweringContext, assign: &ast::AssignExpr) 
                 }
                 ast::MemberProp::PrivateName(private) => {
                     // Private field assignment: this.#field = value
-                    let property = format!("#{}", private.name.to_string());
+                    let property = format!("#{}", private.name);
                     Ok(Expr::PropertySet {
                         object,
                         property,

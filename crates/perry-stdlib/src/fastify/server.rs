@@ -16,9 +16,8 @@ use tokio::sync::mpsc;
 
 use perry_runtime::{js_string_from_bytes, JSValue, StringHeader};
 
-use super::context::string_from_header;
 use super::{ClosurePtr, FastifyApp, FastifyContext};
-use crate::common::{get_handle, get_handle_mut, register_handle, Handle, RUNTIME};
+use crate::common::{get_handle, register_handle, Handle, RUNTIME};
 
 /// Server handle for managing the running server
 pub struct FastifyServerHandle {
@@ -306,9 +305,8 @@ fn event_loop(app_handle: Handle, request_rx: &mut mpsc::Receiver<FastifyPending
                 f64::from_bits(0x7FFD_0000_0000_0000 | (ctx_handle as u64 & 0x0000_FFFF_FFFF_FFFF));
 
             // Collect hook ptrs (copy i64 values to avoid holding borrow on app during hook execution)
-            let on_request_hooks: Vec<ClosurePtr> = app.hooks.on_request.iter().copied().collect();
-            let pre_handler_hooks: Vec<ClosurePtr> =
-                app.hooks.pre_handler.iter().copied().collect();
+            let on_request_hooks: Vec<ClosurePtr> = app.hooks.on_request.to_vec();
+            let pre_handler_hooks: Vec<ClosurePtr> = app.hooks.pre_handler.to_vec();
 
             // Run onRequest hooks (e.g., auth middleware, rate limiting, CORS)
             for hook in &on_request_hooks {

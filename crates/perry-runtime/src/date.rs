@@ -51,7 +51,7 @@ fn timestamp_to_local_components(secs: i64) -> (i32, u32, u32, u32, u32, u32, i6
         let hour = tm.tm_hour as u32;
         let minute = tm.tm_min as u32;
         let second = tm.tm_sec as u32;
-        let tz_offset = tm.tm_gmtoff as i64;
+        let tz_offset = tm.tm_gmtoff;
         (year, month, day, hour, minute, second, tz_offset)
     }
 }
@@ -195,7 +195,7 @@ fn parse_date_string(s: &str) -> f64 {
             Err(_) => return f64::NAN,
         };
 
-        if month < 1 || month > 12 || day < 1 || day > 31 {
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
             return f64::NAN;
         }
 
@@ -294,11 +294,9 @@ pub extern "C" fn js_date_get_time(timestamp: f64) -> f64 {
 /// Returns a pointer to a StringHeader
 #[no_mangle]
 pub extern "C" fn js_date_to_iso_string(timestamp: f64) -> *mut crate::StringHeader {
-    use std::alloc::{alloc, Layout};
-
     let ts_ms = timestamp as i64;
     let secs = ts_ms / 1000;
-    let millis = (ts_ms % 1000).abs() as u32;
+    let millis = (ts_ms % 1000).unsigned_abs() as u32;
 
     // Calculate date components from Unix timestamp
     // This is a simplified implementation - proper implementation would use chrono crate
@@ -799,14 +797,19 @@ pub fn timestamp_to_components(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
     let hour = ((abs_secs / 3600) % 24) as u32;
 
     // Calculate days from Unix epoch
-    let mut days = if is_negative {
-        -((abs_secs / 86400) as i64) - if abs_secs % 86400 != 0 { 1 } else { 0 }
+    let days = if is_negative {
+        -((abs_secs / 86400) as i64)
+            - if !abs_secs.is_multiple_of(86400) {
+                1
+            } else {
+                0
+            }
     } else {
         (abs_secs / 86400) as i64
     };
 
     // For negative timestamps, adjust time components
-    let (hour, minute, second) = if is_negative && abs_secs % 86400 != 0 {
+    let (hour, minute, second) = if is_negative && !abs_secs.is_multiple_of(86400) {
         let remaining = abs_secs % 86400;
         let adjusted = 86400 - remaining;
         (

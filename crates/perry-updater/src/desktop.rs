@@ -196,10 +196,8 @@ pub extern "C" fn perry_updater_install(staged_path_val: i64, target_path_val: i
     let _ = remove_path(&prev);
 
     // 1) Move current target → .prev
-    if std::path::Path::new(&target).exists() {
-        if rename_path(&target, &prev).is_err() {
-            return 0;
-        }
+    if std::path::Path::new(&target).exists() && rename_path(&target, &prev).is_err() {
+        return 0;
     }
 
     // 2) Move staged → target

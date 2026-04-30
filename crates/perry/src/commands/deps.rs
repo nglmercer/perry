@@ -414,18 +414,16 @@ fn scan_source_for_issues(path: &Path, source: &str) -> Vec<CompatibilityIssue> 
         }
 
         // Check for explicit 'any' type (in .ts files)
-        if path.extension().map_or(false, |e| e == "ts") {
-            if (line.contains(": any") || line.contains(":any") || line.contains("<any>"))
-                && !line.trim().starts_with("//")
-            {
-                issues.push(CompatibilityIssue {
-                    file: path.to_path_buf(),
-                    line: Some(line_num),
-                    kind: IssueKind::AnyType,
-                    message: "'any' type may cause runtime issues in native compilation"
-                        .to_string(),
-                });
-            }
+        if path.extension().is_some_and(|e| e == "ts")
+            && (line.contains(": any") || line.contains(":any") || line.contains("<any>"))
+            && !line.trim().starts_with("//")
+        {
+            issues.push(CompatibilityIssue {
+                file: path.to_path_buf(),
+                line: Some(line_num),
+                kind: IssueKind::AnyType,
+                message: "'any' type may cause runtime issues in native compilation".to_string(),
+            });
         }
     }
 

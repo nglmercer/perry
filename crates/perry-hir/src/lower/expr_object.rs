@@ -179,279 +179,270 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
     }
     let mut computed_post_init: Vec<PostInit> = Vec::new();
     for prop in &obj.props {
-        match prop {
-            ast::PropOrSpread::Prop(prop) => {
-                match prop.as_ref() {
-                    ast::Prop::KeyValue(kv) => {
-                        enum KeyResolution {
-                            Static(String),
-                            Dynamic(Expr),
-                            Skip,
+        if let ast::PropOrSpread::Prop(prop) = prop {
+            match prop.as_ref() {
+                ast::Prop::KeyValue(kv) => {
+                    enum KeyResolution {
+                        Static(String),
+                        Dynamic(Expr),
+                        Skip,
+                    }
+                    let key_resolution: KeyResolution = match &kv.key {
+                        ast::PropName::Ident(ident) => KeyResolution::Static(ident.sym.to_string()),
+                        ast::PropName::Str(s) => {
+                            KeyResolution::Static(s.value.as_str().unwrap_or("").to_string())
                         }
-                        let key_resolution: KeyResolution = match &kv.key {
-                            ast::PropName::Ident(ident) => {
-                                KeyResolution::Static(ident.sym.to_string())
-                            }
-                            ast::PropName::Str(s) => {
-                                KeyResolution::Static(s.value.as_str().unwrap_or("").to_string())
-                            }
-                            ast::PropName::Num(n) => KeyResolution::Static(n.value.to_string()),
-                            ast::PropName::Computed(computed) => {
-                                // Handle computed property keys like [ChainName.ETHEREUM]
-                                // Try to resolve enum member access to string keys first.
-                                match computed.expr.as_ref() {
-                                    ast::Expr::Member(member) => {
-                                        if let (
-                                            ast::Expr::Ident(obj),
-                                            ast::MemberProp::Ident(prop),
-                                        ) = (member.obj.as_ref(), &member.prop)
+                        ast::PropName::Num(n) => KeyResolution::Static(n.value.to_string()),
+                        ast::PropName::Computed(computed) => {
+                            // Handle computed property keys like [ChainName.ETHEREUM]
+                            // Try to resolve enum member access to string keys first.
+                            match computed.expr.as_ref() {
+                                ast::Expr::Member(member) => {
+                                    if let (ast::Expr::Ident(obj), ast::MemberProp::Ident(prop)) =
+                                        (member.obj.as_ref(), &member.prop)
+                                    {
+                                        let enum_name = obj.sym.to_string();
+                                        let member_name = prop.sym.to_string();
+                                        if let Some(value) =
+                                            ctx.lookup_enum_member(&enum_name, &member_name)
                                         {
-                                            let enum_name = obj.sym.to_string();
-                                            let member_name = prop.sym.to_string();
-                                            if let Some(value) =
-                                                ctx.lookup_enum_member(&enum_name, &member_name)
-                                            {
-                                                match value {
-                                                    EnumValue::String(s) => {
-                                                        KeyResolution::Static(s.clone())
-                                                    }
-                                                    EnumValue::Number(n) => {
-                                                        KeyResolution::Static(n.to_string())
-                                                    }
+                                            match value {
+                                                EnumValue::String(s) => {
+                                                    KeyResolution::Static(s.clone())
                                                 }
-                                            } else {
-                                                // Non-enum member access: lower as a dynamic expression.
-                                                match lower_expr(ctx, computed.expr.as_ref()) {
-                                                    Ok(e) => KeyResolution::Dynamic(e),
-                                                    Err(_) => KeyResolution::Skip,
+                                                EnumValue::Number(n) => {
+                                                    KeyResolution::Static(n.to_string())
                                                 }
                                             }
                                         } else {
+                                            // Non-enum member access: lower as a dynamic expression.
                                             match lower_expr(ctx, computed.expr.as_ref()) {
                                                 Ok(e) => KeyResolution::Dynamic(e),
                                                 Err(_) => KeyResolution::Skip,
                                             }
                                         }
+                                    } else {
+                                        match lower_expr(ctx, computed.expr.as_ref()) {
+                                            Ok(e) => KeyResolution::Dynamic(e),
+                                            Err(_) => KeyResolution::Skip,
+                                        }
                                     }
-                                    ast::Expr::Lit(ast::Lit::Str(s)) => KeyResolution::Static(
-                                        s.value.as_str().unwrap_or("").to_string(),
-                                    ),
-                                    ast::Expr::Lit(ast::Lit::Num(n)) => {
-                                        KeyResolution::Static(n.value.to_string())
-                                    }
-                                    // Identifier or any other expression — lower it
-                                    // and defer to post-init IndexSet so symbol-typed
-                                    // locals like `[symProp]` flow through the
-                                    // IndexSet symbol dispatch path.
-                                    _ => match lower_expr(ctx, computed.expr.as_ref()) {
-                                        Ok(e) => KeyResolution::Dynamic(e),
-                                        Err(_) => KeyResolution::Skip,
-                                    },
                                 }
+                                ast::Expr::Lit(ast::Lit::Str(s)) => KeyResolution::Static(
+                                    s.value.as_str().unwrap_or("").to_string(),
+                                ),
+                                ast::Expr::Lit(ast::Lit::Num(n)) => {
+                                    KeyResolution::Static(n.value.to_string())
+                                }
+                                // Identifier or any other expression — lower it
+                                // and defer to post-init IndexSet so symbol-typed
+                                // locals like `[symProp]` flow through the
+                                // IndexSet symbol dispatch path.
+                                _ => match lower_expr(ctx, computed.expr.as_ref()) {
+                                    Ok(e) => KeyResolution::Dynamic(e),
+                                    Err(_) => KeyResolution::Skip,
+                                },
                             }
-                            _ => KeyResolution::Skip,
+                        }
+                        _ => KeyResolution::Skip,
+                    };
+                    match key_resolution {
+                        KeyResolution::Skip => continue,
+                        KeyResolution::Static(key) => {
+                            let value = lower_expr(ctx, &kv.value)?;
+                            props.push((key, value));
+                        }
+                        KeyResolution::Dynamic(key_expr) => {
+                            let value = lower_expr(ctx, &kv.value)?;
+                            computed_post_init.push(PostInit::SetValue {
+                                key: key_expr,
+                                value,
+                            });
+                        }
+                    }
+                }
+                ast::Prop::Shorthand(ident) => {
+                    // Shorthand property: { help } → { help: help }
+                    let name = ident.sym.to_string();
+                    let value = if let Some(func_id) = ctx.lookup_func(&name) {
+                        Expr::FuncRef(func_id)
+                    } else if let Some(local_id) = ctx.lookup_local(&name) {
+                        Expr::LocalGet(local_id)
+                    } else if ctx.lookup_class(&name).is_some() {
+                        Expr::ClassRef(name.clone())
+                    } else {
+                        continue;
+                    };
+                    props.push((name, value));
+                }
+                ast::Prop::Method(method) => {
+                    // Inline method: { help(): string { ... } }
+                    // Computed keys (e.g. `[Symbol.toPrimitive](hint) {}`)
+                    // get routed through the IIFE wrapper's
+                    // SetMethodWithThis post-init, which emits a
+                    // `js_object_set_symbol_method` call that also
+                    // patches the closure's reserved `this` slot.
+                    enum MethodKey {
+                        Static(String),
+                        Computed(Expr),
+                    }
+                    let method_key = match &method.key {
+                        ast::PropName::Ident(ident) => MethodKey::Static(ident.sym.to_string()),
+                        ast::PropName::Str(s) => {
+                            MethodKey::Static(s.value.as_str().unwrap_or("").to_string())
+                        }
+                        ast::PropName::Computed(computed) => {
+                            match lower_expr(ctx, computed.expr.as_ref()) {
+                                Ok(e) => MethodKey::Computed(e),
+                                Err(_) => continue,
+                            }
+                        }
+                        _ => continue,
+                    };
+                    let key_label: String = match &method_key {
+                        MethodKey::Static(s) => s.clone(),
+                        MethodKey::Computed(_) => format!("computed_{}", ctx.next_func_id),
+                    };
+                    let key: String = key_label.clone();
+                    let func_id = ctx.fresh_func();
+                    // Use a unique synthetic name to avoid collisions
+                    let func_name = format!("__obj_method_{}_{}", key, func_id);
+
+                    // Snapshot outer locals for capture analysis
+                    let outer_locals: Vec<(String, LocalId)> = ctx
+                        .locals
+                        .iter()
+                        .map(|(name, id, _)| (name.clone(), *id))
+                        .collect();
+
+                    let scope_mark = ctx.enter_scope();
+                    let mut params = Vec::new();
+                    for param in method.function.params.iter() {
+                        let param_name = get_pat_name(&param.pat)?;
+                        let param_type = extract_param_type_with_ctx(&param.pat, Some(ctx));
+                        let param_default = get_param_default(ctx, &param.pat)?;
+                        let param_id = ctx.define_local(param_name.clone(), param_type.clone());
+                        params.push(Param {
+                            id: param_id,
+                            name: param_name,
+                            ty: param_type,
+                            default: param_default,
+                            is_rest: is_rest_param(&param.pat),
+                        });
+                    }
+                    let return_type = method
+                        .function
+                        .return_type
+                        .as_ref()
+                        .map(|rt| extract_ts_type_with_ctx(&rt.type_ann, Some(ctx)))
+                        .unwrap_or(Type::Any);
+                    let body = if let Some(ref block) = method.function.body {
+                        lower_block_stmt(ctx, block)?
+                    } else {
+                        Vec::new()
+                    };
+                    ctx.exit_scope(scope_mark);
+
+                    // Capture analysis (same pattern as arrow/function expressions)
+                    let mut all_refs = Vec::new();
+                    let mut visited_closures = std::collections::HashSet::new();
+                    for stmt in &body {
+                        collect_local_refs_stmt(stmt, &mut all_refs, &mut visited_closures);
+                    }
+                    let outer_local_ids: std::collections::HashSet<LocalId> =
+                        outer_locals.iter().map(|(_, id)| *id).collect();
+                    let method_param_ids: std::collections::HashSet<LocalId> =
+                        params.iter().map(|p| p.id).collect();
+                    let mut captures: Vec<LocalId> = all_refs
+                        .into_iter()
+                        .filter(|id| outer_local_ids.contains(id) && !method_param_ids.contains(id))
+                        .collect();
+                    captures.sort();
+                    captures.dedup();
+                    captures = ctx.filter_module_level_captures(captures);
+
+                    // Check if the method body uses `this` — even with no
+                    // outer-scope captures we must emit a Closure so the
+                    // object-literal creation code can patch capture slot 0
+                    // with the object pointer.
+                    let uses_this = closure_uses_this(&body);
+
+                    let value_expr: Expr = if captures.is_empty() && !uses_this {
+                        // No captures and no `this`: keep as standalone Function + FuncRef
+                        ctx.register_func(func_name.clone(), func_id);
+                        let defaults: Vec<Option<Expr>> =
+                            params.iter().map(|p| p.default.clone()).collect();
+                        let param_ids: Vec<LocalId> = params.iter().map(|p| p.id).collect();
+                        ctx.func_defaults.push((func_id, defaults, param_ids));
+                        ctx.pending_functions.push(Function {
+                            id: func_id,
+                            name: func_name,
+                            type_params: Vec::new(),
+                            params,
+                            return_type,
+                            body,
+                            is_async: method.function.is_async,
+                            is_generator: false,
+                            was_plain_async: false,
+                            is_exported: false,
+                            captures: Vec::new(),
+                            decorators: Vec::new(),
+                        });
+                        Expr::FuncRef(func_id)
+                    } else {
+                        // Has captures: emit as Closure
+                        let mut all_assigned = Vec::new();
+                        for stmt in &body {
+                            collect_assigned_locals_stmt(stmt, &mut all_assigned);
+                        }
+                        let assigned_set: std::collections::HashSet<LocalId> =
+                            all_assigned.into_iter().collect();
+                        let mutable_captures: Vec<LocalId> = captures
+                            .iter()
+                            .filter(|id| {
+                                assigned_set.contains(id) || ctx.var_hoisted_ids.contains(id)
+                            })
+                            .copied()
+                            .collect();
+                        let captures_this = uses_this;
+                        let enclosing_class = if captures_this {
+                            ctx.current_class.clone()
+                        } else {
+                            None
                         };
-                        match key_resolution {
-                            KeyResolution::Skip => continue,
-                            KeyResolution::Static(key) => {
-                                let value = lower_expr(ctx, &kv.value)?;
-                                props.push((key, value));
-                            }
-                            KeyResolution::Dynamic(key_expr) => {
-                                let value = lower_expr(ctx, &kv.value)?;
+                        Expr::Closure {
+                            func_id,
+                            params,
+                            return_type,
+                            body,
+                            captures,
+                            mutable_captures,
+                            captures_this,
+                            enclosing_class,
+                            is_async: method.function.is_async,
+                        }
+                    };
+                    match method_key {
+                        MethodKey::Static(key_str) => {
+                            props.push((key_str, value_expr));
+                        }
+                        MethodKey::Computed(key_expr) => {
+                            if uses_this {
+                                computed_post_init.push(PostInit::SetMethodWithThis {
+                                    key: key_expr,
+                                    closure: value_expr,
+                                });
+                            } else {
                                 computed_post_init.push(PostInit::SetValue {
                                     key: key_expr,
-                                    value,
+                                    value: value_expr,
                                 });
                             }
                         }
                     }
-                    ast::Prop::Shorthand(ident) => {
-                        // Shorthand property: { help } → { help: help }
-                        let name = ident.sym.to_string();
-                        let value = if let Some(func_id) = ctx.lookup_func(&name) {
-                            Expr::FuncRef(func_id)
-                        } else if let Some(local_id) = ctx.lookup_local(&name) {
-                            Expr::LocalGet(local_id)
-                        } else if ctx.lookup_class(&name).is_some() {
-                            Expr::ClassRef(name.clone())
-                        } else {
-                            continue;
-                        };
-                        props.push((name, value));
-                    }
-                    ast::Prop::Method(method) => {
-                        // Inline method: { help(): string { ... } }
-                        // Computed keys (e.g. `[Symbol.toPrimitive](hint) {}`)
-                        // get routed through the IIFE wrapper's
-                        // SetMethodWithThis post-init, which emits a
-                        // `js_object_set_symbol_method` call that also
-                        // patches the closure's reserved `this` slot.
-                        enum MethodKey {
-                            Static(String),
-                            Computed(Expr),
-                        }
-                        let method_key = match &method.key {
-                            ast::PropName::Ident(ident) => MethodKey::Static(ident.sym.to_string()),
-                            ast::PropName::Str(s) => {
-                                MethodKey::Static(s.value.as_str().unwrap_or("").to_string())
-                            }
-                            ast::PropName::Computed(computed) => {
-                                match lower_expr(ctx, computed.expr.as_ref()) {
-                                    Ok(e) => MethodKey::Computed(e),
-                                    Err(_) => continue,
-                                }
-                            }
-                            _ => continue,
-                        };
-                        let key_label: String = match &method_key {
-                            MethodKey::Static(s) => s.clone(),
-                            MethodKey::Computed(_) => format!("computed_{}", ctx.next_func_id),
-                        };
-                        let key: String = key_label.clone();
-                        let func_id = ctx.fresh_func();
-                        // Use a unique synthetic name to avoid collisions
-                        let func_name = format!("__obj_method_{}_{}", key, func_id);
-
-                        // Snapshot outer locals for capture analysis
-                        let outer_locals: Vec<(String, LocalId)> = ctx
-                            .locals
-                            .iter()
-                            .map(|(name, id, _)| (name.clone(), *id))
-                            .collect();
-
-                        let scope_mark = ctx.enter_scope();
-                        let mut params = Vec::new();
-                        for param in method.function.params.iter() {
-                            let param_name = get_pat_name(&param.pat)?;
-                            let param_type = extract_param_type_with_ctx(&param.pat, Some(ctx));
-                            let param_default = get_param_default(ctx, &param.pat)?;
-                            let param_id = ctx.define_local(param_name.clone(), param_type.clone());
-                            params.push(Param {
-                                id: param_id,
-                                name: param_name,
-                                ty: param_type,
-                                default: param_default,
-                                is_rest: is_rest_param(&param.pat),
-                            });
-                        }
-                        let return_type = method
-                            .function
-                            .return_type
-                            .as_ref()
-                            .map(|rt| extract_ts_type_with_ctx(&rt.type_ann, Some(ctx)))
-                            .unwrap_or(Type::Any);
-                        let body = if let Some(ref block) = method.function.body {
-                            lower_block_stmt(ctx, block)?
-                        } else {
-                            Vec::new()
-                        };
-                        ctx.exit_scope(scope_mark);
-
-                        // Capture analysis (same pattern as arrow/function expressions)
-                        let mut all_refs = Vec::new();
-                        let mut visited_closures = std::collections::HashSet::new();
-                        for stmt in &body {
-                            collect_local_refs_stmt(stmt, &mut all_refs, &mut visited_closures);
-                        }
-                        let outer_local_ids: std::collections::HashSet<LocalId> =
-                            outer_locals.iter().map(|(_, id)| *id).collect();
-                        let method_param_ids: std::collections::HashSet<LocalId> =
-                            params.iter().map(|p| p.id).collect();
-                        let mut captures: Vec<LocalId> = all_refs
-                            .into_iter()
-                            .filter(|id| {
-                                outer_local_ids.contains(id) && !method_param_ids.contains(id)
-                            })
-                            .collect();
-                        captures.sort();
-                        captures.dedup();
-                        captures = ctx.filter_module_level_captures(captures);
-
-                        // Check if the method body uses `this` — even with no
-                        // outer-scope captures we must emit a Closure so the
-                        // object-literal creation code can patch capture slot 0
-                        // with the object pointer.
-                        let uses_this = closure_uses_this(&body);
-
-                        let value_expr: Expr = if captures.is_empty() && !uses_this {
-                            // No captures and no `this`: keep as standalone Function + FuncRef
-                            ctx.register_func(func_name.clone(), func_id);
-                            let defaults: Vec<Option<Expr>> =
-                                params.iter().map(|p| p.default.clone()).collect();
-                            let param_ids: Vec<LocalId> = params.iter().map(|p| p.id).collect();
-                            ctx.func_defaults.push((func_id, defaults, param_ids));
-                            ctx.pending_functions.push(Function {
-                                id: func_id,
-                                name: func_name,
-                                type_params: Vec::new(),
-                                params,
-                                return_type,
-                                body,
-                                is_async: method.function.is_async,
-                                is_generator: false,
-                                was_plain_async: false,
-                                is_exported: false,
-                                captures: Vec::new(),
-                                decorators: Vec::new(),
-                            });
-                            Expr::FuncRef(func_id)
-                        } else {
-                            // Has captures: emit as Closure
-                            let mut all_assigned = Vec::new();
-                            for stmt in &body {
-                                collect_assigned_locals_stmt(stmt, &mut all_assigned);
-                            }
-                            let assigned_set: std::collections::HashSet<LocalId> =
-                                all_assigned.into_iter().collect();
-                            let mutable_captures: Vec<LocalId> = captures
-                                .iter()
-                                .filter(|id| {
-                                    assigned_set.contains(id) || ctx.var_hoisted_ids.contains(id)
-                                })
-                                .copied()
-                                .collect();
-                            let captures_this = uses_this;
-                            let enclosing_class = if captures_this {
-                                ctx.current_class.clone()
-                            } else {
-                                None
-                            };
-                            Expr::Closure {
-                                func_id,
-                                params,
-                                return_type,
-                                body,
-                                captures,
-                                mutable_captures,
-                                captures_this,
-                                enclosing_class,
-                                is_async: method.function.is_async,
-                            }
-                        };
-                        match method_key {
-                            MethodKey::Static(key_str) => {
-                                props.push((key_str, value_expr));
-                            }
-                            MethodKey::Computed(key_expr) => {
-                                if uses_this {
-                                    computed_post_init.push(PostInit::SetMethodWithThis {
-                                        key: key_expr,
-                                        closure: value_expr,
-                                    });
-                                } else {
-                                    computed_post_init.push(PostInit::SetValue {
-                                        key: key_expr,
-                                        value: value_expr,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
     // No computed-key post-init: emit a plain object literal.

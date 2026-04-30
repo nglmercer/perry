@@ -1,6 +1,6 @@
+use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{msg_send, Encode, Encoding, RefEncode};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -67,7 +67,7 @@ const A_WEIGHT_SOS: [[f64; 6]; 3] = [
         1.0,
         1.0,
         -1.9746716508129498,
-        0.97504628855498883,
+        0.975_046_288_554_988_9,
     ],
     // Section 2: High-pass pair (107.7 Hz, 737.9 Hz poles)
     [
@@ -75,7 +75,7 @@ const A_WEIGHT_SOS: [[f64; 6]; 3] = [
         -2.0,
         1.0,
         1.0,
-        -1.1440825051498020,
+        -1.144_082_505_149_802,
         0.20482985688498268,
     ],
     // Section 3: Low-pass pair (12194 Hz poles)
@@ -84,7 +84,7 @@ const A_WEIGHT_SOS: [[f64; 6]; 3] = [
         -0.49299305707950996,
         0.24649652853975498,
         1.0,
-        -0.48689808685150487,
+        -0.486_898_086_851_504_9,
         0.0,
     ],
 ];
@@ -122,7 +122,7 @@ fn a_weight_filter(sample: f64, state: &mut AWeightState) -> f64 {
 // =============================================================================
 
 thread_local! {
-    static ENGINE: RefCell<Option<Retained<AnyObject>>> = RefCell::new(None);
+    static ENGINE: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
 }
 
 // =============================================================================
@@ -299,7 +299,7 @@ pub fn get_device_model() -> i64 {
 /// tap block always runs on the same audio thread.
 thread_local! {
     static FILTER_STATE: RefCell<AWeightState> = RefCell::new(AWeightState::new());
-    static EMA_DB: RefCell<f64> = RefCell::new(0.0);
+    static EMA_DB: RefCell<f64> = const { RefCell::new(0.0) };
 }
 
 /// Process a single audio buffer from the AVAudioEngine tap.

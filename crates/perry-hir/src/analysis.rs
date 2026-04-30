@@ -1263,11 +1263,8 @@ pub(crate) fn uses_this_stmt(stmt: &Stmt) -> bool {
             body,
         } => {
             init.as_ref().map(|s| uses_this_stmt(s)).unwrap_or(false)
-                || condition
-                    .as_ref()
-                    .map(|e| uses_this_expr(e))
-                    .unwrap_or(false)
-                || update.as_ref().map(|e| uses_this_expr(e)).unwrap_or(false)
+                || condition.as_ref().map(uses_this_expr).unwrap_or(false)
+                || update.as_ref().map(uses_this_expr).unwrap_or(false)
                 || body.iter().any(uses_this_stmt)
         }
         Stmt::Try {

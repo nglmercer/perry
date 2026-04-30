@@ -621,7 +621,7 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
             //   "void"            → no return value.
             //   (absent)          → fall back to HIR ExternFuncRef.return_type and
             //                       the name-pattern heuristic below.
-            let has_string_args = arg_types.iter().any(|t| *t == PTR);
+            let has_string_args = arg_types.contains(&PTR);
             let manifest_ret: Option<&str> = manifest_sig.as_ref().map(|(_, r)| r.as_str());
             // "i64_str": explicit opt-in for FFI functions that return a raw i64
             // which is actually a *StringHeader pointer — distinct from "string"
@@ -701,7 +701,7 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
             .unwrap_or(args.len())
             .max(args.len());
         let param_types: Vec<crate::types::LlvmType> =
-            std::iter::repeat(DOUBLE).take(target_arity).collect();
+            std::iter::repeat_n(DOUBLE, target_arity).collect();
         ctx.pending_declares
             .push((fname.clone(), DOUBLE, param_types));
         let mut lowered: Vec<String> = Vec::with_capacity(target_arity);
@@ -929,7 +929,7 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
                 // strings and arrays. Route to string path only when args
                 // rule out the array variant (e.g., slice(0) is ambiguous
                 // but slice() with 0 args is always array.slice to copy).
-                "slice" if args.len() >= 1 => true,
+                "slice" if !args.is_empty() => true,
                 "indexOf" | "includes" if args.len() == 1 => true,
                 "startsWith" | "endsWith" if args.len() == 1 => true,
                 "lastIndexOf" if args.len() == 1 => true,
@@ -1150,7 +1150,7 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
         // because it skips ArrayForEach when the receiver is Map/Set.
         // Route to the runtime forEach implementations which iterate
         // entries and call the callback via js_closure_call2.
-        if property == "forEach" && args.len() >= 1 {
+        if property == "forEach" && !args.is_empty() {
             if is_map_expr(ctx, object) {
                 let m_box = lower_expr(ctx, object)?;
                 let cb_box = lower_expr(ctx, &args[0])?;

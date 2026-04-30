@@ -47,12 +47,12 @@ fn clean_arr_ptr(arr: *const ArrayHeader) -> *const ArrayHeader {
             return std::ptr::null();
         }
         let cleaned_bits = bits & 0x0000_FFFF_FFFF_FFFF;
-        if cleaned_bits < HEAP_MIN || cleaned_bits >= HEAP_MAX {
+        if !(HEAP_MIN..HEAP_MAX).contains(&cleaned_bits) {
             return std::ptr::null();
         }
         cleaned_bits as *const ArrayHeader
     } else {
-        if bits < HEAP_MIN || bits >= HEAP_MAX {
+        if !(HEAP_MIN..HEAP_MAX).contains(&bits) {
             return std::ptr::null();
         }
         arr
@@ -79,7 +79,7 @@ fn clean_arr_ptr(arr: *const ArrayHeader) -> *const ArrayHeader {
                 break;
             }
             let new_user = crate::gc::forwarding_address(gc_header) as u64;
-            if new_user < HEAP_MIN || new_user >= HEAP_MAX {
+            if !(HEAP_MIN..HEAP_MAX).contains(&new_user) {
                 return std::ptr::null();
             }
             cleaned = new_user as *const ArrayHeader;
@@ -376,7 +376,7 @@ pub extern "C" fn js_array_get_f64_unchecked(arr: *const ArrayHeader, index: u32
     if arr.is_null() {
         return f64::NAN;
     }
-    const TAG_UNDEFINED_F64: f64 = unsafe { std::mem::transmute(0x7FFC_0000_0000_0001u64) };
+    const TAG_UNDEFINED_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0001u64) };
     unsafe {
         let length = (*arr).length;
         if index >= length {
@@ -474,7 +474,7 @@ pub extern "C" fn js_array_get_f64(arr: *const ArrayHeader, index: u32) -> f64 {
     // JS spec: out-of-bounds array access returns `undefined`, not NaN.
     // This matters for destructuring defaults (`const [a, b, c = 30] = [1, 2]`)
     // where the `?? fallback` must see TAG_UNDEFINED, not NaN.
-    const TAG_UNDEFINED_F64: f64 = unsafe { std::mem::transmute(0x7FFC_0000_0000_0001u64) };
+    const TAG_UNDEFINED_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0001u64) };
     unsafe {
         let length = (*arr).length;
         if index >= length {
@@ -730,7 +730,7 @@ pub extern "C" fn js_array_delete(arr: *mut ArrayHeader, index: u32) -> i32 {
         if index >= length {
             return 1; // delete on out-of-bounds always returns true in JS
         }
-        const TAG_UNDEFINED_F64: f64 = unsafe { std::mem::transmute(0x7FFC_0000_0000_0001u64) };
+        const TAG_UNDEFINED_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0001u64) };
         let elements_ptr = (arr as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
         std::ptr::write(elements_ptr.add(index as usize), TAG_UNDEFINED_F64);
         1
@@ -1001,11 +1001,7 @@ pub extern "C" fn js_array_slice(
         };
 
         // Calculate slice length
-        let slice_len = if end_idx > start_idx {
-            end_idx - start_idx
-        } else {
-            0
-        };
+        let slice_len = end_idx.saturating_sub(start_idx);
 
         // Allocate new array
         let result = js_array_alloc(slice_len);
@@ -1456,7 +1452,7 @@ pub extern "C" fn js_array_values(arr: *const ArrayHeader) -> *mut ArrayHeader {
 // These use closure pointers to call the callback function
 // ============================================================================
 
-use crate::closure::{js_closure_call1, js_closure_call2, ClosureHeader};
+use crate::closure::{js_closure_call2, ClosureHeader};
 
 /// forEach - call callback(element, index) for each element
 /// Returns nothing (void)
@@ -2767,12 +2763,12 @@ pub extern "C" fn js_iterator_to_array(iter_f64: f64) -> *mut ArrayHeader {
     use crate::closure;
     use crate::object::{js_object_get_field_by_name, ObjectHeader};
     use crate::string::js_string_from_bytes;
-    use crate::value::{js_nanbox_get_pointer, POINTER_MASK, TAG_UNDEFINED};
+    use crate::value::{js_nanbox_get_pointer, TAG_UNDEFINED};
 
     let arr = js_array_alloc(8); // start with capacity 8
 
     // Get the iterator object pointer
-    let iter_bits = iter_f64.to_bits();
+    let _iter_bits = iter_f64.to_bits();
     let iter_ptr = js_nanbox_get_pointer(iter_f64);
     if iter_ptr == 0 {
         return arr;

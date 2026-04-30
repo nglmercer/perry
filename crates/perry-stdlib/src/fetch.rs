@@ -103,7 +103,7 @@ pub unsafe extern "C" fn js_fetch_get(url_ptr: *const StringHeader) -> *mut perr
         Some(u) => u,
         None => {
             let err_msg = "Invalid URL";
-            let err_bits = fetch_error_bits(&err_msg);
+            let err_bits = fetch_error_bits(err_msg);
             queue_promise_resolution(promise_ptr, false, err_bits);
             return promise;
         }
@@ -173,7 +173,7 @@ pub unsafe extern "C" fn js_fetch_get_with_auth(
         Some(u) => u,
         None => {
             let err_msg = "Invalid URL";
-            let err_bits = fetch_error_bits(&err_msg);
+            let err_bits = fetch_error_bits(err_msg);
             queue_promise_resolution(promise_ptr, false, err_bits);
             return promise;
         }
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn js_fetch_post_with_auth(
         Some(u) => u,
         None => {
             let err_msg = "Invalid URL";
-            let err_bits = fetch_error_bits(&err_msg);
+            let err_bits = fetch_error_bits(err_msg);
             queue_promise_resolution(promise_ptr, false, err_bits);
             return promise;
         }
@@ -327,7 +327,7 @@ pub unsafe extern "C" fn js_fetch_post(
         Some(u) => u,
         None => {
             let err_msg = "Invalid URL";
-            let err_bits = fetch_error_bits(&err_msg);
+            let err_bits = fetch_error_bits(err_msg);
             queue_promise_resolution(promise_ptr, false, err_bits);
             return promise;
         }
@@ -410,7 +410,7 @@ pub unsafe extern "C" fn js_fetch_with_options(
         Some(u) => u,
         None => {
             let err_msg = "Invalid URL";
-            let err_bits = fetch_error_bits(&err_msg);
+            let err_bits = fetch_error_bits(err_msg);
             queue_promise_resolution(promise_ptr, false, err_bits);
             return promise;
         }
@@ -562,7 +562,7 @@ pub unsafe extern "C" fn js_fetch_response_text(handle: i64) -> *mut perry_runti
             Some(resp) => resp.body.clone(),
             None => {
                 let err_msg = "Invalid response handle";
-                let err_nan = f64::from_bits(fetch_error_bits(&err_msg));
+                let err_nan = f64::from_bits(fetch_error_bits(err_msg));
                 perry_runtime::js_promise_reject(promise, err_nan);
                 return promise;
             }
@@ -634,7 +634,7 @@ pub unsafe extern "C" fn js_fetch_response_json(handle: i64) -> *mut perry_runti
             Some(resp) => resp.body.clone(),
             None => {
                 let err_msg = "Invalid response handle";
-                let err_nan = f64::from_bits(fetch_error_bits(&err_msg));
+                let err_nan = f64::from_bits(fetch_error_bits(err_msg));
                 perry_runtime::js_promise_reject(promise, err_nan);
                 return promise;
             }
@@ -673,7 +673,7 @@ pub unsafe extern "C" fn js_fetch_text(
         Some(u) => u,
         None => {
             let err_msg = "Invalid URL";
-            let err_bits = fetch_error_bits(&err_msg);
+            let err_bits = fetch_error_bits(err_msg);
             queue_promise_resolution(promise_ptr, false, err_bits);
             return promise;
         }
@@ -1127,15 +1127,12 @@ pub extern "C" fn js_response_clone(handle: f64) -> f64 {
     let id = handle as usize;
     let cloned = {
         let guard = FETCH_RESPONSES.lock().unwrap();
-        match guard.get(&id) {
-            Some(resp) => Some(FetchResponse {
-                status: resp.status,
-                status_text: resp.status_text.clone(),
-                headers: resp.headers.clone(),
-                body: resp.body.clone(),
-            }),
-            None => None,
-        }
+        guard.get(&id).map(|resp| FetchResponse {
+            status: resp.status,
+            status_text: resp.status_text.clone(),
+            headers: resp.headers.clone(),
+            body: resp.body.clone(),
+        })
     };
     if let Some(new_resp) = cloned {
         let mut id_guard = NEXT_RESPONSE_ID.lock().unwrap();

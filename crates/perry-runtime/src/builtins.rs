@@ -25,7 +25,7 @@ fn is_negative_zero(n: f64) -> bool {
 #[inline]
 fn format_finite_number_js(value: f64) -> String {
     let abs = value.abs();
-    if abs >= 1e21 || abs < 1e-6 {
+    if !(1e-6..1e21).contains(&abs) {
         crate::string::fix_exponent_format(&format!("{:e}", value))
     } else {
         format!("{}", value)
@@ -517,7 +517,7 @@ fn format_jsvalue(value: f64, depth: usize) -> String {
                             .round() as usize;
                         // cols_by_width = ceil(breakLength / (maxLen + 2)); breakLength=76
                         let actual_max = max_len + 2;
-                        let cols_by_width = (76 + actual_max - 1) / actual_max;
+                        let cols_by_width = 76_usize.div_ceil(actual_max);
                         let columns = cols_by_sqrt
                             .min(cols_by_width.max(1))
                             .min(12) // compact(3) * 4
@@ -1469,10 +1469,7 @@ pub extern "C" fn js_number_coerce(value: f64) -> f64 {
                             Err(_) => f64::NAN,
                         };
                     }
-                    match trimmed.parse::<f64>() {
-                        Ok(n) => n,
-                        Err(_) => f64::NAN,
-                    }
+                    trimmed.parse::<f64>().unwrap_or(f64::NAN)
                 } else {
                     f64::NAN
                 }
@@ -1598,10 +1595,7 @@ pub extern "C" fn js_is_nan(value: f64) -> f64 {
                     if trimmed.is_empty() {
                         0.0
                     } else {
-                        match trimmed.parse::<f64>() {
-                            Ok(n) => n,
-                            Err(_) => f64::NAN,
-                        }
+                        trimmed.parse::<f64>().unwrap_or(f64::NAN)
                     }
                 } else {
                     f64::NAN
@@ -1654,10 +1648,7 @@ pub extern "C" fn js_is_finite(value: f64) -> f64 {
                     if trimmed.is_empty() {
                         0.0
                     } else {
-                        match trimmed.parse::<f64>() {
-                            Ok(n) => n,
-                            Err(_) => f64::NAN,
-                        }
+                        trimmed.parse::<f64>().unwrap_or(f64::NAN)
                     }
                 } else {
                     f64::NAN
@@ -1866,7 +1857,7 @@ pub extern "C" fn js_console_count_reset(label_ptr: *const StringHeader) {
 // common console.log path prefixes output with `"  ".repeat(level)`
 // when level > 0 to match Node's visual indentation.
 thread_local! {
-    pub(crate) static CONSOLE_GROUP_INDENT: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    pub(crate) static CONSOLE_GROUP_INDENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Return the current indent prefix (two spaces per level).
@@ -2178,7 +2169,7 @@ fn render_table(headers: &[String], rows: &[Vec<String>]) {
     let dashes = |w: usize| -> String { "─".repeat(w + 2) };
     let pad_cell = |s: &str, w: usize| -> String {
         let count = s.chars().count();
-        let pad = if w > count { w - count } else { 0 };
+        let pad = w.saturating_sub(count);
         format!(" {}{} ", s, " ".repeat(pad))
     };
 
@@ -2748,7 +2739,7 @@ pub extern "C" fn js_queue_microtask(callback: i64) {
 }
 
 thread_local! {
-    static QUEUED_MICROTASKS: std::cell::RefCell<Vec<i64>> = std::cell::RefCell::new(Vec::new());
+    static QUEUED_MICROTASKS: std::cell::RefCell<Vec<i64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Drain queued microtasks. Called by `js_promise_run_microtasks`.

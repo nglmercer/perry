@@ -23,7 +23,7 @@ struct TableEntry {
 }
 
 thread_local! {
-    static TABLES: RefCell<Vec<TableEntry>> = RefCell::new(Vec::new());
+    static TABLES: RefCell<Vec<TableEntry>> = const { RefCell::new(Vec::new()) };
 }
 
 fn find_entry_idx(handle: i64) -> Option<usize> {

@@ -39,7 +39,7 @@ pub(super) fn lower_builtin_new(
             }
             let blk = ctx.block();
             let handle = blk.call(I64, "js_commander_new", &[]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // events.EventEmitter — `new EventEmitter()` produces a real
         // EventEmitterHandle so `.on(...)` / `.emit(...)` find their
@@ -53,7 +53,7 @@ pub(super) fn lower_builtin_new(
             }
             let blk = ctx.block();
             let handle = blk.call(I64, "js_event_emitter_new", &[]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // lru-cache LRUCache — `new LRUCache({ max: N })`. Runtime takes
         // a single `max: f64`. Extract the `max` field from the options
@@ -86,7 +86,7 @@ pub(super) fn lower_builtin_new(
             };
             let blk = ctx.block();
             let handle = blk.call(I64, "js_lru_cache_new", &[(DOUBLE, &max_val)]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // (`WebSocketServer` is handled by an earlier branch lower in this
         // file — pre-existing from 2026-04-14. No new branch needed here.)
@@ -108,7 +108,7 @@ pub(super) fn lower_builtin_new(
             };
             let blk = ctx.block();
             let handle = blk.call(I64, "js_pg_client_new", &[(DOUBLE, &config_val)]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // pg Pool — `new Pool(config)`. sqlx's `connect_lazy` makes this
         // synchronous (no actual connections opened until first `.query()`),
@@ -123,7 +123,7 @@ pub(super) fn lower_builtin_new(
             };
             let blk = ctx.block();
             let handle = blk.call(I64, "js_pg_pool_new", &[(DOUBLE, &config_val)]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // better-sqlite3 Database — `new Database(filename)` opens a SQLite
         // connection. Without this, `new Database(...)` falls into lower_new's
@@ -140,7 +140,7 @@ pub(super) fn lower_builtin_new(
             };
             let blk = ctx.block();
             let handle = blk.call(I64, "js_sqlite_open", &[(I64, &path_ptr)]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // mongodb MongoClient — `new MongoClient(uri)` matching npm mongodb's
         // API. URI is a string; runtime stores it and connects later via
@@ -153,7 +153,7 @@ pub(super) fn lower_builtin_new(
             };
             let blk = ctx.block();
             let handle = blk.call(I64, "js_mongodb_client_new", &[(I64, &uri_ptr)]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // ioredis Redis — `new Redis()` or `new Redis(opts)`. The runtime's
         // `js_ioredis_new` reads connection settings from REDIS_HOST /
@@ -173,7 +173,7 @@ pub(super) fn lower_builtin_new(
             // The runtime sig takes one i64 (currently *const c_void, ignored).
             // Pass 0 — semantically "use env-var defaults".
             let handle = blk.call(I64, "js_ioredis_new", &[(I64, "0")]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // async_hooks.AsyncLocalStorage — `new AsyncLocalStorage()` produces a
         // real handle so `.run(store, cb)` / `.getStore()` / `.enterWith(store)`
@@ -187,7 +187,7 @@ pub(super) fn lower_builtin_new(
             }
             let blk = ctx.block();
             let handle = blk.call(I64, "js_async_local_storage_new", &[]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         // decimal.js Decimal — `new Decimal(value)` where value is a number,
         // string, or another Decimal. Routes through `js_decimal_coerce_to_handle`
@@ -204,7 +204,7 @@ pub(super) fn lower_builtin_new(
             };
             let blk = ctx.block();
             let handle = blk.call(I64, "js_decimal_coerce_to_handle", &[(DOUBLE, &val)]);
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         "Array" => {
             // `new Array()` → empty array, `new Array(n)` → length-n array
@@ -224,7 +224,7 @@ pub(super) fn lower_builtin_new(
                 return Ok(None);
             };
             let blk = ctx.block();
-            return Ok(Some(nanbox_pointer_inline(blk, &handle)));
+            Ok(Some(nanbox_pointer_inline(blk, &handle)))
         }
         "Response" => {
             // new Response(body?, init?) — init = { status?, statusText?, headers? }

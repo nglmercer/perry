@@ -33,7 +33,7 @@ pub fn compile_widget_glance(widget: &WidgetDecl, app_package: &str) -> Result<G
     let mut kotlin_files = Vec::new();
 
     // Generate GlanceAppWidget
-    let widget_kt = emit::emit_widget(&widget, &safe_name, app_package);
+    let widget_kt = emit::emit_widget(widget, &safe_name, app_package);
     kotlin_files.push((format!("{}Widget.kt", safe_name), widget_kt));
 
     // Generate GlanceAppWidgetReceiver

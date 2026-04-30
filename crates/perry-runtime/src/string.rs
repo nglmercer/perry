@@ -149,9 +149,9 @@ pub extern "C" fn js_string_from_bytes(data: *const u8, len: u32) -> *mut String
 /// subsequent `scratch` modification or a GC cycle that could sweep
 /// the heap-backed `StringHeader`.
 #[inline]
-pub fn str_bytes_from_jsvalue<'a>(
+pub fn str_bytes_from_jsvalue(
     value: f64,
-    scratch: &'a mut [u8; crate::value::SHORT_STRING_MAX_LEN],
+    scratch: &mut [u8; crate::value::SHORT_STRING_MAX_LEN],
 ) -> Option<(*const u8, u32)> {
     let bits = value.to_bits();
     let jsval = crate::value::JSValue::from_bits(bits);
@@ -394,7 +394,7 @@ pub extern "C" fn js_string_append(
 
     // Self-append (s += s): must allocate fresh to avoid reading from
     // memory that is being written to.
-    if dest as *const StringHeader == src {
+    if std::ptr::eq(dest, src) {
         return js_string_concat(dest as *const StringHeader, src);
     }
 
@@ -649,7 +649,7 @@ pub extern "C" fn js_string_concat_value(
         if value.fract() == 0.0 && value.abs() < 1e15 && !value.is_nan() && !value.is_infinite() {
             // Integer path: format directly without Rust heap allocation
             let n = value as i64;
-            if n >= 0 && n <= 999_999_999 {
+            if (0..=999_999_999).contains(&n) {
                 // Fast itoa for common positive integers
                 num_len = fast_itoa_u32(n as u32, &mut num_buf);
             } else {
@@ -744,7 +744,7 @@ pub extern "C" fn js_value_concat_string(
 
         if value.fract() == 0.0 && value.abs() < 1e15 && !value.is_nan() && !value.is_infinite() {
             let n = value as i64;
-            if n >= 0 && n <= 999_999_999 {
+            if (0..=999_999_999).contains(&n) {
                 num_len = fast_itoa_u32(n as u32, &mut num_buf);
             } else {
                 let s = format!("{}", n);
@@ -886,7 +886,7 @@ pub extern "C" fn js_number_to_string(value: f64) -> *mut StringHeader {
         // 0.000…0002… decimals for `Number.EPSILON`, neither of which
         // matches Node's output).
         let abs = value.abs();
-        if abs >= 1e21 || abs < 1e-6 {
+        if !(1e-6..1e21).contains(&abs) {
             fix_exponent_format(&format!("{:e}", value))
         } else {
             format!("{}", value)
@@ -937,7 +937,7 @@ pub extern "C" fn js_number_to_precision(value: f64, precision: f64) -> *mut Str
             // JS uses exponential notation when exp < -6 or exp >= precision
             if exp < -6 || exp >= p as i32 {
                 // Exponential: precision-1 digits after decimal, e+/-exp
-                let mantissa_digits = if p > 1 { p - 1 } else { 0 };
+                let mantissa_digits = p.saturating_sub(1);
                 let formatted = format!("{:.*e}", mantissa_digits, value);
                 // Rust's "{:e}" format produces "1.23e4"; JS uses "1.23e+4"
                 fix_exponent_format(&formatted)
@@ -1010,7 +1010,7 @@ fn format_number_for_js(value: f64) -> String {
     } else {
         // ECMAScript NumberToString — see js_number_to_string for rationale.
         let abs = value.abs();
-        if abs >= 1e21 || abs < 1e-6 {
+        if !(1e-6..1e21).contains(&abs) {
             fix_exponent_format(&format!("{:e}", value))
         } else {
             format!("{}", value)
@@ -1522,7 +1522,7 @@ pub extern "C" fn js_string_to_char_array(s: i64) -> i64 {
 /// Takes a single character code and returns a 1-character string
 #[no_mangle]
 pub extern "C" fn js_string_from_char_code(code: i32) -> *mut StringHeader {
-    if code < 0 || code > 0xFFFF {
+    if !(0..=0xFFFF).contains(&code) {
         // Invalid character code, return empty string
         return js_string_from_bytes(std::ptr::null(), 0);
     }
@@ -1544,7 +1544,7 @@ pub extern "C" fn js_string_from_char_code(code: i32) -> *mut StringHeader {
 /// Supports the full Unicode range (0..0x10FFFF), unlike fromCharCode (0..0xFFFF).
 #[no_mangle]
 pub extern "C" fn js_string_from_code_point(code: i32) -> *mut StringHeader {
-    if code < 0 || code > 0x10FFFF {
+    if !(0..=0x10FFFF).contains(&code) {
         return js_string_from_bytes(std::ptr::null(), 0);
     }
     let ch = match char::from_u32(code as u32) {
@@ -1804,7 +1804,7 @@ pub extern "C" fn js_string_to_well_formed(s: *const StringHeader) -> *mut Strin
 #[no_mangle]
 pub extern "C" fn js_string_print(s: *const StringHeader) {
     if !is_valid_string_ptr(s) {
-        println!("");
+        println!();
         return;
     }
 
@@ -1816,7 +1816,7 @@ pub extern "C" fn js_string_print(s: *const StringHeader) {
 #[no_mangle]
 pub extern "C" fn js_string_error(s: *const StringHeader) {
     if !is_valid_string_ptr(s) {
-        eprintln!("");
+        eprintln!();
         return;
     }
 
@@ -1828,7 +1828,7 @@ pub extern "C" fn js_string_error(s: *const StringHeader) {
 #[no_mangle]
 pub extern "C" fn js_string_warn(s: *const StringHeader) {
     if !is_valid_string_ptr(s) {
-        eprintln!("");
+        eprintln!();
         return;
     }
 
@@ -1965,7 +1965,7 @@ pub extern "C" fn js_string_pad_start(
     }
 
     let pad_needed = target_len - current_len;
-    let pad_u16: Vec<u16> = pad_data.encode_utf16().collect();
+    let _pad_u16: Vec<u16> = pad_data.encode_utf16().collect();
     let mut result = String::with_capacity(target_len * 4);
 
     // Build padding by UTF-16 code units

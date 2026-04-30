@@ -67,7 +67,7 @@ pub fn parse_multipart(body: &[u8], content_type: &str) -> Result<Vec<MultipartP
 
     // Find delimiter positions in raw bytes
     let delimiter_bytes = delimiter.as_bytes();
-    let end_bytes = end_delimiter.as_bytes();
+    let _end_bytes = end_delimiter.as_bytes();
 
     let mut segments = Vec::new();
     let mut search_start = 0;
@@ -88,7 +88,7 @@ pub fn parse_multipart(body: &[u8], content_type: &str) -> Result<Vec<MultipartP
                 && &body[after_delim..after_delim + 2] == b"\r\n"
             {
                 after_delim + 2
-            } else if after_delim + 1 <= body.len() && body[after_delim] == b'\n' {
+            } else if after_delim < body.len() && body[after_delim] == b'\n' {
                 after_delim + 1
             } else {
                 after_delim

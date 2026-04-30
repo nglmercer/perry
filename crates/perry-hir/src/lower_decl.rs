@@ -643,7 +643,7 @@ pub(crate) fn lower_class_decl(
             ast::ClassMember::PrivateMethod(method) if method.is_static => {
                 // Register as "#name" so WithPrivateStatic.#helper()
                 // call-site lookup via has_static_method() succeeds.
-                static_method_names.push(format!("#{}", method.key.name.to_string()));
+                static_method_names.push(format!("#{}", method.key.name));
             }
             ast::ClassMember::ClassProp(prop) if prop.is_static => {
                 if let ast::PropName::Ident(ident) = &prop.key {
@@ -651,7 +651,7 @@ pub(crate) fn lower_class_decl(
                 }
             }
             ast::ClassMember::PrivateProp(prop) if prop.is_static => {
-                static_field_names.push(format!("#{}", prop.key.name.to_string()));
+                static_field_names.push(format!("#{}", prop.key.name));
             }
             _ => {}
         }
@@ -846,7 +846,7 @@ pub(crate) fn lower_class_decl(
                                 default: None,
                                 is_rest: false,
                             });
-                            new_params.extend(func.params.drain(..));
+                            new_params.append(&mut func.params);
 
                             let mut body = std::mem::take(&mut func.body);
                             crate::analysis::replace_this_in_stmts(&mut body, this_id);
@@ -918,12 +918,12 @@ pub(crate) fn lower_class_decl(
                         // Store under "#name" so PropertyGet on "#name"
                         // can hit the getter registry (which keys on
                         // the property name, not `get_#name`).
-                        let prop_name = format!("#{}", method.key.name.to_string());
+                        let prop_name = format!("#{}", method.key.name);
                         let func = lower_private_getter(ctx, method)?;
                         getters.push((prop_name, func));
                     }
                     ast::MethodKind::Setter => {
-                        let prop_name = format!("#{}", method.key.name.to_string());
+                        let prop_name = format!("#{}", method.key.name);
                         let func = lower_private_setter(ctx, method)?;
                         setters.push((prop_name, func));
                     }
@@ -1484,7 +1484,7 @@ pub(crate) fn lower_class_from_ast(
                 }
             }
             ast::ClassMember::PrivateMethod(method) if method.is_static => {
-                static_method_names.push(format!("#{}", method.key.name.to_string()));
+                static_method_names.push(format!("#{}", method.key.name));
             }
             ast::ClassMember::ClassProp(prop) if prop.is_static => {
                 if let ast::PropName::Ident(ident) = &prop.key {
@@ -1492,7 +1492,7 @@ pub(crate) fn lower_class_from_ast(
                 }
             }
             ast::ClassMember::PrivateProp(prop) if prop.is_static => {
-                static_field_names.push(format!("#{}", prop.key.name.to_string()));
+                static_field_names.push(format!("#{}", prop.key.name));
             }
             _ => {}
         }
@@ -1576,12 +1576,12 @@ pub(crate) fn lower_class_from_ast(
                         }
                     }
                     ast::MethodKind::Getter => {
-                        let prop_name = format!("#{}", method.key.name.to_string());
+                        let prop_name = format!("#{}", method.key.name);
                         let func = lower_private_getter(ctx, method)?;
                         getters.push((prop_name, func));
                     }
                     ast::MethodKind::Setter => {
-                        let prop_name = format!("#{}", method.key.name.to_string());
+                        let prop_name = format!("#{}", method.key.name);
                         let func = lower_private_setter(ctx, method)?;
                         setters.push((prop_name, func));
                     }
@@ -2558,7 +2558,7 @@ pub(crate) fn lower_private_method(
     ctx: &mut LoweringContext,
     method: &ast::PrivateMethod,
 ) -> Result<Function> {
-    let name = format!("#{}", method.key.name.to_string());
+    let name = format!("#{}", method.key.name);
 
     // Extract method-level type parameters (e.g., #helper<U>(x: U): T)
     let type_params = method
@@ -2636,7 +2636,7 @@ pub(crate) fn lower_private_getter(
     ctx: &mut LoweringContext,
     method: &ast::PrivateMethod,
 ) -> Result<Function> {
-    let name = format!("get_#{}", method.key.name.to_string());
+    let name = format!("get_#{}", method.key.name);
     let scope_mark = ctx.enter_scope();
     ctx.define_local("this".to_string(), Type::Any);
 
@@ -2676,7 +2676,7 @@ pub(crate) fn lower_private_setter(
     ctx: &mut LoweringContext,
     method: &ast::PrivateMethod,
 ) -> Result<Function> {
-    let name = format!("set_#{}", method.key.name.to_string());
+    let name = format!("set_#{}", method.key.name);
     let scope_mark = ctx.enter_scope();
     ctx.define_local("this".to_string(), Type::Any);
 
@@ -2724,7 +2724,7 @@ pub(crate) fn lower_private_prop(
 ) -> Result<ClassField> {
     // Private fields use PrivateName which has a `name` field (without the # prefix in SWC)
     // We store the name with the # prefix to distinguish private fields
-    let name = format!("#{}", prop.key.name.to_string());
+    let name = format!("#{}", prop.key.name);
 
     // Extract type from type annotation (using context for class type param resolution)
     let ty = prop
@@ -3672,7 +3672,7 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
             // `Member { obj: This, prop: ident }` via the class field
             // type registry so class instance fields work too.
             let iterable_type: Option<Type> = match &*for_of_stmt.right {
-                ast::Expr::Ident(ident) => ctx.lookup_local_type(&ident.sym.to_string()).cloned(),
+                ast::Expr::Ident(ident) => ctx.lookup_local_type(ident.sym.as_ref()).cloned(),
                 ast::Expr::Member(m) => {
                     if matches!(m.obj.as_ref(), ast::Expr::This(_)) {
                         if let (Some(cls), ast::MemberProp::Ident(p)) =
@@ -3723,7 +3723,7 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                     ]))
                 }
                 Some(Type::Generic { base, type_args })
-                    if base == "Set" && type_args.len() >= 1 =>
+                    if base == "Set" && !type_args.is_empty() =>
                 {
                     Some(type_args[0].clone())
                 }
@@ -3780,13 +3780,11 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                             }
                             ast::Pat::Array(arr_pat) => {
                                 let mut ids = Vec::new();
-                                for elem in &arr_pat.elems {
-                                    if let Some(elem_pat) = elem {
-                                        if let ast::Pat::Ident(ident) = elem_pat {
-                                            let name = ident.id.sym.to_string();
-                                            let id = ctx.define_local(name.clone(), Type::Any);
-                                            ids.push((name, id));
-                                        }
+                                for elem_pat in arr_pat.elems.iter().flatten() {
+                                    if let ast::Pat::Ident(ident) = elem_pat {
+                                        let name = ident.id.sym.to_string();
+                                        let id = ctx.define_local(name.clone(), Type::Any);
+                                        ids.push((name, id));
                                     }
                                 }
                                 ids

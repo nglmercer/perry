@@ -29,11 +29,11 @@ extern "C" {
 }
 
 thread_local! {
-    static LOCATION_CALLBACK: RefCell<Option<f64>> = RefCell::new(None);
+    static LOCATION_CALLBACK: RefCell<Option<f64>> = const { RefCell::new(None) };
     /// Prevent the CLLocationManager and delegate from being deallocated.
-    static RETAINED_MANAGER: RefCell<Option<Retained<AnyObject>>> = RefCell::new(None);
-    static RETAINED_DELEGATE: RefCell<Option<Retained<AnyObject>>> = RefCell::new(None);
-    static DELEGATE_REGISTERED: RefCell<bool> = RefCell::new(false);
+    static RETAINED_MANAGER: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    static RETAINED_DELEGATE: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    static DELEGATE_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Invoke the stored JS callback with (lat, lon), draining promises first.

@@ -131,7 +131,7 @@ pub extern "C" fn js_bigint_from_f64(value: f64) -> *mut BigIntHeader {
         let ptr = jsval.as_string_ptr();
         if !ptr.is_null() {
             unsafe {
-                let len = (*ptr).byte_len as u32;
+                let len = (*ptr).byte_len;
                 let data =
                     (ptr as *const u8).add(std::mem::size_of::<crate::string::StringHeader>());
                 let result = js_bigint_from_string(data, len);
@@ -997,7 +997,11 @@ fn limbs_to_decimal_string(limbs: &[u64; BIGINT_LIMBS]) -> String {
 }
 
 fn limbs_to_radix_string(limbs: &[u64; BIGINT_LIMBS], radix: u32) -> String {
-    let radix = if radix < 2 || radix > 36 { 10 } else { radix };
+    let radix = if !(2..=36).contains(&radix) {
+        10
+    } else {
+        radix
+    };
     if radix == 10 {
         return limbs_to_decimal_string(limbs);
     }

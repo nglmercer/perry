@@ -509,7 +509,7 @@ fn v8_object_to_native(scope: &mut v8::HandleScope<'_>, obj: v8::Local<v8::Objec
         .get_own_property_names(scope, v8::GetPropertyNamesArgs::default())
         .unwrap_or_else(|| v8::Array::new(scope, 0));
 
-    let field_count = names.length() as u32;
+    let field_count = names.length();
 
     // Allocate native object
     let native_obj = unsafe { js_object_alloc(0, field_count) };

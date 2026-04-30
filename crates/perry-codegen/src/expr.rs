@@ -1152,16 +1152,16 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                         flat_ca,
                         ara,
                         int_locals,
-                        &ctx.clamp3_functions,
-                        &ctx.clamp_u8_functions,
+                        ctx.clamp3_functions,
+                        ctx.clamp_u8_functions,
                     ) && can_lower_expr_as_i32(
                         div_r,
                         i32_slots,
                         flat_ca,
                         ara,
                         int_locals,
-                        &ctx.clamp3_functions,
-                        &ctx.clamp_u8_functions,
+                        ctx.clamp3_functions,
+                        ctx.clamp_u8_functions,
                     ) {
                         let a = lower_expr_as_i32(ctx, div_l)?;
                         let b = lower_expr_as_i32(ctx, div_r)?;
@@ -7700,11 +7700,11 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // crypto workload) needs the Buffer path — it XORs, hashes, and
             // base64-encodes raw bytes. Route to _bytes FFI variants when no
             // encoding was specified.
-            let want_buffer = matches!(digest_args.first(), None)
+            let want_buffer = digest_args.first().is_none()
                 || matches!(digest_args.first(), Some(Expr::Undefined));
 
             match (create_method, alg) {
-                ("createHash", "sha256") if update_args.len() >= 1 => {
+                ("createHash", "sha256") if !update_args.is_empty() => {
                     let data_box = lower_expr(ctx, &update_args[0])?;
                     let blk = ctx.block();
                     // SSO-safe data unbox — both `js_crypto_sha256` and the
@@ -7719,7 +7719,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                         Ok(nanbox_string_inline(blk, &result))
                     }
                 }
-                ("createHash", "md5") if update_args.len() >= 1 => {
+                ("createHash", "md5") if !update_args.is_empty() => {
                     let data_box = lower_expr(ctx, &update_args[0])?;
                     let blk = ctx.block();
                     // SSO-safe — see sha256 arm above.
@@ -7727,7 +7727,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     let result = blk.call(I64, "js_crypto_md5", &[(I64, &data_handle)]);
                     Ok(nanbox_string_inline(blk, &result))
                 }
-                ("createHmac", "sha256") if create_args.len() >= 2 && update_args.len() >= 1 => {
+                ("createHmac", "sha256") if create_args.len() >= 2 && !update_args.is_empty() => {
                     let key_box = lower_expr(ctx, &create_args[1])?;
                     let data_box = lower_expr(ctx, &update_args[0])?;
                     let blk = ctx.block();
@@ -7897,7 +7897,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 unreachable!()
             };
             match property {
-                "readFile" if args.len() >= 1 => {
+                "readFile" if !args.is_empty() => {
                     let p = lower_expr(ctx, &args[0])?;
                     let blk = ctx.block();
                     let str_handle = blk.call(I64, "js_fs_read_file_sync", &[(DOUBLE, &p)]);
@@ -7919,7 +7919,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     let promise_handle = blk.call(I64, "js_promise_resolved", &[(DOUBLE, &undef)]);
                     Ok(nanbox_pointer_inline(blk, &promise_handle))
                 }
-                "mkdir" if args.len() >= 1 => {
+                "mkdir" if !args.is_empty() => {
                     let p = lower_expr(ctx, &args[0])?;
                     let _ = ctx.block().call(I32, "js_fs_mkdir_sync", &[(DOUBLE, &p)]);
                     let blk = ctx.block();
@@ -7965,11 +7965,11 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 unreachable!()
             };
             match property {
-                "statSync" if args.len() >= 1 => {
+                "statSync" if !args.is_empty() => {
                     let p = lower_expr(ctx, &args[0])?;
                     Ok(ctx.block().call(DOUBLE, "js_fs_stat_sync", &[(DOUBLE, &p)]))
                 }
-                "readdirSync" if args.len() >= 1 => {
+                "readdirSync" if !args.is_empty() => {
                     // Runtime returns a raw ArrayHeader pointer
                     // transmuted to f64 (no NaN-box tag). Unbox as i64
                     // and re-NaN-box with POINTER_TAG so downstream
@@ -8000,7 +8000,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     );
                     Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)))
                 }
-                "accessSync" if args.len() >= 1 => {
+                "accessSync" if !args.is_empty() => {
                     // Node throws on inaccessible paths. We dispatch
                     // through `js_fs_access_sync_throw` which calls
                     // `js_throw` on failure, longjmping into the
@@ -8011,24 +8011,24 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                         .block()
                         .call(DOUBLE, "js_fs_access_sync_throw", &[(DOUBLE, &p)]))
                 }
-                "realpathSync" if args.len() >= 1 => {
+                "realpathSync" if !args.is_empty() => {
                     let p = lower_expr(ctx, &args[0])?;
                     let blk = ctx.block();
                     let str_handle = blk.call(I64, "js_fs_realpath_sync", &[(DOUBLE, &p)]);
                     Ok(nanbox_string_inline(blk, &str_handle))
                 }
-                "mkdtempSync" if args.len() >= 1 => {
+                "mkdtempSync" if !args.is_empty() => {
                     let p = lower_expr(ctx, &args[0])?;
                     let blk = ctx.block();
                     let str_handle = blk.call(I64, "js_fs_mkdtemp_sync", &[(DOUBLE, &p)]);
                     Ok(nanbox_string_inline(blk, &str_handle))
                 }
-                "rmdirSync" if args.len() >= 1 => {
+                "rmdirSync" if !args.is_empty() => {
                     let p = lower_expr(ctx, &args[0])?;
                     let _ = ctx.block().call(I32, "js_fs_rmdir_sync", &[(DOUBLE, &p)]);
                     Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)))
                 }
-                "createWriteStream" if args.len() >= 1 => {
+                "createWriteStream" if !args.is_empty() => {
                     // Lower the options arg (if any) for side effects
                     // but ignore it — the runtime defaults to utf-8.
                     let p = lower_expr(ctx, &args[0])?;
@@ -8039,7 +8039,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                         .block()
                         .call(DOUBLE, "js_fs_create_write_stream", &[(DOUBLE, &p)]))
                 }
-                "createReadStream" if args.len() >= 1 => {
+                "createReadStream" if !args.is_empty() => {
                     let p = lower_expr(ctx, &args[0])?;
                     if args.len() >= 2 {
                         let _ = lower_expr(ctx, &args[1])?;
@@ -9372,7 +9372,7 @@ pub(crate) fn can_lower_expr_as_i32(
             }
             Expr::LocalGet(id) => array_row_aliases
                 .get(id)
-                .map_or(false, |(cid, _)| flat_const_arrays.contains_key(cid)),
+                .is_some_and(|(cid, _)| flat_const_arrays.contains_key(cid)),
             _ => false,
         },
         _ => false,
@@ -10054,9 +10054,7 @@ fn lower_index_set_fast(
 /// missing — critical for prioritizing the next slice.
 pub(crate) fn variant_name(e: &Expr) -> String {
     let dbg = format!("{:?}", e);
-    let end = dbg
-        .find(|c: char| c == ' ' || c == '(' || c == '{')
-        .unwrap_or(dbg.len());
+    let end = dbg.find([' ', '(', '{']).unwrap_or(dbg.len());
     dbg[..end].to_string()
 }
 

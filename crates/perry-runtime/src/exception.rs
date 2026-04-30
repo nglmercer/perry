@@ -64,9 +64,7 @@ pub extern "C" fn js_try_push() -> *mut i32 {
 #[no_mangle]
 pub extern "C" fn js_try_end() {
     unsafe {
-        if TRY_DEPTH > 0 {
-            TRY_DEPTH -= 1;
-        }
+        TRY_DEPTH = TRY_DEPTH.saturating_sub(1);
     }
 }
 

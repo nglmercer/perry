@@ -48,7 +48,7 @@ thread_local! {
 /// obtaining `&mut Vec` and caching its address.
 thread_local! {
     static OVERFLOW_LAST: std::cell::UnsafeCell<(usize, *mut Vec<u64>)> =
-        std::cell::UnsafeCell::new((0, std::ptr::null_mut()));
+        const { std::cell::UnsafeCell::new((0, std::ptr::null_mut())) };
 }
 
 /// Read the u64 bits stored at `field_index` for `obj`, or `None` if absent.
@@ -266,7 +266,7 @@ const MAX_CALL_METHOD_DEPTH: u32 = 512;
 
 struct CallMethodDepthGuard;
 impl CallMethodDepthGuard {
-    fn enter(method_name: &str) -> Option<Self> {
+    fn enter(_method_name: &str) -> Option<Self> {
         CALL_METHOD_DEPTH.with(|d| {
             let v = d.get();
             if v >= MAX_CALL_METHOD_DEPTH {
@@ -334,10 +334,10 @@ thread_local! {
     /// Direct-mapped inline cache. Empty entries have shape_id == 0
     /// and keys_array == null.
     static SHAPE_INLINE_CACHE: std::cell::UnsafeCell<[ShapeCacheEntry; SHAPE_INLINE_CACHE_SIZE]> =
-        std::cell::UnsafeCell::new([ShapeCacheEntry {
+        const { std::cell::UnsafeCell::new([ShapeCacheEntry {
             shape_id: 0,
             keys_array: std::ptr::null_mut(),
-        }; SHAPE_INLINE_CACHE_SIZE]);
+        }; SHAPE_INLINE_CACHE_SIZE]) };
 
     /// Overflow map for shape_ids that collide in the inline cache.
     static SHAPE_CACHE_OVERFLOW: RefCell<HashMap<u32, *mut ArrayHeader>> = RefCell::new(HashMap::new());
@@ -1089,7 +1089,7 @@ fn get_parent_class_id(class_id: u32) -> Option<u32> {
 #[inline(always)]
 fn is_valid_obj_ptr(ptr: *const u8) -> bool {
     let addr = ptr as u64;
-    addr >= 0x200_0000_0000 && addr < 0x8000_0000_0000
+    (0x200_0000_0000..0x8000_0000_0000).contains(&addr)
 }
 
 /// Object header - precedes the fields in memory
@@ -2363,7 +2363,7 @@ pub extern "C" fn js_object_get_field_by_name(
         const FIELD_CACHE_SIZE: usize = 1024;
         thread_local! {
             static FIELD_CACHE: std::cell::UnsafeCell<[(usize, u32, u32); FIELD_CACHE_SIZE]> =
-                std::cell::UnsafeCell::new([(0usize, 0u32, 0u32); FIELD_CACHE_SIZE]);
+                const { std::cell::UnsafeCell::new([(0usize, 0u32, 0u32); FIELD_CACHE_SIZE]) };
         }
         let cache_idx = (keys_id.wrapping_add(key_hash as usize)) % FIELD_CACHE_SIZE;
         let cached = FIELD_CACHE.with(|c| {
@@ -2400,7 +2400,7 @@ pub extern "C" fn js_object_get_field_by_name(
 
         // Slow path: linear scan through keys array
         let key_count = crate::array::js_array_length(keys) as usize;
-        let field_count = (*obj).field_count as usize;
+        let _field_count = (*obj).field_count as usize;
 
         if key_count > 65536 {
             return JSValue::undefined();
@@ -3129,10 +3129,8 @@ pub extern "C" fn js_instanceof(value: f64, class_id: u32) -> f64 {
         }
         // Check if raw pointer (buffer values are bitcast, not NaN-boxed)
         let top16 = (bits >> 48) as u16;
-        if top16 == 0 && bits >= 0x1000 {
-            if crate::buffer::is_registered_buffer(bits as usize) {
-                return true_val;
-            }
+        if top16 == 0 && bits >= 0x1000 && crate::buffer::is_registered_buffer(bits as usize) {
+            return true_val;
         }
         return false_val;
     }
@@ -3153,10 +3151,11 @@ pub extern "C" fn js_instanceof(value: f64, class_id: u32) -> f64 {
         // number would match (the prior "approximate" rule), which made
         // `100 instanceof Date` true and broke the BSON encoder's typed
         // dispatch (`if (value instanceof Date) … else if (typeof v === 'number') …`).
-        if !value.is_nan() && value.is_finite() {
-            if crate::date::is_registered_date_bits(value.to_bits()) {
-                return true_val;
-            }
+        if !value.is_nan()
+            && value.is_finite()
+            && crate::date::is_registered_date_bits(value.to_bits())
+        {
+            return true_val;
         }
         return false_val;
     }
@@ -4485,7 +4484,7 @@ unsafe fn get_module_name_from_namespace(namespace_obj: f64) -> &'static str {
 unsafe fn get_native_module_constant(
     module_name: &str,
     property: &str,
-    namespace_obj: f64,
+    _namespace_obj: f64,
 ) -> Option<f64> {
     let str_val = |s: &str| -> f64 {
         let ptr = crate::string::js_string_from_bytes(s.as_ptr(), s.len() as u32);
@@ -4735,77 +4734,77 @@ unsafe fn dispatch_bigint_binary_method(
         // Binary arithmetic → returns BigInt
         "add" => {
             let result = crate::bigint::js_bigint_add(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "sub" => {
             let result = crate::bigint::js_bigint_sub(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "mul" => {
             let result = crate::bigint::js_bigint_mul(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "div" => {
             let result = crate::bigint::js_bigint_div(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "mod" | "umod" => {
             let result = crate::bigint::js_bigint_mod(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "pow" => {
             let result = crate::bigint::js_bigint_pow(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "and" => {
             let result = crate::bigint::js_bigint_and(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "or" => {
             let result = crate::bigint::js_bigint_or(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "xor" => {
             let result = crate::bigint::js_bigint_xor(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "shln" => {
             let result = crate::bigint::js_bigint_shl(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "shrn" => {
             let result = crate::bigint::js_bigint_shr(a, b);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "maskn" => {
             // maskn(bits) — mask to lowest N bits
             let result = crate::bigint::js_bigint_and(a, b); // approximate
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         // Comparison → returns boolean/number
         "eq" => {
             let result = crate::bigint::js_bigint_eq(a, b);
-            return f64::from_bits(JSValue::bool(result != 0).bits());
+            f64::from_bits(JSValue::bool(result != 0).bits())
         }
         "lt" => {
             let result = crate::bigint::js_bigint_cmp(a, b);
-            return f64::from_bits(JSValue::bool(result < 0).bits());
+            f64::from_bits(JSValue::bool(result < 0).bits())
         }
         "lte" => {
             let result = crate::bigint::js_bigint_cmp(a, b);
-            return f64::from_bits(JSValue::bool(result <= 0).bits());
+            f64::from_bits(JSValue::bool(result <= 0).bits())
         }
         "gt" => {
             let result = crate::bigint::js_bigint_cmp(a, b);
-            return f64::from_bits(JSValue::bool(result > 0).bits());
+            f64::from_bits(JSValue::bool(result > 0).bits())
         }
         "gte" => {
             let result = crate::bigint::js_bigint_cmp(a, b);
-            return f64::from_bits(JSValue::bool(result >= 0).bits());
+            f64::from_bits(JSValue::bool(result >= 0).bits())
         }
         "cmp" => {
             let result = crate::bigint::js_bigint_cmp(a, b);
-            return result as f64;
+            result as f64
         }
         "fromTwos" => {
             // bn.js: interpret `a` as the unsigned encoding of a signed
@@ -4829,7 +4828,7 @@ unsafe fn dispatch_bigint_binary_method(
             let one = crate::bigint::js_bigint_from_u64(1);
             let two_pow = crate::bigint::js_bigint_shl(one, b);
             let result = crate::bigint::js_bigint_sub(a, two_pow);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
         "toTwos" => {
             // bn.js: convert to `width`-bit two's complement encoding. If `a`
@@ -4851,11 +4850,9 @@ unsafe fn dispatch_bigint_binary_method(
             let one = crate::bigint::js_bigint_from_u64(1);
             let two_pow = crate::bigint::js_bigint_shl(one, b);
             let result = crate::bigint::js_bigint_add(a, two_pow);
-            return f64::from_bits(JSValue::bigint_ptr(result).bits());
+            f64::from_bits(JSValue::bigint_ptr(result).bits())
         }
-        _ => {
-            return f64::from_bits(crate::value::TAG_UNDEFINED);
-        }
+        _ => f64::from_bits(crate::value::TAG_UNDEFINED),
     }
 }
 
@@ -4990,7 +4987,7 @@ pub extern "C" fn js_object_group_by(
             if !groups.contains_key(&key_string) {
                 order.push(key_string.clone());
             }
-            groups.entry(key_string).or_insert_with(Vec::new).push(item);
+            groups.entry(key_string).or_default().push(item);
         }
 
         // Materialize the result object. Allocate with the right field count

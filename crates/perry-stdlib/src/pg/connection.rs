@@ -193,7 +193,6 @@ pub unsafe extern "C" fn js_pg_client_query(
 
     // Determine command type from SQL
     let command = sql
-        .trim()
         .split_whitespace()
         .next()
         .unwrap_or("SELECT")
@@ -356,7 +355,6 @@ pub unsafe extern "C" fn js_pg_client_query_params(
 
     let param_values = extract_params_from_jsvalue(params);
     let command = sql
-        .trim()
         .split_whitespace()
         .next()
         .unwrap_or("SELECT")

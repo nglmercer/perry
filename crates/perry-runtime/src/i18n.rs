@@ -68,7 +68,7 @@ pub extern "C" fn perry_i18n_init(
             log += &format!("[i18n] matched locale index: {} ({})\n", idx, locales[idx]);
             LOCALE_INDEX.store(idx as i32, Ordering::Relaxed);
         } else {
-            log += &format!("[i18n] no match found, using default (index 0)\n");
+            log += &"[i18n] no match found, using default (index 0)\n".to_string();
         }
     } else {
         log += "[i18n] no system locale detected, using default (index 0)\n";
@@ -447,7 +447,7 @@ pub extern "C" fn perry_i18n_set_plural_locales(
 
 use std::cell::RefCell;
 thread_local! {
-    static PLURAL_LOCALE_CODES: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static PLURAL_LOCALE_CODES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// CLDR plural category constants

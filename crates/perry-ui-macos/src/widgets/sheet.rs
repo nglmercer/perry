@@ -8,7 +8,7 @@ use objc2_foundation::{MainThreadMarker, NSString};
 use std::cell::RefCell;
 
 thread_local! {
-    static SHEETS: RefCell<Vec<Retained<NSWindow>>> = RefCell::new(Vec::new());
+    static SHEETS: RefCell<Vec<Retained<NSWindow>>> = const { RefCell::new(Vec::new()) };
 }
 
 fn str_from_header(ptr: *const u8) -> &'static str {

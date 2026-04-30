@@ -7,11 +7,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 thread_local! {
-    static MENUS: RefCell<Vec<Retained<NSMenu>>> = RefCell::new(Vec::new());
+    static MENUS: RefCell<Vec<Retained<NSMenu>>> = const { RefCell::new(Vec::new()) };
     static MENU_ITEM_CALLBACKS: RefCell<HashMap<usize, f64>> = RefCell::new(HashMap::new());
-    static MENUBARS: RefCell<Vec<Retained<NSMenu>>> = RefCell::new(Vec::new());
+    static MENUBARS: RefCell<Vec<Retained<NSMenu>>> = const { RefCell::new(Vec::new()) };
     /// Pending user menu bar to install during app_run (set by menubar_attach).
-    pub(crate) static PENDING_USER_MENUBAR: RefCell<Option<Retained<NSMenu>>> = RefCell::new(None);
+    pub(crate) static PENDING_USER_MENUBAR: RefCell<Option<Retained<NSMenu>>> = const { RefCell::new(None) };
 }
 
 extern "C" {

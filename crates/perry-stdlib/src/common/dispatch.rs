@@ -264,7 +264,7 @@ unsafe fn dispatch_fastify_app(handle: i64, method: &str, args: &[f64]) -> f64 {
                 0.0
             }
         }
-        "setErrorHandler" if args.len() >= 1 => {
+        "setErrorHandler" if !args.is_empty() => {
             let handler = args[0].to_bits() as i64;
             let result = crate::fastify::js_fastify_set_error_handler(handle, handler);
             if result {
@@ -273,7 +273,7 @@ unsafe fn dispatch_fastify_app(handle: i64, method: &str, args: &[f64]) -> f64 {
                 0.0
             }
         }
-        "register" if args.len() >= 1 => {
+        "register" if !args.is_empty() => {
             let plugin = args[0].to_bits() as i64;
             let opts = if args.len() >= 2 {
                 args[1]
@@ -287,7 +287,7 @@ unsafe fn dispatch_fastify_app(handle: i64, method: &str, args: &[f64]) -> f64 {
                 0.0
             }
         }
-        "listen" if args.len() >= 1 => {
+        "listen" if !args.is_empty() => {
             let callback = if args.len() >= 2 {
                 args[1].to_bits() as i64
             } else {
@@ -310,7 +310,7 @@ unsafe fn dispatch_fastify_context(handle: i64, method: &str, args: &[f64]) -> f
 
     match method {
         // Reply methods
-        "send" if args.len() >= 1 => {
+        "send" if !args.is_empty() => {
             let result = crate::fastify::js_fastify_reply_send(handle, args[0]);
             if result {
                 1.0
@@ -318,7 +318,7 @@ unsafe fn dispatch_fastify_context(handle: i64, method: &str, args: &[f64]) -> f
                 0.0
             }
         }
-        "status" | "code" if args.len() >= 1 => {
+        "status" | "code" if !args.is_empty() => {
             let result = crate::fastify::js_fastify_reply_status(handle, args[0]);
             // Return the handle as NaN-boxed pointer for chaining (reply.status(200).send(...))
             f64::from_bits(0x7FFD_0000_0000_0000 | (result as u64 & 0x0000_FFFF_FFFF_FFFF))
@@ -582,11 +582,8 @@ pub unsafe extern "C" fn js_handle_property_set_dispatch(
     // Try Fastify context dispatch (request/reply properties)
     #[cfg(feature = "http-server")]
     if with_handle::<crate::fastify::FastifyContext, bool, _>(handle, |_| true).unwrap_or(false) {
-        match property_name {
-            "user" => {
-                crate::fastify::js_fastify_req_set_user_data(handle, value);
-            }
-            _ => {}
+        if property_name == "user" {
+            crate::fastify::js_fastify_req_set_user_data(handle, value);
         }
     }
 }

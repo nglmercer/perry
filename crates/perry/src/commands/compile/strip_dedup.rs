@@ -41,8 +41,7 @@ fn parse_nm_archive_output(
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.ends_with(':') {
-            let raw = &trimmed[..trimmed.len() - 1];
+        if let Some(raw) = trimmed.strip_suffix(':') {
             let member = if let (Some(open), Some(close)) = (raw.rfind('('), raw.rfind(')')) {
                 if open < close {
                     raw[open + 1..close].to_string()

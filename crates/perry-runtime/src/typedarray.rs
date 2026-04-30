@@ -185,7 +185,7 @@ fn jsvalue_to_f64(v: f64) -> f64 {
     // (BIGINT_TAG=0x7FFA, 0x7FFC=undefined/null/bool, POINTER_TAG=0x7FFD,
     // INT32_TAG=0x7FFE, STRING_TAG=0x7FFF). Negative doubles (top16≥0x8000)
     // and non-tag NaN patterns (top16 in 0x7FF8..0x7FF9) return as-is.
-    if top16 < 0x7FFA || top16 >= 0x8000 {
+    if !(0x7FFA..0x8000).contains(&top16) {
         return v;
     }
     // INT32 tag
@@ -342,7 +342,7 @@ pub extern "C" fn js_typed_array_new(kind: i32, val: f64) -> *mut TypedArrayHead
         let n = (bits & 0xFFFF_FFFF) as i32;
         return typed_array_alloc(kind as u8, n.max(0) as u32);
     }
-    if top16 < 0x7FFC || top16 > 0x7FFF {
+    if !(0x7FFC..=0x7FFF).contains(&top16) {
         // Plain IEEE double (including negative, NaN, ±Inf).
         let len = if val.is_finite() && val >= 0.0 {
             val as i32

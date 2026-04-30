@@ -5,7 +5,7 @@
 //! without changing the MapHeader address.
 
 use crate::string::StringHeader;
-use std::alloc::{alloc, dealloc, realloc, Layout};
+use std::alloc::{alloc, realloc, Layout};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ptr;

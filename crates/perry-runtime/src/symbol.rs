@@ -134,7 +134,7 @@ pub fn is_registered_symbol(ptr: usize) -> bool {
         return false;
     }
     let guard = SYMBOL_POINTERS.lock().unwrap();
-    guard.as_ref().map_or(false, |s| s.contains(&ptr))
+    guard.as_ref().is_some_and(|s| s.contains(&ptr))
 }
 
 // Side-table for symbol-keyed properties on objects. The object pointer is
@@ -234,7 +234,7 @@ pub unsafe extern "C" fn js_symbol_new(description_f64: f64) -> f64 {
         std::ptr::null_mut()
     } else {
         // Try to coerce — if it's a raw pointer, trust it.
-        if bits >= 0x1000 && bits < 0x0000_FFFF_FFFF_FFFF {
+        if (0x1000..0x0000_FFFF_FFFF_FFFF).contains(&bits) {
             bits as *mut StringHeader
         } else {
             std::ptr::null_mut()
@@ -252,7 +252,7 @@ pub unsafe extern "C" fn js_symbol_for(key_f64: f64) -> f64 {
     let tag = bits & 0xFFFF_0000_0000_0000;
     let key_ptr = if tag == STRING_TAG {
         (bits & POINTER_MASK) as *const StringHeader
-    } else if bits >= 0x1000 && bits < 0x0000_FFFF_FFFF_FFFF {
+    } else if (0x1000..0x0000_FFFF_FFFF_FFFF).contains(&bits) {
         bits as *const StringHeader
     } else {
         return f64::from_bits(TAG_UNDEFINED);
@@ -422,7 +422,7 @@ pub unsafe extern "C" fn js_object_set_symbol_property(
         *guard = Some(HashMap::new());
     }
     let map = guard.as_mut().unwrap();
-    let entries = map.entry(obj_key).or_insert_with(Vec::new);
+    let entries = map.entry(obj_key).or_default();
     let val_bits = value_f64.to_bits();
     // Update existing entry if the symbol is already present.
     for entry in entries.iter_mut() {
@@ -583,11 +583,11 @@ pub unsafe extern "C" fn js_to_primitive(value: f64, hint: i32) -> f64 {
     };
     let hint_ptr = js_string_from_bytes(hint_str.as_ptr(), hint_str.len() as u32);
     let hint_f64 = f64::from_bits(STRING_TAG | (hint_ptr as u64 & POINTER_MASK));
-    let result = crate::closure::js_closure_call1(closure_ptr, hint_f64);
+
     // Spec says the return value must be a primitive; if it's still an
     // object pointer, that's a TypeError in JS, but we just return it
     // as-is and let the caller fall back.
-    result
+    crate::closure::js_closure_call1(closure_ptr, hint_f64)
 }
 
 /// Compare two Symbol JSValues for equality. Two symbols are equal iff they

@@ -482,7 +482,7 @@ pub unsafe extern "C" fn js_mongodb_collection_update_one(
                 .map_err(|e| format!("Invalid update JSON: {}", e))?;
 
             match coll_wrapper.collection.update_one(filter, update).await {
-                Ok(result) => Ok(result.modified_count as u64),
+                Ok(result) => Ok(result.modified_count),
                 Err(e) => Err(format!("Update failed: {}", e)),
             }
         } else {
@@ -520,7 +520,7 @@ pub unsafe extern "C" fn js_mongodb_collection_update_many(
                 .map_err(|e| format!("Invalid update JSON: {}", e))?;
 
             match coll_wrapper.collection.update_many(filter, update).await {
-                Ok(result) => Ok(result.modified_count as u64),
+                Ok(result) => Ok(result.modified_count),
                 Err(e) => Err(format!("Update failed: {}", e)),
             }
         } else {
@@ -546,7 +546,7 @@ pub unsafe extern "C" fn js_mongodb_collection_delete_one(
             let filter: Document = serde_json::from_str(&filter_json).unwrap_or_else(|_| doc! {});
 
             match coll_wrapper.collection.delete_one(filter).await {
-                Ok(result) => Ok(result.deleted_count as u64),
+                Ok(result) => Ok(result.deleted_count),
                 Err(e) => Err(format!("Delete failed: {}", e)),
             }
         } else {
@@ -572,7 +572,7 @@ pub unsafe extern "C" fn js_mongodb_collection_delete_many(
             let filter: Document = serde_json::from_str(&filter_json).unwrap_or_else(|_| doc! {});
 
             match coll_wrapper.collection.delete_many(filter).await {
-                Ok(result) => Ok(result.deleted_count as u64),
+                Ok(result) => Ok(result.deleted_count),
                 Err(e) => Err(format!("Delete failed: {}", e)),
             }
         } else {
@@ -598,7 +598,7 @@ pub unsafe extern "C" fn js_mongodb_collection_count(
             let filter: Document = serde_json::from_str(&filter_json).unwrap_or_else(|_| doc! {});
 
             match coll_wrapper.collection.count_documents(filter).await {
-                Ok(count) => Ok(count as u64),
+                Ok(count) => Ok(count),
                 Err(e) => Err(format!("Count failed: {}", e)),
             }
         } else {

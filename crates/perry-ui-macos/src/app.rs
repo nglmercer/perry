@@ -3,7 +3,7 @@ use objc2::runtime::{AnyObject, Sel};
 use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventModifierFlags,
-    NSImage, NSLayoutConstraint, NSMenu, NSMenuItem, NSWindow, NSWindowStyleMask,
+    NSImage, NSMenu, NSMenuItem, NSWindow, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
@@ -14,9 +14,9 @@ use std::collections::HashMap;
 use crate::widgets;
 
 thread_local! {
-    pub(crate) static APPS: RefCell<Vec<AppEntry>> = RefCell::new(Vec::new());
+    pub(crate) static APPS: RefCell<Vec<AppEntry>> = const { RefCell::new(Vec::new()) };
     /// Buffered keyboard shortcuts registered before the menu bar exists.
-    static PENDING_SHORTCUTS: RefCell<Vec<PendingShortcut>> = RefCell::new(Vec::new());
+    static PENDING_SHORTCUTS: RefCell<Vec<PendingShortcut>> = const { RefCell::new(Vec::new()) };
 }
 
 struct PendingShortcut {
@@ -26,16 +26,16 @@ struct PendingShortcut {
 }
 
 thread_local! {
-    static ON_TERMINATE_CALLBACK: RefCell<Option<f64>> = RefCell::new(None);
-    static ON_ACTIVATE_CALLBACK: RefCell<Option<f64>> = RefCell::new(None);
-    pub(crate) static WINDOWS: RefCell<Vec<WindowEntry>> = RefCell::new(Vec::new());
-    static PENDING_ICON_PATH: RefCell<Option<String>> = RefCell::new(None);
+    static ON_TERMINATE_CALLBACK: RefCell<Option<f64>> = const { RefCell::new(None) };
+    static ON_ACTIVATE_CALLBACK: RefCell<Option<f64>> = const { RefCell::new(None) };
+    pub(crate) static WINDOWS: RefCell<Vec<WindowEntry>> = const { RefCell::new(Vec::new()) };
+    static PENDING_ICON_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Files requested to be opened via macOS Open With / double-click.
-    static PENDING_OPEN_FILES: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static PENDING_OPEN_FILES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Pending activation policy: "regular", "accessory", or "background".
-    static PENDING_ACTIVATION_POLICY: RefCell<Option<String>> = RefCell::new(None);
+    static PENDING_ACTIVATION_POLICY: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Whether the window needs rounded corners (set by frameless, applied in app_run).
-    static PENDING_ROUNDED_CORNERS: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static PENDING_ROUNDED_CORNERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(crate) struct WindowEntry {

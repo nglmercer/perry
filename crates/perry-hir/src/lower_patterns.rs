@@ -115,7 +115,7 @@ pub(crate) fn lower_assign_target_to_expr(
                     Ok(Expr::IndexGet { object, index })
                 }
                 ast::MemberProp::PrivateName(private) => {
-                    let property = format!("#{}", private.name.to_string());
+                    let property = format!("#{}", private.name);
                     Ok(Expr::PropertyGet { object, property })
                 }
             }
@@ -285,11 +285,11 @@ pub(crate) fn pre_scan_fastify_handler_params(
         ast::Expr::Fn(_) => return None, // fn expressions handled separately
         _ => return None,
     };
-    let req_name = arrow.params.first().and_then(|p| pat_ident_name(p))?;
+    let req_name = arrow.params.first().and_then(pat_ident_name)?;
     let reply_name = arrow
         .params
         .get(1)
-        .and_then(|p| pat_ident_name(p))
+        .and_then(pat_ident_name)
         .unwrap_or_default();
     Some((req_name, reply_name))
 }

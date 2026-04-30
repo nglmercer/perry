@@ -387,8 +387,8 @@ fn map_ui_method(method: &str, class_name: Option<&str>) -> &'static str {
         "setOnDoubleClick" | "set_on_double_click" => "perry_ui_set_on_double_click",
         // State
         "State" | "create" | "createState" | "state_create" => "perry_ui_state_create",
-        "get" if class_name.map_or(false, |c| c == "State") => "perry_ui_state_get",
-        "set" if class_name.map_or(false, |c| c == "State") => "perry_ui_state_set",
+        "get" if class_name == Some("State") => "perry_ui_state_get",
+        "set" if class_name == Some("State") => "perry_ui_state_set",
         "value" => "perry_ui_state_get",
         "onChange" | "state_on_change" | "stateOnChange" => "perry_ui_state_on_change",
         // State bindings
@@ -516,7 +516,7 @@ fn map_ui_method(method: &str, class_name: Option<&str>) -> &'static str {
         // `--target wasm` without a parallel edit here. The static arms
         // above stay for legacy snake_case aliases that aren't in those
         // tables.
-        _ => return perry_dispatch::ui_method_to_runtime(method).unwrap_or("perry_ui_unknown"),
+        _ => perry_dispatch::ui_method_to_runtime(method).unwrap_or("perry_ui_unknown"),
     }
 }
 
@@ -1166,8 +1166,7 @@ impl WasmModuleEmitter {
             ("response_url", t_f64_f64),    // (handle) -> str
             // Buffer extras
             ("buffer_copy", {
-                let t = self.get_type_idx(vec![ValType::I64; 5], vec![ValType::I64]);
-                t
+                self.get_type_idx(vec![ValType::I64; 5], vec![ValType::I64])
             }),
             ("buffer_write", t_f64_f64_f64_f64), // (handle, str, offset, encoding) -> number
             ("buffer_equals", t_f64_f64_i32),    // (handle, other) -> i32
@@ -1336,7 +1335,7 @@ impl WasmModuleEmitter {
                 }
                 let param_count = func.params.len();
                 let params = vec![ValType::I64; param_count];
-                let results = if func.body.iter().any(|s| has_return(s)) || func.name == "main" {
+                let results = if func.body.iter().any(has_return) || func.name == "main" {
                     vec![ValType::I64]
                 } else {
                     vec![]
@@ -1385,7 +1384,7 @@ impl WasmModuleEmitter {
                     let _ = type_idx;
                     self.class_method_map
                         .entry(class.name.clone())
-                        .or_insert_with(BTreeMap::new)
+                        .or_default()
                         .insert(method.name.clone(), user_func_idx);
                     self.func_param_counts.insert(user_func_idx, param_count);
                     user_func_idx += 1;
@@ -1399,7 +1398,7 @@ impl WasmModuleEmitter {
                     let _ = type_idx;
                     self.class_static_map
                         .entry(class.name.clone())
-                        .or_insert_with(BTreeMap::new)
+                        .or_default()
                         .insert(method.name.clone(), user_func_idx);
                     // Also register in func_name_map for cross-module resolution
                     self.func_name_map
@@ -1415,7 +1414,7 @@ impl WasmModuleEmitter {
                     let _ = type_idx;
                     self.class_method_map
                         .entry(class.name.clone())
-                        .or_insert_with(BTreeMap::new)
+                        .or_default()
                         .insert(format!("__get_{}", name), user_func_idx);
                     self.func_param_counts.insert(user_func_idx, 1);
                     let _ = getter;
@@ -1429,7 +1428,7 @@ impl WasmModuleEmitter {
                     let _ = type_idx;
                     self.class_method_map
                         .entry(class.name.clone())
-                        .or_insert_with(BTreeMap::new)
+                        .or_default()
                         .insert(format!("__set_{}", name), user_func_idx);
                     self.func_param_counts.insert(user_func_idx, 2);
                     let _ = setter;
@@ -1444,7 +1443,7 @@ impl WasmModuleEmitter {
                 // Closure params: captures first (as f64), then declared params
                 let total_params = captures.len() + mutable_captures.len() + params.len();
                 let wasm_params = vec![ValType::I64; total_params];
-                let results = if body.iter().any(|s| has_return(s)) {
+                let results = if body.iter().any(has_return) {
                     vec![ValType::I64]
                 } else {
                     vec![ValType::I64] // closures always return i64
@@ -1555,7 +1554,7 @@ impl WasmModuleEmitter {
                 }
                 let param_count = func.params.len();
                 let params = vec![ValType::I64; param_count];
-                let results = if func.body.iter().any(|s| has_return(s)) || func.name == "main" {
+                let results = if func.body.iter().any(has_return) || func.name == "main" {
                     vec![ValType::I64]
                 } else {
                     vec![]
@@ -1628,20 +1627,20 @@ impl WasmModuleEmitter {
                 }
             }
             // Add class constructor/method/static indices
-            for (_, idx) in &self.class_ctor_map {
+            for idx in self.class_ctor_map.values() {
                 if !indices.contains(idx) {
                     indices.push(*idx);
                 }
             }
-            for (_, methods) in &self.class_method_map {
-                for (_, idx) in methods {
+            for methods in self.class_method_map.values() {
+                for idx in methods.values() {
                     if !indices.contains(idx) {
                         indices.push(*idx);
                     }
                 }
             }
-            for (_, statics) in &self.class_static_map {
-                for (_, idx) in statics {
+            for statics in self.class_static_map.values() {
+                for idx in statics.values() {
                     if !indices.contains(idx) {
                         indices.push(*idx);
                     }
@@ -1677,7 +1676,7 @@ impl WasmModuleEmitter {
 
         // --- Memory section ---
         let mut mem_section = MemorySection::new();
-        let pages = ((self.string_data.len() + 65535) / 65536).max(2) as u64; // min 2 pages for 0xFF00 mem_call region
+        let pages = self.string_data.len().div_ceil(65536).max(2) as u64; // min 2 pages for 0xFF00 mem_call region
         mem_section.memory(MemoryType {
             minimum: pages,
             maximum: None,
@@ -2074,7 +2073,7 @@ impl WasmModuleEmitter {
         let locals = vec![(extra_locals + 2, ValType::I64), (1, ValType::I32)];
         let mut func = Function::new(locals);
 
-        let has_ret = hir_func.body.iter().any(|s| has_return(s));
+        let has_ret = hir_func.body.iter().any(has_return);
         let mut ctx = FuncEmitCtx::new(self, &local_map, temp_local_idx, temp_i32_idx);
 
         for stmt in &hir_func.body {
@@ -2124,7 +2123,7 @@ impl WasmModuleEmitter {
         let mut func = Function::new(locals);
 
         let mut ctx = FuncEmitCtx::new(self, &local_map, temp_local_idx, temp_i32_idx);
-        let has_ret = body.iter().any(|s| has_return(s));
+        let _has_ret = body.iter().any(has_return);
 
         for stmt in body {
             ctx.emit_stmt(&mut func, stmt, true); // closures always "return"
@@ -2239,7 +2238,7 @@ impl WasmModuleEmitter {
         let temp_i32_idx = temp_local_idx + 2;
         let locals = vec![(extra_locals + 2, ValType::I64), (1, ValType::I32)];
         let mut func = Function::new(locals);
-        let has_ret = method.body.iter().any(|s| has_return(s));
+        let _has_ret = method.body.iter().any(has_return);
         let mut ctx = FuncEmitCtx::new(self, &local_map, temp_local_idx, temp_i32_idx);
 
         for stmt in &method.body {
@@ -2572,7 +2571,7 @@ impl WasmModuleEmitter {
                     }
                     Expr::PropertyGet { object, property } => {
                         let obj = self.emit_js_expr(object, locals);
-                        let args_str = args_js.join(", ");
+                        let _args_str = args_js.join(", ");
                         format!(
                             "fromJsValue(toJsValue({}).{}({}))",
                             obj,
@@ -5528,7 +5527,7 @@ impl<'a> FuncEmitCtx<'a> {
                     "perry/ui" | "perry/system" => {
                         // Memory-based dispatch: write args to WASM memory via i64.store.
                         let bridge_name = map_ui_method(method, class_name.as_deref());
-                        let name_id = self
+                        let _name_id = self
                             .emitter
                             .string_map
                             .get(bridge_name)
@@ -7063,7 +7062,7 @@ impl<'a> FuncEmitCtx<'a> {
                 array,
                 start,
                 delete_count,
-                items,
+                items: _,
             } => {
                 self.emit_store_arg(func, 0, array);
                 self.emit_store_arg(func, 1, start);
@@ -7229,7 +7228,7 @@ impl<'a> FuncEmitCtx<'a> {
             } => {
                 // Handle built-in constructors that need native JS objects
                 match class_name.as_str() {
-                    "RegExp" if args.len() >= 1 => {
+                    "RegExp" if !args.is_empty() => {
                         self.emit_expr(func, &args[0]);
                         if args.len() >= 2 {
                             self.emit_expr(func, &args[1]);
@@ -9728,7 +9727,7 @@ fn has_return(stmt: &Stmt) -> bool {
             then_branch.iter().any(has_return)
                 || else_branch
                     .as_ref()
-                    .map_or(false, |eb| eb.iter().any(has_return))
+                    .is_some_and(|eb| eb.iter().any(has_return))
         }
         Stmt::While { body, .. } | Stmt::For { body, .. } => body.iter().any(has_return),
         Stmt::Try {
@@ -9739,8 +9738,8 @@ fn has_return(stmt: &Stmt) -> bool {
             body.iter().any(has_return)
                 || catch
                     .as_ref()
-                    .map_or(false, |c| c.body.iter().any(has_return))
-                || finally.as_ref().map_or(false, |f| f.iter().any(has_return))
+                    .is_some_and(|c| c.body.iter().any(has_return))
+                || finally.as_ref().is_some_and(|f| f.iter().any(has_return))
         }
         Stmt::Switch { cases, .. } => cases.iter().any(|c| c.body.iter().any(has_return)),
         _ => false,

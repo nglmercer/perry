@@ -365,18 +365,15 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
                     // alloca. Uint8ArrayGet/Set then uses `getelementptr inbounds`
                     // from this pointer instead of the inttoptr chain — giving
                     // LLVM proper pointer provenance for auto-vectorization.
-                    if !*mutable {
-                        if matches!(init_expr, perry_hir::Expr::BufferAlloc { .. }) {
-                            let blk = ctx.block();
-                            let handle = crate::expr::unbox_to_i64(blk, &v);
-                            let handle_ptr = blk.inttoptr(I64, &handle);
-                            let data_ptr = blk.gep(I8, &handle_ptr, &[(I32, "8")]);
-                            let slot = ctx.func.alloca_entry(PTR);
-                            ctx.block().store(PTR, &data_ptr, &slot);
-                            let scope_idx =
-                                ctx.buffer_alias_base + ctx.buffer_data_slots.len() as u32;
-                            ctx.buffer_data_slots.insert(*id, (slot, scope_idx));
-                        }
+                    if !*mutable && matches!(init_expr, perry_hir::Expr::BufferAlloc { .. }) {
+                        let blk = ctx.block();
+                        let handle = crate::expr::unbox_to_i64(blk, &v);
+                        let handle_ptr = blk.inttoptr(I64, &handle);
+                        let data_ptr = blk.gep(I8, &handle_ptr, &[(I32, "8")]);
+                        let slot = ctx.func.alloca_entry(PTR);
+                        ctx.block().store(PTR, &data_ptr, &slot);
+                        let scope_idx = ctx.buffer_alias_base + ctx.buffer_data_slots.len() as u32;
+                        ctx.buffer_data_slots.insert(*id, (slot, scope_idx));
                     }
                 }
                 return Ok(());
@@ -517,17 +514,15 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
                 // image_conv blur kernel. The pre-computed ptr slot lets
                 // Uint8ArrayGet/Set emit `getelementptr inbounds` from a
                 // proper `ptr` base instead of an `inttoptr` chain.
-                if !*mutable {
-                    if matches!(init_expr, perry_hir::Expr::BufferAlloc { .. }) {
-                        let blk = ctx.block();
-                        let handle = crate::expr::unbox_to_i64(blk, &v);
-                        let handle_ptr = blk.inttoptr(I64, &handle);
-                        let data_ptr = blk.gep(I8, &handle_ptr, &[(I32, "8")]);
-                        let buf_slot = ctx.func.alloca_entry(PTR);
-                        ctx.block().store(PTR, &data_ptr, &buf_slot);
-                        let scope_idx = ctx.buffer_alias_base + ctx.buffer_data_slots.len() as u32;
-                        ctx.buffer_data_slots.insert(*id, (buf_slot, scope_idx));
-                    }
+                if !*mutable && matches!(init_expr, perry_hir::Expr::BufferAlloc { .. }) {
+                    let blk = ctx.block();
+                    let handle = crate::expr::unbox_to_i64(blk, &v);
+                    let handle_ptr = blk.inttoptr(I64, &handle);
+                    let data_ptr = blk.gep(I8, &handle_ptr, &[(I32, "8")]);
+                    let buf_slot = ctx.func.alloca_entry(PTR);
+                    ctx.block().store(PTR, &data_ptr, &buf_slot);
+                    let scope_idx = ctx.buffer_alias_base + ctx.buffer_data_slots.len() as u32;
+                    ctx.buffer_data_slots.insert(*id, (buf_slot, scope_idx));
                 }
             } else if let Some(cv) = ctx.compile_time_constants.get(id) {
                 // Compile-time constants (e.g. `declare const __platform__: number`)
@@ -1235,12 +1230,12 @@ fn stmt_preserves_array_length(s: &perry_hir::Stmt, arr_id: u32, bounded_idx_id:
     use perry_hir::Stmt;
     match s {
         Stmt::Expr(e) | Stmt::Throw(e) => expr_preserves_array_length(e, arr_id, bounded_idx_id),
-        Stmt::Return(opt) => opt.as_ref().map_or(true, |e| {
-            expr_preserves_array_length(e, arr_id, bounded_idx_id)
-        }),
-        Stmt::Let { init, .. } => init.as_ref().map_or(true, |e| {
-            expr_preserves_array_length(e, arr_id, bounded_idx_id)
-        }),
+        Stmt::Return(opt) => opt
+            .as_ref()
+            .is_none_or(|e| expr_preserves_array_length(e, arr_id, bounded_idx_id)),
+        Stmt::Let { init, .. } => init
+            .as_ref()
+            .is_none_or(|e| expr_preserves_array_length(e, arr_id, bounded_idx_id)),
         Stmt::If {
             condition,
             then_branch,
@@ -1250,7 +1245,7 @@ fn stmt_preserves_array_length(s: &perry_hir::Stmt, arr_id: u32, bounded_idx_id:
                 && then_branch
                     .iter()
                     .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
-                && else_branch.as_ref().map_or(true, |b| {
+                && else_branch.as_ref().is_none_or(|b| {
                     b.iter()
                         .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
                 })
@@ -1267,15 +1262,17 @@ fn stmt_preserves_array_length(s: &perry_hir::Stmt, arr_id: u32, bounded_idx_id:
             update,
             body,
         } => {
-            init.as_ref().map_or(true, |s| {
-                stmt_preserves_array_length(s, arr_id, bounded_idx_id)
-            }) && condition.as_ref().map_or(true, |e| {
-                expr_preserves_array_length(e, arr_id, bounded_idx_id)
-            }) && update.as_ref().map_or(true, |e| {
-                expr_preserves_array_length(e, arr_id, bounded_idx_id)
-            }) && body
-                .iter()
-                .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
+            init.as_ref()
+                .is_none_or(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
+                && condition
+                    .as_ref()
+                    .is_none_or(|e| expr_preserves_array_length(e, arr_id, bounded_idx_id))
+                && update
+                    .as_ref()
+                    .is_none_or(|e| expr_preserves_array_length(e, arr_id, bounded_idx_id))
+                && body
+                    .iter()
+                    .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
         }
         Stmt::Try {
             body,
@@ -1284,12 +1281,12 @@ fn stmt_preserves_array_length(s: &perry_hir::Stmt, arr_id: u32, bounded_idx_id:
         } => {
             body.iter()
                 .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
-                && catch.as_ref().map_or(true, |c| {
+                && catch.as_ref().is_none_or(|c| {
                     c.body
                         .iter()
                         .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
                 })
-                && finally.as_ref().map_or(true, |b| {
+                && finally.as_ref().is_none_or(|b| {
                     b.iter()
                         .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
                 })
@@ -1300,12 +1297,12 @@ fn stmt_preserves_array_length(s: &perry_hir::Stmt, arr_id: u32, bounded_idx_id:
         } => {
             expr_preserves_array_length(discriminant, arr_id, bounded_idx_id)
                 && cases.iter().all(|c| {
-                    c.test.as_ref().map_or(true, |e| {
-                        expr_preserves_array_length(e, arr_id, bounded_idx_id)
-                    }) && c
-                        .body
-                        .iter()
-                        .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
+                    c.test
+                        .as_ref()
+                        .is_none_or(|e| expr_preserves_array_length(e, arr_id, bounded_idx_id))
+                        && c.body
+                            .iter()
+                            .all(|s| stmt_preserves_array_length(s, arr_id, bounded_idx_id))
                 })
         }
         Stmt::Labeled { body, .. } => {
@@ -1329,8 +1326,8 @@ fn expr_preserves_array_length(e: &perry_hir::Expr, arr_id: u32, bounded_idx_id:
         } => {
             *array_id != arr_id
                 && walk(start)
-                && delete_count.as_ref().map_or(true, |e| walk(e))
-                && items.iter().all(|e| walk(e))
+                && delete_count.as_ref().is_none_or(|e| walk(e))
+                && items.iter().all(&walk)
         }
         Expr::IndexSet {
             object,
@@ -1374,7 +1371,7 @@ fn expr_preserves_array_length(e: &perry_hir::Expr, arr_id: u32, bounded_idx_id:
                     return false;
                 }
             }
-            args.iter().all(|a| walk(a))
+            args.iter().all(&walk)
         }
         Expr::Call { callee, args, .. } => {
             if !walk(callee) {
@@ -1431,7 +1428,7 @@ fn expr_preserves_array_length(e: &perry_hir::Expr, arr_id: u32, bounded_idx_id:
         Expr::PropertyGet { object, .. } => walk(object),
         Expr::PropertySet { object, value, .. } => walk(object) && walk(value),
         Expr::IndexGet { object, index } => walk(object) && walk(index),
-        Expr::Array(elements) => elements.iter().all(|e| walk(e)),
+        Expr::Array(elements) => elements.iter().all(&walk),
         Expr::ArraySpread(elements) => elements.iter().all(|el| match el {
             ArrayElement::Expr(e) | ArrayElement::Spread(e) => walk(e),
         }),

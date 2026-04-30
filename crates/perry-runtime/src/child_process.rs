@@ -2,14 +2,12 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Mutex,
 };
 
-use crate::buffer::BufferHeader;
 use crate::object::ObjectHeader;
 use crate::string::{js_string_from_bytes, StringHeader};
 
@@ -26,9 +24,9 @@ lazy_static::lazy_static! {
 // NaN-boxing tag constants (inline to avoid pub(crate) visibility issues)
 const TAG_NULL_BITS: u64 = 0x7FFC_0000_0000_0002;
 const TAG_UNDEFINED_BITS: u64 = 0x7FFC_0000_0000_0001;
-const TAG_TRUE_F64: f64 = unsafe { std::mem::transmute::<u64, f64>(0x7FFC_0000_0000_0004u64) };
-const TAG_FALSE_F64: f64 = unsafe { std::mem::transmute::<u64, f64>(0x7FFC_0000_0000_0003u64) };
-const TAG_NULL_F64: f64 = unsafe { std::mem::transmute::<u64, f64>(0x7FFC_0000_0000_0002u64) };
+const TAG_TRUE_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0004u64) };
+const TAG_FALSE_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0003u64) };
+const TAG_NULL_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0002u64) };
 
 /// Helper: extract a Rust string from a NaN-boxed f64 string value
 unsafe fn extract_string_from_nanboxed(val: f64) -> Option<String> {

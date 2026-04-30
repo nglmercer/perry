@@ -311,7 +311,7 @@ pub unsafe extern "C" fn js_keccak256_native_bytes(
 ) -> *mut perry_runtime::buffer::BufferHeader {
     let buf_ptr =
         (buf_ptr as u64 & 0x0000_FFFF_FFFF_FFFF) as *const perry_runtime::buffer::BufferHeader;
-    let (data, len) = if buf_ptr.is_null() {
+    let (data, _len) = if buf_ptr.is_null() {
         (&[] as &[u8], 0)
     } else {
         let len = (*buf_ptr).length as usize;
@@ -344,7 +344,7 @@ pub extern "C" fn js_ethers_format_units(
     }
 
     let decimals = decimals as i32;
-    if decimals < 0 || decimals > 77 {
+    if !(0..=77).contains(&decimals) {
         let s = "0";
         return js_string_from_bytes(s.as_ptr(), s.len() as u32);
     }
@@ -378,7 +378,7 @@ pub extern "C" fn js_ethers_parse_units(
     }
 
     let decimals = decimals as i32;
-    if decimals < 0 || decimals > 77 {
+    if !(0..=77).contains(&decimals) {
         let s = "0";
         return js_bigint_from_string(s.as_ptr(), s.len() as u32);
     }

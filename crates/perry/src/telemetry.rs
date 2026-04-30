@@ -30,10 +30,10 @@ pub(crate) struct TelemetryConfig {
 
 /// Returns true if telemetry should be skipped entirely (explicit opt-out).
 fn should_skip_telemetry() -> bool {
-    if std::env::var("PERRY_NO_TELEMETRY").map_or(false, |v| v == "1" || v == "true") {
+    if std::env::var("PERRY_NO_TELEMETRY").is_ok_and(|v| v == "1" || v == "true") {
         return true;
     }
-    if std::env::var("CI").map_or(false, |v| v == "true" || v == "1") {
+    if std::env::var("CI").is_ok_and(|v| v == "true" || v == "1") {
         return true;
     }
     false

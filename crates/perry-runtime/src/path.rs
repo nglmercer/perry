@@ -210,7 +210,7 @@ pub extern "C" fn js_path_relative(
             .take_while(|(a, b)| a == b)
             .count();
         let ups = from_segs.len() - common;
-        let mut parts: Vec<&str> = std::iter::repeat("..").take(ups).collect();
+        let mut parts: Vec<&str> = std::iter::repeat_n("..", ups).collect();
         parts.extend(to_segs[common..].iter().copied());
         let result = parts.join("/");
         string_to_js(&result)

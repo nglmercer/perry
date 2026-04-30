@@ -653,7 +653,7 @@ fn wrap_returns_in_promise(stmts: &mut Vec<Stmt>) {
                 // Box<Stmt> — recurse over a single-element slice.
                 let mut v = vec![std::mem::replace(body.as_mut(), Stmt::Break)];
                 wrap_returns_in_promise(&mut v);
-                *body = Box::new(v.into_iter().next().unwrap());
+                **body = v.into_iter().next().unwrap();
             }
             Stmt::Try {
                 body,
@@ -1699,7 +1699,7 @@ fn linearize_body(
                 catch,
                 finally,
             } if body_contains_yield(body)
-                || finally.as_ref().map_or(false, |f| body_contains_yield(f)) =>
+                || finally.as_ref().is_some_and(|f| body_contains_yield(f)) =>
             {
                 // Issue #256: widen the guard to also fire when yields live ONLY
                 // in the finally block. `await using` desugars to
@@ -1763,9 +1763,7 @@ fn linearize_body(
                 then_branch,
                 else_branch,
             } if body_contains_yield(then_branch)
-                || else_branch
-                    .as_ref()
-                    .map_or(false, |e| body_contains_yield(e)) =>
+                || else_branch.as_ref().is_some_and(|e| body_contains_yield(e)) =>
             {
                 // Flush pre-if code as its own state
                 let pre_state = *state_num;
@@ -1915,7 +1913,7 @@ fn fix_placeholder_state(stmts: &mut [Stmt], state_id: LocalId, target_state: u3
                 if *id == state_id {
                     if let Expr::Number(n) = val.as_ref() {
                         if *n == 0.0 {
-                            *val = Box::new(Expr::Number(target_state as f64));
+                            **val = Expr::Number(target_state as f64);
                         }
                     }
                 }

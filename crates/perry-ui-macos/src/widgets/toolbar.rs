@@ -37,7 +37,7 @@ struct ToolbarItem {
 }
 
 thread_local! {
-    static TOOLBARS: RefCell<Vec<ToolbarEntry>> = RefCell::new(Vec::new());
+    static TOOLBARS: RefCell<Vec<ToolbarEntry>> = const { RefCell::new(Vec::new()) };
     static TOOLBAR_CALLBACKS: RefCell<HashMap<usize, f64>> = RefCell::new(HashMap::new());
 }
 

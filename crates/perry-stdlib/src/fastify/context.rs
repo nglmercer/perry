@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use perry_runtime::{js_string_from_bytes, JSValue, StringHeader};
 
-use crate::common::{get_handle, get_handle_mut, register_handle, Handle};
+use crate::common::{get_handle, get_handle_mut, Handle};
 
 // Declare perry-runtime's JSON parser (defined in perry-runtime with #[no_mangle])
 extern "C" {
@@ -624,13 +624,7 @@ unsafe fn json_value_to_jsvalue(value: &serde_json::Value) -> f64 {
     match value {
         serde_json::Value::Null => f64::from_bits(JSValue::null().bits()),
         serde_json::Value::Bool(b) => f64::from_bits(JSValue::bool(*b).bits()),
-        serde_json::Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                f
-            } else {
-                0.0
-            }
-        }
+        serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
         serde_json::Value::String(s) => {
             let ptr = js_string_from_bytes(s.as_ptr(), s.len() as u32);
             f64::from_bits(JSValue::string_ptr(ptr).bits())

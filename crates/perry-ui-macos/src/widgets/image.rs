@@ -92,7 +92,7 @@ pub fn create_file(path_ptr: *const u8) -> i64 {
     unsafe {
         // Read file bytes with Rust, then create NSImage from NSData
         let image_obj: *mut objc2::runtime::AnyObject = match std::fs::read(&resolved) {
-            Ok(bytes) if bytes.len() > 0 => {
+            Ok(bytes) if !bytes.is_empty() => {
                 let ns_data_cls = objc2::runtime::AnyClass::get(c"NSData").unwrap();
                 let ns_data: *mut objc2::runtime::AnyObject = msg_send![
                     ns_data_cls, dataWithBytes: bytes.as_ptr() as *const std::ffi::c_void, length: bytes.len()

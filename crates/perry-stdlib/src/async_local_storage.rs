@@ -14,6 +14,12 @@ pub struct AsyncLocalStorageHandle {
     stores: Vec<f64>,
 }
 
+impl Default for AsyncLocalStorageHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AsyncLocalStorageHandle {
     pub fn new() -> Self {
         AsyncLocalStorageHandle { stores: Vec::new() }

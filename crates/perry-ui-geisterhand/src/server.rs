@@ -497,15 +497,23 @@ pub fn run_server(port: u16) {
                                     if is_color_prop(prop_id) {
                                         let color = if let Some(s) = value.as_str() {
                                             parse_color_string(s)
-                                        } else if let Some(o) = value.as_object() {
-                                            Some((
-                                                o.get("r").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                                                o.get("g").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                                                o.get("b").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                                                o.get("a").and_then(|v| v.as_f64()).unwrap_or(1.0),
-                                            ))
                                         } else {
-                                            None
+                                            value.as_object().map(|o| {
+                                                (
+                                                    o.get("r")
+                                                        .and_then(|v| v.as_f64())
+                                                        .unwrap_or(0.0),
+                                                    o.get("g")
+                                                        .and_then(|v| v.as_f64())
+                                                        .unwrap_or(0.0),
+                                                    o.get("b")
+                                                        .and_then(|v| v.as_f64())
+                                                        .unwrap_or(0.0),
+                                                    o.get("a")
+                                                        .and_then(|v| v.as_f64())
+                                                        .unwrap_or(1.0),
+                                                )
+                                            })
                                         };
                                         if let Some((r, g, b, a)) = color {
                                             unsafe {
@@ -586,7 +594,7 @@ pub fn run_server(port: u16) {
             (Method::Post, "/chaos/start") => {
                 let body = read_body(&mut request);
                 let interval_ms = match serde_json::from_str::<serde_json::Value>(&body) {
-                    Ok(v) => v.get("interval_ms").and_then(|v| v.as_u64()).unwrap_or(100) as u64,
+                    Ok(v) => v.get("interval_ms").and_then(|v| v.as_u64()).unwrap_or(100),
                     Err(_) => 100,
                 };
                 let seed = match serde_json::from_str::<serde_json::Value>(&body) {

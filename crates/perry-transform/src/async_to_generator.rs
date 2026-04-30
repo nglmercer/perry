@@ -139,7 +139,7 @@ fn stmt_has_capturing_closure(stmt: &Stmt) -> bool {
                 || body_has_capturing_closure(then_branch)
                 || else_branch
                     .as_ref()
-                    .map_or(false, |eb| body_has_capturing_closure(eb))
+                    .is_some_and(|eb| body_has_capturing_closure(eb))
         }
         Stmt::While { condition, body } | Stmt::DoWhile { body, condition } => {
             expr_has_capturing_closure(condition) || body_has_capturing_closure(body)
@@ -150,14 +150,9 @@ fn stmt_has_capturing_closure(stmt: &Stmt) -> bool {
             update,
             body,
         } => {
-            init.as_ref()
-                .map_or(false, |i| stmt_has_capturing_closure(i))
-                || condition
-                    .as_ref()
-                    .map_or(false, |c| expr_has_capturing_closure(c))
-                || update
-                    .as_ref()
-                    .map_or(false, |u| expr_has_capturing_closure(u))
+            init.as_ref().is_some_and(|i| stmt_has_capturing_closure(i))
+                || condition.as_ref().is_some_and(expr_has_capturing_closure)
+                || update.as_ref().is_some_and(expr_has_capturing_closure)
                 || body_has_capturing_closure(body)
         }
         Stmt::Try {
@@ -168,10 +163,10 @@ fn stmt_has_capturing_closure(stmt: &Stmt) -> bool {
             body_has_capturing_closure(body)
                 || catch
                     .as_ref()
-                    .map_or(false, |c| body_has_capturing_closure(&c.body))
+                    .is_some_and(|c| body_has_capturing_closure(&c.body))
                 || finally
                     .as_ref()
-                    .map_or(false, |f| body_has_capturing_closure(f))
+                    .is_some_and(|f| body_has_capturing_closure(f))
         }
         Stmt::Switch {
             discriminant,
@@ -471,7 +466,7 @@ fn hoist_awaits_in_stmt(mut stmt: Stmt, next_id: &mut LocalId, hoisted: &mut Vec
                 for h in inner_hoisted {
                     hoisted.push(h);
                 }
-                *i = Box::new(i_replaced);
+                **i = i_replaced;
             }
             if let Some(c) = condition {
                 hoist_awaits_in_expr_full(c, next_id, hoisted);

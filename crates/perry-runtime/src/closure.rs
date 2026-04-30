@@ -152,7 +152,7 @@ unsafe fn dispatch_bound_method(closure: *const ClosureHeader, args: &[f64]) -> 
 #[inline(always)]
 fn get_valid_func_ptr(closure: *const ClosureHeader) -> *const u8 {
     let addr = closure as u64;
-    if addr < 0x1000 || addr >= 0x0001_0000_0000_0000 {
+    if !(0x1000..0x0001_0000_0000_0000).contains(&addr) {
         return std::ptr::null();
     }
     let type_tag = unsafe { std::ptr::read_volatile((closure as *const u8).add(12) as *const u32) };
@@ -172,7 +172,7 @@ fn get_valid_func_ptr(closure: *const ClosureHeader) -> *const u8 {
     // Skip this check on Linux since PIE addresses vary widely and CLOSURE_MAGIC
     // already provides strong validation.
     #[cfg(target_os = "macos")]
-    if func_ptr_addr < 0x100000000 || func_ptr_addr > 0x400000000 {
+    if !(0x100000000..=0x400000000).contains(&func_ptr_addr) {
         return std::ptr::null();
     }
     #[cfg(target_os = "windows")]

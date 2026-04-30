@@ -1321,63 +1321,63 @@ pub(crate) fn try_fold_array_method_call(call: Expr) -> Expr {
         type_args: Vec::new(),
     };
     match property.as_str() {
-        "map" if args.len() >= 1 => {
+        "map" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayMap {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "filter" if args.len() >= 1 => {
+        "filter" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayFilter {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "forEach" if args.len() >= 1 => {
+        "forEach" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayForEach {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "find" if args.len() >= 1 => {
+        "find" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayFind {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "findIndex" if args.len() >= 1 => {
+        "findIndex" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayFindIndex {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "findLast" if args.len() >= 1 => {
+        "findLast" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayFindLast {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "findLastIndex" if args.len() >= 1 => {
+        "findLastIndex" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayFindLastIndex {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "some" if args.len() >= 1 => {
+        "some" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArraySome {
                 array: object,
                 callback: Box::new(cb),
             }
         }
-        "every" if args.len() >= 1 => {
+        "every" if !args.is_empty() => {
             let cb = args.into_iter().next().unwrap();
             Expr::ArrayEvery {
                 array: object,
@@ -1464,7 +1464,7 @@ fn pre_scan_weakref_locals(ast_module: &ast::Module, ctx: &mut LoweringContext) 
             None
         }
     }
-    fn unwrap_init<'a>(mut e: &'a ast::Expr) -> &'a ast::Expr {
+    fn unwrap_init(mut e: &ast::Expr) -> &ast::Expr {
         loop {
             match e {
                 ast::Expr::TsAs(ts_as) => e = &ts_as.expr,
@@ -1887,7 +1887,7 @@ pub fn lower_module_with_class_id_and_types(
                         }
                     }
                     ast::ClassMember::PrivateMethod(method) if method.is_static => {
-                        static_method_names.push(format!("#{}", method.key.name.to_string()));
+                        static_method_names.push(format!("#{}", method.key.name));
                     }
                     ast::ClassMember::ClassProp(prop) if prop.is_static => {
                         if let ast::PropName::Ident(ident) = &prop.key {
@@ -1895,7 +1895,7 @@ pub fn lower_module_with_class_id_and_types(
                         }
                     }
                     ast::ClassMember::PrivateProp(prop) if prop.is_static => {
-                        static_field_names.push(format!("#{}", prop.key.name.to_string()));
+                        static_field_names.push(format!("#{}", prop.key.name));
                     }
                     _ => {}
                 }
@@ -4633,7 +4633,7 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                             }
                             if is_proxy_revocable {
                                 if let ast::Expr::Call(call) = inner {
-                                    let target_ast = call.args.get(0).map(|a| a.expr.clone());
+                                    let target_ast = call.args.first().map(|a| a.expr.clone());
                                     let handler_ast = call.args.get(1).map(|a| a.expr.clone());
                                     let target = if let Some(t) = target_ast {
                                         lower_expr(ctx, &t)?
@@ -4949,22 +4949,19 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                     let _is_var = false;
                     for decl in &fake_var.decls {
                         if let Some(init) = &decl.init {
-                            match &decl.name {
-                                ast::Pat::Ident(bind_ident) => {
-                                    let name = bind_ident.sym.to_string();
-                                    let init_expr = lower_expr(ctx, init)?;
-                                    let ty = Type::Any;
-                                    let id = ctx.fresh_local();
-                                    ctx.locals.push((name.clone(), id, ty.clone()));
-                                    module.init.push(Stmt::Let {
-                                        id,
-                                        name,
-                                        ty,
-                                        mutable,
-                                        init: Some(init_expr),
-                                    });
-                                }
-                                _ => {}
+                            if let ast::Pat::Ident(bind_ident) = &decl.name {
+                                let name = bind_ident.sym.to_string();
+                                let init_expr = lower_expr(ctx, init)?;
+                                let ty = Type::Any;
+                                let id = ctx.fresh_local();
+                                ctx.locals.push((name.clone(), id, ty.clone()));
+                                module.init.push(Stmt::Let {
+                                    id,
+                                    name,
+                                    ty,
+                                    mutable,
+                                    init: Some(init_expr),
+                                });
                             }
                         }
                     }
@@ -5345,13 +5342,13 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                         if let ast::Pat::Ident(ident) = &decl.name {
                             ident.id.sym.to_string()
                         } else {
-                            format!("__gen_item")
+                            "__gen_item".to_string()
                         }
                     } else {
-                        format!("__gen_item")
+                        "__gen_item".to_string()
                     }
                 } else {
-                    format!("__gen_item")
+                    "__gen_item".to_string()
                 };
                 let item_id = ctx.define_local(item_name.clone(), Type::Any);
 
@@ -5416,7 +5413,7 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
             // class instance field (`this.someMap`). Was limited to
             // `Ident` only.
             let iterable_type: Option<Type> = match &*for_of_stmt.right {
-                ast::Expr::Ident(ident) => ctx.lookup_local_type(&ident.sym.to_string()).cloned(),
+                ast::Expr::Ident(ident) => ctx.lookup_local_type(ident.sym.as_ref()).cloned(),
                 ast::Expr::Member(m) => {
                     if matches!(m.obj.as_ref(), ast::Expr::This(_)) {
                         if let (Some(cls), ast::MemberProp::Ident(p)) =
@@ -5473,7 +5470,7 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                         type_args[0].clone()
                     }
                     Some(Type::Generic { base, type_args })
-                        if base == "Set" && type_args.len() >= 1 =>
+                        if base == "Set" && !type_args.is_empty() =>
                     {
                         type_args[0].clone()
                     }
@@ -5934,7 +5931,7 @@ pub(super) fn lower_expr_assignment(
                     })
                 }
                 ast::MemberProp::PrivateName(private) => {
-                    let property = format!("#{}", private.name.to_string());
+                    let property = format!("#{}", private.name);
                     Ok(Expr::PropertySet {
                         object,
                         property,
@@ -6194,11 +6191,9 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
                     if matches!(
                         &*left,
                         Expr::ReflectGetPrototypeOf(_) | Expr::ObjectGetPrototypeOf(_)
-                    ) {
-                        if matches!(&*right, Expr::PropertyGet { property, .. } if property == "prototype")
-                        {
-                            return Ok(Expr::Bool(true));
-                        }
+                    ) && matches!(&*right, Expr::PropertyGet { property, .. } if property == "prototype")
+                    {
+                        return Ok(Expr::Bool(true));
                     }
                     Ok(Expr::Compare {
                         op: CompareOp::LooseEq,
@@ -6210,11 +6205,9 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
                     if matches!(
                         &*left,
                         Expr::ReflectGetPrototypeOf(_) | Expr::ObjectGetPrototypeOf(_)
-                    ) {
-                        if matches!(&*right, Expr::PropertyGet { property, .. } if property == "prototype")
-                        {
-                            return Ok(Expr::Bool(true));
-                        }
+                    ) && matches!(&*right, Expr::PropertyGet { property, .. } if property == "prototype")
+                    {
+                        return Ok(Expr::Bool(true));
                     }
                     Ok(Expr::Compare {
                         op: CompareOp::Eq,
@@ -7387,11 +7380,9 @@ fn try_lower_widget_decl(ctx: &LoweringContext, call_expr: &ast::CallExpr) -> Op
             }
             "supportedFamilies" => {
                 if let ast::Expr::Array(arr) = kv.value.as_ref() {
-                    for elem in &arr.elems {
-                        if let Some(ast::ExprOrSpread { expr, .. }) = elem {
-                            if let ast::Expr::Lit(ast::Lit::Str(s)) = expr.as_ref() {
-                                supported_families.push(s.value.as_str().unwrap_or("").to_string());
-                            }
+                    for ast::ExprOrSpread { expr, .. } in arr.elems.iter().flatten() {
+                        if let ast::Expr::Lit(ast::Lit::Str(s)) = expr.as_ref() {
+                            supported_families.push(s.value.as_str().unwrap_or("").to_string());
                         }
                     }
                 }
@@ -7420,17 +7411,14 @@ fn try_lower_widget_decl(ctx: &LoweringContext, call_expr: &ast::CallExpr) -> Op
             }
             "provider" => {
                 // Arrow function provider: provider: async (config) => { ... }
-                match kv.value.as_ref() {
-                    ast::Expr::Arrow(_arrow) => {
-                        let func_name = if kind.is_empty() {
-                            "__widget_provider_widget".to_string()
-                        } else {
-                            let safe = kind.rsplit('.').next().unwrap_or(&kind);
-                            format!("__widget_provider_{}", safe)
-                        };
-                        provider_func_name = Some(func_name);
-                    }
-                    _ => {}
+                if let ast::Expr::Arrow(_arrow) = kv.value.as_ref() {
+                    let func_name = if kind.is_empty() {
+                        "__widget_provider_widget".to_string()
+                    } else {
+                        let safe = kind.rsplit('.').next().unwrap_or(&kind);
+                        format!("__widget_provider_{}", safe)
+                    };
+                    provider_func_name = Some(func_name);
                 }
             }
             "placeholder" => {
@@ -7473,41 +7461,37 @@ fn try_lower_widget_decl(ctx: &LoweringContext, call_expr: &ast::CallExpr) -> Op
             }
             "render" => {
                 // Arrow function: render: (entry) => VStack(...)
-                match kv.value.as_ref() {
-                    ast::Expr::Arrow(arrow) => {
-                        // Extract parameter name
-                        if let Some(param) = arrow.params.first() {
-                            if let ast::Pat::Ident(ident) = param {
-                                entry_param_name = ident.id.sym.to_string();
-                            }
-                        }
-                        // Check for 2nd parameter (family)
-                        if let Some(param) = arrow.params.get(1) {
-                            if let ast::Pat::Ident(ident) = param {
-                                family_param_name = Some(ident.id.sym.to_string());
-                            }
-                        }
-                        // Extract entry fields from type annotation (only if not already specified via entryFields)
-                        if entry_fields.is_empty() {
-                            if let Some(param) = arrow.params.first() {
-                                extract_entry_fields_from_param(param, &mut entry_fields);
-                            }
-                        }
-                        // Parse body
-                        match arrow.body.as_ref() {
-                            ast::BlockStmtOrExpr::Expr(expr) => {
-                                if let Some(node) = parse_widget_node(expr) {
-                                    render_body.push(node);
-                                }
-                            }
-                            ast::BlockStmtOrExpr::BlockStmt(block) => {
-                                let nodes =
-                                    parse_render_body_stmts(&block.stmts, &family_param_name);
-                                render_body = nodes;
-                            }
+                if let ast::Expr::Arrow(arrow) = kv.value.as_ref() {
+                    // Extract parameter name
+                    if let Some(param) = arrow.params.first() {
+                        if let ast::Pat::Ident(ident) = param {
+                            entry_param_name = ident.id.sym.to_string();
                         }
                     }
-                    _ => {}
+                    // Check for 2nd parameter (family)
+                    if let Some(param) = arrow.params.get(1) {
+                        if let ast::Pat::Ident(ident) = param {
+                            family_param_name = Some(ident.id.sym.to_string());
+                        }
+                    }
+                    // Extract entry fields from type annotation (only if not already specified via entryFields)
+                    if entry_fields.is_empty() {
+                        if let Some(param) = arrow.params.first() {
+                            extract_entry_fields_from_param(param, &mut entry_fields);
+                        }
+                    }
+                    // Parse body
+                    match arrow.body.as_ref() {
+                        ast::BlockStmtOrExpr::Expr(expr) => {
+                            if let Some(node) = parse_widget_node(expr) {
+                                render_body.push(node);
+                            }
+                        }
+                        ast::BlockStmtOrExpr::BlockStmt(block) => {
+                            let nodes = parse_render_body_stmts(&block.stmts, &family_param_name);
+                            render_body = nodes;
+                        }
+                    }
                 }
             }
             _ => {} // Skip timeline and other fields handled differently
@@ -7772,11 +7756,9 @@ fn parse_stack_node(kind: WidgetStackKind, args: &[ast::ExprOrSpread]) -> Option
     // Parse children array
     if let Some(arg) = args.get(children_arg_idx) {
         if let ast::Expr::Array(arr) = arg.expr.as_ref() {
-            for elem in &arr.elems {
-                if let Some(ast::ExprOrSpread { expr, .. }) = elem {
-                    if let Some(node) = parse_widget_node(expr) {
-                        children.push(node);
-                    }
+            for ast::ExprOrSpread { expr, .. } in arr.elems.iter().flatten() {
+                if let Some(node) = parse_widget_node(expr) {
+                    children.push(node);
                 }
             }
         }
@@ -8441,11 +8423,9 @@ fn parse_widget_config_param(name: &str, value: &ast::Expr) -> Option<WidgetConf
                         },
                         "values" => {
                             if let ast::Expr::Array(arr) = kv.value.as_ref() {
-                                for elem in &arr.elems {
-                                    if let Some(ast::ExprOrSpread { expr, .. }) = elem {
-                                        if let ast::Expr::Lit(ast::Lit::Str(s)) = expr.as_ref() {
-                                            values.push(s.value.as_str().unwrap_or("").to_string());
-                                        }
+                                for ast::ExprOrSpread { expr, .. } in arr.elems.iter().flatten() {
+                                    if let ast::Expr::Lit(ast::Lit::Str(s)) = expr.as_ref() {
+                                        values.push(s.value.as_str().unwrap_or("").to_string());
                                     }
                                 }
                             }
@@ -8635,7 +8615,7 @@ fn is_regex_exec_init(ctx: &LoweringContext, init: &ast::Expr) -> bool {
                         return match member.obj.as_ref() {
                             ast::Expr::Lit(ast::Lit::Regex(_)) => true,
                             ast::Expr::Ident(ident) => ctx
-                                .lookup_local_type(&ident.sym.to_string())
+                                .lookup_local_type(ident.sym.as_ref())
                                 .map(|ty| matches!(ty, Type::Named(n) if n == "RegExp"))
                                 .unwrap_or(false),
                             _ => false,

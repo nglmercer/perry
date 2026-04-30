@@ -452,7 +452,6 @@ pub unsafe extern "C" fn js_mysql2_pool_connection_release(conn_handle: Handle) 
     // Take and drop the connection handle - this releases the connection back to the pool
     if let Some(_conn) = take_handle::<MysqlPoolConnectionHandle>(conn_handle) {
         // Connection is automatically returned to pool when dropped
-    } else {
     }
 }
 

@@ -6,9 +6,9 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use hyper::{body::Incoming, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use perry_runtime::{js_string_from_bytes, JSValue, StringHeader};
+use perry_runtime::{js_string_from_bytes, StringHeader};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -358,7 +358,7 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 
 pub static PENDING_RESPONSES: Lazy<DashMap<u64, tokio::sync::oneshot::Sender<HttpResponse>>> =
-    Lazy::new(|| DashMap::new());
+    Lazy::new(DashMap::new);
 
 /// Modified accept that stores response channel in global map
 #[no_mangle]

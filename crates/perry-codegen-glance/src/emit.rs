@@ -271,8 +271,8 @@ pub fn emit_widget_info_xml(widget: &WidgetDecl, name: &str) -> String {
     if !widget.config_params.is_empty() {
         writeln!(
             out,
-            "    android:configure=\"{}.{}ConfigActivity\"",
-            "PACKAGE", name
+            "    android:configure=\"PACKAGE.{}ConfigActivity\"",
+            name
         )
         .unwrap();
     }

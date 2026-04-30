@@ -189,7 +189,7 @@ pub unsafe extern "C" fn js_cheerio_selection_last(selection_handle: Handle) -> 
     if let Some(selection) = get_handle::<CheerioSelectionHandle>(selection_handle) {
         let document = Html::parse_document(&selection.html);
         if let Ok(selector) = Selector::parse(&selection.selector) {
-            if let Some(element) = document.select(&selector).last() {
+            if let Some(element) = document.select(&selector).next_back() {
                 let html = element.html();
                 return register_handle(CheerioSelectionHandle {
                     html,
@@ -266,7 +266,7 @@ pub unsafe extern "C" fn js_cheerio_selection_children(
                         // If filter selector provided, check if child matches
                         if let Some(ref filter) = filter_selector {
                             if let Ok(filter_sel) = Selector::parse(filter) {
-                                if !el.select(&filter_sel).next().is_some() {
+                                if el.select(&filter_sel).next().is_none() {
                                     continue;
                                 }
                             }

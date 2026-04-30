@@ -272,36 +272,34 @@ pub(super) fn collect_modules(
                     }
                     // Collect native library manifest (FFI functions, build config)
                     // Only for package imports (not relative imports within the same package)
-                    if !module_name.starts_with('.') && !module_name.starts_with('/') {
-                        if !ctx
+                    if !module_name.starts_with('.')
+                        && !module_name.starts_with('/')
+                        && !ctx
                             .native_libraries
                             .iter()
                             .any(|nl| nl.module == *module_name)
-                        {
-                            // Walk up to find the package directory with perry.nativeLibrary
-                            // Works for both node_modules packages and symlinked local packages
-                            let mut pkg_dir = resolved_path.parent();
-                            while let Some(dir) = pkg_dir {
-                                if dir.join("package.json").exists()
-                                    && has_perry_native_library(dir)
+                    {
+                        // Walk up to find the package directory with perry.nativeLibrary
+                        // Works for both node_modules packages and symlinked local packages
+                        let mut pkg_dir = resolved_path.parent();
+                        while let Some(dir) = pkg_dir {
+                            if dir.join("package.json").exists() && has_perry_native_library(dir) {
+                                if let Some(manifest) =
+                                    parse_native_library_manifest(dir, module_name, target)
                                 {
-                                    if let Some(manifest) =
-                                        parse_native_library_manifest(dir, module_name, target)
-                                    {
-                                        match format {
-                                            OutputFormat::Text => println!(
-                                                "  Native library: {} ({} FFI functions)",
-                                                manifest.module,
-                                                manifest.functions.len()
-                                            ),
-                                            OutputFormat::Json => {}
-                                        }
-                                        ctx.native_libraries.push(manifest);
+                                    match format {
+                                        OutputFormat::Text => println!(
+                                            "  Native library: {} ({} FFI functions)",
+                                            manifest.module,
+                                            manifest.functions.len()
+                                        ),
+                                        OutputFormat::Json => {}
                                     }
-                                    break;
+                                    ctx.native_libraries.push(manifest);
                                 }
-                                pkg_dir = dir.parent();
+                                break;
                             }
+                            pkg_dir = dir.parent();
                         }
                     }
                     // Recursively collect TypeScript modules
@@ -337,34 +335,32 @@ pub(super) fn collect_modules(
                     // where has_perry_native_library returns false for the symlink path but the
                     // canonical resolved path walks up to the correct package.json).
                     let module_name = &import.source;
-                    if !module_name.starts_with('.') && !module_name.starts_with('/') {
-                        if !ctx
+                    if !module_name.starts_with('.')
+                        && !module_name.starts_with('/')
+                        && !ctx
                             .native_libraries
                             .iter()
                             .any(|nl| nl.module == *module_name)
-                        {
-                            let mut pkg_dir = resolved_path.parent();
-                            while let Some(dir) = pkg_dir {
-                                if dir.join("package.json").exists()
-                                    && has_perry_native_library(dir)
+                    {
+                        let mut pkg_dir = resolved_path.parent();
+                        while let Some(dir) = pkg_dir {
+                            if dir.join("package.json").exists() && has_perry_native_library(dir) {
+                                if let Some(manifest) =
+                                    parse_native_library_manifest(dir, module_name, target)
                                 {
-                                    if let Some(manifest) =
-                                        parse_native_library_manifest(dir, module_name, target)
-                                    {
-                                        match format {
-                                            OutputFormat::Text => println!(
-                                                "  Native library: {} ({} FFI functions)",
-                                                manifest.module,
-                                                manifest.functions.len()
-                                            ),
-                                            OutputFormat::Json => {}
-                                        }
-                                        ctx.native_libraries.push(manifest);
+                                    match format {
+                                        OutputFormat::Text => println!(
+                                            "  Native library: {} ({} FFI functions)",
+                                            manifest.module,
+                                            manifest.functions.len()
+                                        ),
+                                        OutputFormat::Json => {}
                                     }
-                                    break;
+                                    ctx.native_libraries.push(manifest);
                                 }
-                                pkg_dir = dir.parent();
+                                break;
                             }
+                            pkg_dir = dir.parent();
                         }
                     }
 

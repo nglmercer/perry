@@ -564,8 +564,8 @@ pub unsafe extern "C" fn js_net_socket_on(handle: i64, event_ptr: i64, cb: i64) 
         None => return,
     };
     let mut listeners = NET_LISTENERS.lock().unwrap();
-    let entry = listeners.entry(handle).or_insert_with(HashMap::new);
-    entry.entry(event).or_insert_with(Vec::new).push(cb);
+    let entry = listeners.entry(handle).or_default();
+    entry.entry(event).or_default().push(cb);
 }
 
 // ─── FFI: socket.upgradeToTLS(servername) -> Promise ─────────────────────────

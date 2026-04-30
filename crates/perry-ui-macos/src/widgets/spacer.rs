@@ -1,4 +1,3 @@
-use objc2::rc::Retained;
 use objc2_app_kit::{NSLayoutConstraint, NSView};
 use objc2_foundation::MainThreadMarker;
 

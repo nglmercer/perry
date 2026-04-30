@@ -5,8 +5,8 @@
 //! only use JSON don't need to link the full stdlib.
 
 use crate::{
-    js_array_alloc, js_array_push, js_object_alloc, js_object_set_field, js_object_set_keys,
-    js_string_from_bytes, JSValue, StringHeader,
+    js_array_alloc, js_array_push, js_object_alloc, js_object_set_keys, js_string_from_bytes,
+    JSValue, StringHeader,
 };
 use std::cell::RefCell;
 use std::fmt::Write as FmtWrite;
@@ -14,7 +14,7 @@ use std::fmt::Write as FmtWrite;
 // ─── Circular reference detection ────────────────────────────────────────────
 thread_local! {
     /// Stack of object pointers currently being stringified (for circular detection).
-    static STRINGIFY_STACK: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static STRINGIFY_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 
     /// Reusable scratch buffer for JSON.stringify (issue #64). Avoids the
     /// per-call `String::with_capacity` allocate+free that dominated the
@@ -36,7 +36,7 @@ thread_local! {
     /// even when the cache `Vec` reallocates — we hand out raw pointers
     /// to the templates and they must outlive the borrow.
     static SHAPE_CACHE: RefCell<Vec<(*mut crate::ArrayHeader, Box<ShapeTemplate>)>> =
-        RefCell::new(Vec::new());
+        const { RefCell::new(Vec::new()) };
 
     /// Key string intern cache for JSON.parse (issue #51 follow-up).
     /// Maps key bytes → already-allocated StringHeader pointer.
@@ -53,7 +53,7 @@ thread_local! {
     /// Used to skip the shape_cache save/restore dance for the common
     /// non-reentrant case — a plain `clear_shape_cache` at the outermost
     /// call's exit handles correctness without a Vec alloc/swap.
-    static STRINGIFY_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    static STRINGIFY_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 
     /// GC roots for in-progress JSON.parse. Each entry is a JSValue bit pattern
     /// (stored as f64 so the scanner can hand it to the NaN-boxed mark path).
@@ -67,7 +67,7 @@ thread_local! {
     /// the Rust-heap backing of `Vec<(Vec<u8>, JSValue)>` inside parse_object)
     /// are invisible and get swept. Symptom was `JSON.parse(big_array)` silently
     /// truncating at ~1666 records (= when the second adaptive malloc GC fires).
-    static PARSE_ROOTS: RefCell<Vec<f64>> = RefCell::new(Vec::new());
+    static PARSE_ROOTS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
 }
 
 #[inline]
@@ -245,7 +245,7 @@ unsafe fn str_from_header<'a>(ptr: *const StringHeader) -> Option<&'a str> {
 fn find_string_terminator(bytes: &[u8]) -> Option<usize> {
     #[cfg(target_arch = "aarch64")]
     {
-        return find_string_terminator_neon(bytes);
+        find_string_terminator_neon(bytes)
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     {
@@ -2421,7 +2421,7 @@ unsafe fn try_stringify_lazy_array(value: f64) -> Option<*mut StringHeader> {
     // user code yet, so the blob bytes are authoritative.
     if !(*lazy).materialized_bitmap.is_null() && (*lazy).cached_length > 0 {
         let bitmap = (*lazy).materialized_bitmap;
-        let bitmap_words = ((*lazy).cached_length as usize + 63) / 64;
+        let bitmap_words = ((*lazy).cached_length as usize).div_ceil(64);
         let mut has_bits = false;
         for w in 0..bitmap_words {
             if *bitmap.add(w) != 0 {
@@ -2612,13 +2612,11 @@ pub unsafe extern "C" fn js_json_get_string(
         Some(k) => k,
         None => return std::ptr::null_mut(),
     };
-    match serde_json::from_str::<serde_json::Value>(&json_str) {
-        Ok(serde_json::Value::Object(obj)) => {
-            if let Some(serde_json::Value::String(s)) = obj.get(&key) {
-                return js_string_from_bytes(s.as_ptr(), s.len() as u32);
-            }
+    if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(&json_str)
+    {
+        if let Some(serde_json::Value::String(s)) = obj.get(&key) {
+            return js_string_from_bytes(s.as_ptr(), s.len() as u32);
         }
-        _ => {}
     }
     std::ptr::null_mut()
 }
@@ -2637,13 +2635,11 @@ pub unsafe extern "C" fn js_json_get_number(
         Some(k) => k,
         None => return f64::NAN,
     };
-    match serde_json::from_str::<serde_json::Value>(&json_str) {
-        Ok(serde_json::Value::Object(obj)) => {
-            if let Some(serde_json::Value::Number(n)) = obj.get(&key) {
-                return n.as_f64().unwrap_or(f64::NAN);
-            }
+    if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(&json_str)
+    {
+        if let Some(serde_json::Value::Number(n)) = obj.get(&key) {
+            return n.as_f64().unwrap_or(f64::NAN);
         }
-        _ => {}
     }
     f64::NAN
 }
@@ -2662,13 +2658,11 @@ pub unsafe extern "C" fn js_json_get_bool(
         Some(k) => k,
         None => return false,
     };
-    match serde_json::from_str::<serde_json::Value>(&json_str) {
-        Ok(serde_json::Value::Object(obj)) => {
-            if let Some(serde_json::Value::Bool(b)) = obj.get(&key) {
-                return *b;
-            }
+    if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(&json_str)
+    {
+        if let Some(serde_json::Value::Bool(b)) = obj.get(&key) {
+            return *b;
         }
-        _ => {}
     }
     false
 }
@@ -2823,7 +2817,7 @@ unsafe fn stringify_object_with_replacer(
     let mut first = true;
     for f in 0..actual_fields {
         // Get the key as a string
-        let (key_str_ptr, key_str_opt) = if (f as u32) < keys_len {
+        let (key_str_ptr, key_str_opt) = if f < keys_len {
             let key_f64 = *keys_elements.add(f as usize);
             let key_bits = key_f64.to_bits();
             let key_tag = key_bits & 0xFFFF_0000_0000_0000;
@@ -3263,7 +3257,7 @@ unsafe fn stringify_object_pretty(ptr: *const u8, buf: &mut String, indent: &str
         if field_bits == TAG_UNDEFINED || is_closure_value(field_bits) {
             continue;
         }
-        let key_name = if (f as u32) < keys_len {
+        let key_name = if f < keys_len {
             let key_f64 = *keys_elements.add(f as usize);
             let key_bits = key_f64.to_bits();
             let key_tag = key_bits & 0xFFFF_0000_0000_0000;
@@ -3294,7 +3288,7 @@ unsafe fn stringify_object_pretty(ptr: *const u8, buf: &mut String, indent: &str
             buf.push_str(indent);
         }
         buf.push('"');
-        buf.push_str(&key_name);
+        buf.push_str(key_name);
         buf.push_str("\": ");
         stringify_value_pretty(*field_val, TYPE_UNKNOWN, buf, indent, inner_indent_count);
         if i + 1 < entries.len() {
@@ -3380,7 +3374,7 @@ unsafe fn stringify_object_with_array_replacer(
     let mut field_map: Vec<(String, f64)> = Vec::new();
     for f in 0..actual_fields {
         let field_val = *fields_ptr.add(f as usize);
-        let key_name = if (f as u32) < keys_len {
+        let key_name = if f < keys_len {
             let key_f64 = *keys_elements.add(f as usize);
             let key_bits = key_f64.to_bits();
             let key_tag = key_bits & 0xFFFF_0000_0000_0000;

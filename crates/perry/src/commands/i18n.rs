@@ -214,14 +214,14 @@ fn scan_directory_for_keys(dir: &Path, keys: &mut BTreeSet<String>) -> Result<()
         let entry = entry?;
         let path = entry.path();
         if path.is_dir()
-            && !path.file_name().map_or(false, |n| {
-                n == "node_modules" || n == "dist" || n == ".perry"
-            })
+            && !path
+                .file_name()
+                .is_some_and(|n| n == "node_modules" || n == "dist" || n == ".perry")
         {
             scan_directory_for_keys(&path, keys)?;
         } else if path
             .extension()
-            .map_or(false, |ext| ext == "ts" || ext == "tsx")
+            .is_some_and(|ext| ext == "ts" || ext == "tsx")
         {
             scan_file_for_keys(&path, keys)?;
         }

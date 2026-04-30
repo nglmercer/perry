@@ -189,7 +189,7 @@ fn sanitize_bundle_segment(s: &str) -> String {
     for c in s.chars() {
         if c.is_ascii_alphanumeric() {
             out.push(c.to_ascii_lowercase());
-        } else if !out.is_empty() && out.chars().last() != Some('_') {
+        } else if !out.is_empty() && !out.ends_with('_') {
             out.push('_');
         }
     }
@@ -239,9 +239,8 @@ fn write_configs(staging: &Path, stem: &str, bundle_name: &str) -> Result<()> {
     // there's no `windowStage.loadContent(...)` call. If `pages` were
     // declared but the referenced page didn't exist in ets/, packing-tool
     // would reject the HAP.
-    let module_json = format!(
-        r#"{{
-  "module": {{
+    let module_json = r#"{
+  "module": {
     "name": "entry",
     "type": "entry",
     "description": "$string:module_desc",
@@ -250,7 +249,7 @@ fn write_configs(staging: &Path, stem: &str, bundle_name: &str) -> Result<()> {
     "deliveryWithInstall": true,
     "installationFree": false,
     "abilities": [
-      {{
+      {
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
@@ -260,17 +259,17 @@ fn write_configs(staging: &Path, stem: &str, bundle_name: &str) -> Result<()> {
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "skills": [
-          {{
+          {
             "entities": ["entity.system.home"],
             "actions": ["ohos.want.action.home"]
-          }}
+          }
         ]
-      }}
+      }
     ]
-  }}
-}}
+  }
+}
 "#
-    );
+    .to_string();
     fs::write(staging.join("module.json5"), module_json)?;
 
     // pack.info is parsed by developtools_packing_tool / hap-sign-tool as

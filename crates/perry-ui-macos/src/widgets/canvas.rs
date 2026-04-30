@@ -4,11 +4,11 @@
 // Commands: MoveTo, LineTo, Stroke, FillGradient, BeginPath, Clear.
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::NSView;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{MainThreadMarker, NSObject};
+use objc2_foundation::MainThreadMarker;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

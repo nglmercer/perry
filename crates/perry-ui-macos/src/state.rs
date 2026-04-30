@@ -52,7 +52,7 @@ struct ForEachBinding {
 }
 
 thread_local! {
-    static STATES: RefCell<Vec<StateEntry>> = RefCell::new(Vec::new());
+    static STATES: RefCell<Vec<StateEntry>> = const { RefCell::new(Vec::new()) };
     /// Map from state_handle -> list of text bindings to update when state changes
     static TEXT_BINDINGS: RefCell<HashMap<i64, Vec<TextBinding>>> = RefCell::new(HashMap::new());
     /// Map from state_handle -> slider bindings (two-way)
@@ -62,7 +62,7 @@ thread_local! {
     /// Map from state_handle -> textfield bindings (two-way)
     static TEXTFIELD_BINDINGS: RefCell<HashMap<i64, Vec<TextFieldBinding>>> = RefCell::new(HashMap::new());
     /// All multi-state text bindings
-    static MULTI_TEXT_BINDINGS: RefCell<Vec<MultiTextBinding>> = RefCell::new(Vec::new());
+    static MULTI_TEXT_BINDINGS: RefCell<Vec<MultiTextBinding>> = const { RefCell::new(Vec::new()) };
     /// Map from state_handle -> indices into MULTI_TEXT_BINDINGS
     static MULTI_TEXT_INDEX: RefCell<HashMap<i64, Vec<usize>>> = RefCell::new(HashMap::new());
     /// Map from state_handle -> visibility bindings
@@ -238,12 +238,8 @@ pub fn state_set(handle: i64, value: f64) {
     // a callback that registers new onChange handlers (e.g. perry-react's
     // _scheduleRerender → re-render → new useState → sig.onChange) would try
     // borrow_mut while the immutable borrow is still held → RefCell panic.
-    let callbacks_snapshot: Vec<f64> = ON_CHANGE_CALLBACKS.with(|cbs| {
-        cbs.borrow()
-            .get(&handle)
-            .map(|v| v.clone())
-            .unwrap_or_default()
-    });
+    let callbacks_snapshot: Vec<f64> =
+        ON_CHANGE_CALLBACKS.with(|cbs| cbs.borrow().get(&handle).cloned().unwrap_or_default());
     for closure_f64 in callbacks_snapshot {
         let closure_ptr = unsafe { js_nanbox_get_pointer(closure_f64) } as *const u8;
         unsafe {

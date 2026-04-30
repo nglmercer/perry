@@ -41,13 +41,10 @@ pub fn compile_module_to_js(module: &Module, minify_names: bool) -> (String, BTr
     // Collect exported names, filtering out type-only exports
     let mut exported_names = BTreeSet::new();
     for export in &module.exports {
-        match export {
-            perry_hir::ir::Export::Named { exported, .. } => {
-                if runtime_names.contains(exported) {
-                    exported_names.insert(exported.clone());
-                }
+        if let perry_hir::ir::Export::Named { exported, .. } = export {
+            if runtime_names.contains(exported) {
+                exported_names.insert(exported.clone());
             }
-            _ => {}
         }
     }
 

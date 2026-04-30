@@ -475,11 +475,11 @@ fn create_url_search_params_object(entries: Vec<(String, String)>) -> *mut Objec
             let mut pair = js_array_alloc(2);
             pair = js_array_push_f64(pair, create_string_f64(&key));
             pair = js_array_push_f64(pair, create_string_f64(&value));
-            let pair_f64 = std::mem::transmute::<i64, f64>(pair as i64);
+            let pair_f64 = f64::from_bits(i64::cast_unsigned(pair as i64));
             entries_array = js_array_push_f64(entries_array, pair_f64);
         }
 
-        let entries_f64 = std::mem::transmute::<i64, f64>(entries_array as i64);
+        let entries_f64 = f64::from_bits(i64::cast_unsigned(entries_array as i64));
         js_object_set_field_f64(obj, URL_SEARCH_PARAMS_ENTRIES, entries_f64);
 
         obj
@@ -494,7 +494,7 @@ fn get_url_search_params_entries(params: *mut ObjectHeader) -> Vec<(String, Stri
 
     let entries_f64 = crate::object::js_object_get_field_f64(params, URL_SEARCH_PARAMS_ENTRIES);
     let entries_ptr: *mut ArrayHeader =
-        unsafe { std::mem::transmute::<f64, i64>(entries_f64) as *mut ArrayHeader };
+        unsafe { f64::to_bits(entries_f64).cast_signed() as *mut ArrayHeader };
 
     if entries_ptr.is_null() {
         return Vec::new();
@@ -506,7 +506,7 @@ fn get_url_search_params_entries(params: *mut ObjectHeader) -> Vec<(String, Stri
     for i in 0..len {
         let pair_f64 = crate::array::js_array_get_f64(entries_ptr, i as u32);
         let pair_ptr: *mut ArrayHeader =
-            unsafe { std::mem::transmute::<f64, i64>(pair_f64) as *mut ArrayHeader };
+            unsafe { f64::to_bits(pair_f64).cast_signed() as *mut ArrayHeader };
 
         if !pair_ptr.is_null() {
             let key_f64 = crate::array::js_array_get_f64(pair_ptr, 0);
@@ -649,10 +649,10 @@ pub extern "C" fn js_url_search_params_set(
             let mut pair = js_array_alloc(2);
             pair = js_array_push_f64(pair, create_string_f64(&key));
             pair = js_array_push_f64(pair, create_string_f64(&val));
-            let pair_f64 = std::mem::transmute::<i64, f64>(pair as i64);
+            let pair_f64 = f64::from_bits(i64::cast_unsigned(pair as i64));
             entries_array = js_array_push_f64(entries_array, pair_f64);
         }
-        let entries_f64 = std::mem::transmute::<i64, f64>(entries_array as i64);
+        let entries_f64 = f64::from_bits(i64::cast_unsigned(entries_array as i64));
         js_object_set_field_f64(params, URL_SEARCH_PARAMS_ENTRIES, entries_f64);
     }
 }
@@ -697,10 +697,10 @@ pub extern "C" fn js_url_search_params_append(
             let mut pair = js_array_alloc(2);
             pair = js_array_push_f64(pair, create_string_f64(&key));
             pair = js_array_push_f64(pair, create_string_f64(&val));
-            let pair_f64 = std::mem::transmute::<i64, f64>(pair as i64);
+            let pair_f64 = f64::from_bits(i64::cast_unsigned(pair as i64));
             entries_array = js_array_push_f64(entries_array, pair_f64);
         }
-        let entries_f64 = std::mem::transmute::<i64, f64>(entries_array as i64);
+        let entries_f64 = f64::from_bits(i64::cast_unsigned(entries_array as i64));
         js_object_set_field_f64(params, URL_SEARCH_PARAMS_ENTRIES, entries_f64);
     }
 }
@@ -733,10 +733,10 @@ pub extern "C" fn js_url_search_params_delete(
             let mut pair = js_array_alloc(2);
             pair = js_array_push_f64(pair, create_string_f64(&key));
             pair = js_array_push_f64(pair, create_string_f64(&val));
-            let pair_f64 = std::mem::transmute::<i64, f64>(pair as i64);
+            let pair_f64 = f64::from_bits(i64::cast_unsigned(pair as i64));
             entries_array = js_array_push_f64(entries_array, pair_f64);
         }
-        let entries_f64 = std::mem::transmute::<i64, f64>(entries_array as i64);
+        let entries_f64 = f64::from_bits(i64::cast_unsigned(entries_array as i64));
         js_object_set_field_f64(params, URL_SEARCH_PARAMS_ENTRIES, entries_f64);
     }
 }
@@ -793,7 +793,7 @@ pub extern "C" fn js_url_search_params_get_all(
         for value in values {
             result = js_array_push_f64(result, create_string_f64(&value));
         }
-        std::mem::transmute::<i64, f64>(result as i64)
+        f64::from_bits(i64::cast_unsigned(result as i64))
     }
 }
 

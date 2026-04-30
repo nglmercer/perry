@@ -21,7 +21,7 @@ struct LazyVStackEntry {
 }
 
 thread_local! {
-    static LAZY_VSTACKS: RefCell<Vec<LazyVStackEntry>> = RefCell::new(Vec::new());
+    static LAZY_VSTACKS: RefCell<Vec<LazyVStackEntry>> = const { RefCell::new(Vec::new()) };
 }
 
 fn find_entry_idx(handle: i64) -> Option<usize> {

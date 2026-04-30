@@ -1,8 +1,6 @@
 use objc2::msg_send;
 use objc2::rc::Retained;
-use objc2_app_kit::{
-    NSLayoutAttribute, NSStackView, NSStackViewGravity, NSUserInterfaceLayoutOrientation, NSView,
-};
+use objc2_app_kit::{NSLayoutAttribute, NSStackView, NSUserInterfaceLayoutOrientation, NSView};
 use objc2_foundation::MainThreadMarker;
 
 /// Set distribution to Fill (0) so children fill available space based on

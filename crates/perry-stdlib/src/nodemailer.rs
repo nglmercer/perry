@@ -236,7 +236,7 @@ pub unsafe extern "C" fn js_nodemailer_send_mail(
             };
 
             // Build the email message
-            let mut email_builder = Message::builder()
+            let email_builder = Message::builder()
                 .from(
                     mail_opts
                         .from

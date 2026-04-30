@@ -176,7 +176,7 @@ thread_local! {
     });
 
     /// Free list of arena slots available for reuse: (user_ptr, payload_size)
-    pub(crate) static ARENA_FREE_LIST: RefCell<Vec<(*mut u8, usize)>> = RefCell::new(Vec::new());
+    pub(crate) static ARENA_FREE_LIST: RefCell<Vec<(*mut u8, usize)>> = const { RefCell::new(Vec::new()) };
 
     /// Fast empty-check for `ARENA_FREE_LIST` — kept in sync with the Vec
     /// length. The hot allocation path checks this `Cell` (a single load,
@@ -184,20 +184,20 @@ thread_local! {
     /// entirely when it's empty. Maintained by the GC sweep (sets) and
     /// `arena_alloc_gc` (clears when the Vec drains).
     pub(crate) static ARENA_FREE_LIST_NONEMPTY: std::cell::Cell<bool> =
-        std::cell::Cell::new(false);
+        const { std::cell::Cell::new(false) };
 
     /// GC statistics
-    static GC_STATS: RefCell<GcStats> = RefCell::new(GcStats {
+    static GC_STATS: RefCell<GcStats> = const { RefCell::new(GcStats {
         collection_count: 0,
         total_freed_bytes: 0,
         last_pause_us: 0,
-    });
+    }) };
 
     /// Registered root scanner functions (promise queue, timers, etc.)
     static ROOT_SCANNERS: RefCell<Vec<fn(&mut dyn FnMut(f64))>> = RefCell::new(Vec::new());
 
     /// Module-level global variable addresses (registered by codegen)
-    static GLOBAL_ROOTS: RefCell<Vec<*mut u64>> = RefCell::new(Vec::new());
+    static GLOBAL_ROOTS: RefCell<Vec<*mut u64>> = const { RefCell::new(Vec::new()) };
 
     /// Bit 0: reentrancy guard (`GC_FLAG_IN_ALLOC`) — set while gc_malloc /
     /// gc_realloc is mutating MALLOC_STATE. Prevents gc_check_trigger() from
@@ -212,7 +212,7 @@ thread_local! {
     ///
     /// Issue #62: merged into a single Cell<u8> so the fast path of
     /// `gc_check_trigger` reads both flags with one TLS access + one load.
-    static GC_FLAGS: Cell<u8> = Cell::new(0);
+    static GC_FLAGS: Cell<u8> = const { Cell::new(0) };
 }
 
 /// Bit 0 of GC_FLAGS — in_alloc reentrancy guard.
@@ -258,17 +258,17 @@ const GC_THRESHOLD_MAX_BYTES: usize = 1024 * 1024 * 1024; // 1 GB
 /// Hard ceiling on the next-GC trigger (arena_total bytes), independent
 /// of how productive recent sweeps have been. Without this, the
 /// >90%-freed branch doubles the step on every productive collection,
-/// and `next_trigger = new_total + step` lets peak nursery occupancy
-/// grow unboundedly even when most of what we collected was garbage.
-/// On `bench_json_roundtrip` direct (50 iters × ~5 MB / iter, GC fires
-/// 3 times), the step doubled from 64 MB → 67 MB → 134 MB and the
-/// trigger followed it, so peak nursery hit 115 MB at GC #3 — the
-/// dealloc pass from C4b-δ then returned 91 MB to the OS, but the
-/// peak-RSS damage was already done. Capping the trigger at the
-/// initial threshold prevents that runaway: after GC, trigger ≤ 64 MB
-/// regardless of how much step adapted, so peak nursery stays bounded
-/// to roughly initial + one iter's allocation buffer + headroom for
-/// non-arena overhead.
+/// > and `next_trigger = new_total + step` lets peak nursery occupancy
+/// > grow unboundedly even when most of what we collected was garbage.
+/// > On `bench_json_roundtrip` direct (50 iters × ~5 MB / iter, GC fires
+/// > 3 times), the step doubled from 64 MB → 67 MB → 134 MB and the
+/// > trigger followed it, so peak nursery hit 115 MB at GC #3 — the
+/// > dealloc pass from C4b-δ then returned 91 MB to the OS, but the
+/// > peak-RSS damage was already done. Capping the trigger at the
+/// > initial threshold prevents that runaway: after GC, trigger ≤ 64 MB
+/// > regardless of how much step adapted, so peak nursery stays bounded
+/// > to roughly initial + one iter's allocation buffer + headroom for
+/// > non-arena overhead.
 ///
 /// Floor: even if `arena_total` is already near or past the ceiling
 /// (large old-gen + longlived combined live set), keep at least the
@@ -303,14 +303,14 @@ thread_local! {
     /// floor) so live-set-bound programs don't grow their working
     /// set unboundedly between collections.
     static GC_NEXT_TRIGGER_BYTES: std::cell::Cell<usize> =
-        std::cell::Cell::new(GC_THRESHOLD_INITIAL_BYTES);
+        const { std::cell::Cell::new(GC_THRESHOLD_INITIAL_BYTES) };
 
     /// Per-program adaptive GC step. Doubles (up to MAX) when sweeps
     /// are mostly-garbage; halves (down to 16MB) when sweeps reclaim
     /// little. Used to compute the next trigger after each GC as
     /// `post_total + step`.
     static GC_STEP_BYTES: std::cell::Cell<usize> =
-        std::cell::Cell::new(GC_THRESHOLD_INITIAL_BYTES);
+        const { std::cell::Cell::new(GC_THRESHOLD_INITIAL_BYTES) };
 
     /// Lower bound for the next malloc-count-based GC trigger. After each
     /// collection, this is reset to `survivor_count + GC_MALLOC_COUNT_STEP`
@@ -318,7 +318,7 @@ thread_local! {
     /// malloc objects) don't GC-thrash on every subsequent allocation.
     /// See `gc_check_trigger` for the update rule.
     static GC_NEXT_MALLOC_TRIGGER: std::cell::Cell<usize> =
-        std::cell::Cell::new(100_000);
+        const { std::cell::Cell::new(100_000) };
 }
 
 /// Initial step for the malloc-count-based GC trigger. Adaptive: doubles
@@ -345,7 +345,7 @@ thread_local! {
     /// Per-program adaptive malloc-count step. Mirrors `GC_STEP_BYTES`
     /// behaviour: doubles when mostly-garbage, halves when mostly-live.
     static GC_MALLOC_COUNT_STEP: std::cell::Cell<usize> =
-        std::cell::Cell::new(GC_MALLOC_COUNT_STEP_INITIAL);
+        const { std::cell::Cell::new(GC_MALLOC_COUNT_STEP_INITIAL) };
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +394,7 @@ thread_local! {
     /// so the `Cell` access lets codegen compile this to one load +
     /// one index, no borrow.
     pub(crate) static SHADOW_STACK_FRAME_TOP: std::cell::Cell<usize> =
-        std::cell::Cell::new(usize::MAX);
+        const { std::cell::Cell::new(usize::MAX) };
 }
 
 /// Push a new shadow-stack frame with `slot_count` live-pointer
@@ -802,7 +802,7 @@ pub fn gc_check_trigger() {
         let old_step = step;
         if pre_in_use > 0 {
             let pct_freed = (freed * 100) / pre_in_use;
-            if pct_freed > 90 || pct_freed < 10 {
+            if !(10..=90).contains(&pct_freed) {
                 step = (step * 2).min(GC_THRESHOLD_MAX_BYTES);
             } else if pct_freed >= 25 {
                 step = (step / 2).max(16 * 1024 * 1024);
@@ -1519,8 +1519,8 @@ fn try_mark_value_or_raw(word: u64, valid_ptrs: &ValidPointerSet) -> bool {
     // Validate against the known-heap-pointer set to avoid false positives from return addresses
     // and plain integers. Valid heap pointers are in the lower 48-bit address space and
     // won't have NaN-boxing tags in upper bits (already rejected above).
-    let raw_ptr_u64 = word as u64;
-    if raw_ptr_u64 < 0x1000 || raw_ptr_u64 > 0x0000_FFFF_FFFF_FFFF {
+    let raw_ptr_u64 = word;
+    if !(0x1000..=0x0000_FFFF_FFFF_FFFF).contains(&raw_ptr_u64) {
         return false; // Too small (null/invalid) or has upper bits set (NaN tag or non-address)
     }
     let raw_ptr = raw_ptr_u64 as usize;
@@ -1855,10 +1855,10 @@ fn mark_block_persisting_arena_objects(valid_ptrs: &ValidPointerSet) {
         crate::arena::arena_walk_objects_with_block_index(|header_ptr, block_idx| {
             let header = header_ptr as *mut GcHeader;
             unsafe {
-                if (*header).gc_flags & (GC_FLAG_MARKED | GC_FLAG_PINNED) != 0 {
-                    if block_idx < block_has_live.len() {
-                        block_has_live[block_idx] = true;
-                    }
+                if (*header).gc_flags & (GC_FLAG_MARKED | GC_FLAG_PINNED) != 0
+                    && block_idx < block_has_live.len()
+                {
+                    block_has_live[block_idx] = true;
                 }
             }
         });
@@ -1960,7 +1960,7 @@ fn extract_ptr_from_bits(bits: u64) -> usize {
         }
         _ => {
             // Raw pointer (no NaN-boxing tag)
-            if bits >= 0x1000 && bits <= 0x0000_FFFF_FFFF_FFFF {
+            if (0x1000..=0x0000_FFFF_FFFF_FFFF).contains(&bits) {
                 bits as usize
             } else {
                 0
@@ -2149,7 +2149,7 @@ unsafe fn trace_lazy_array(
     if cache_ptr != 0 && bitmap_ptr != 0 && cached_length > 0 {
         let cache = (*lazy).materialized_elements;
         let bitmap = (*lazy).materialized_bitmap;
-        let bitmap_words = (cached_length + 63) / 64;
+        let bitmap_words = cached_length.div_ceil(64);
         for w in 0..bitmap_words {
             let word = *bitmap.add(w);
             if word == 0 {
@@ -2740,7 +2740,7 @@ fn try_rewrite_value(bits: u64, valid_ptrs: &ValidPointerSet) -> Option<u64> {
                 return None;
             }
             // Raw pointer fallback: lower 48 bits valid range.
-            if bits < 0x1000 || bits > 0x0000_FFFF_FFFF_FFFF {
+            if !(0x1000..=0x0000_FFFF_FFFF_FFFF).contains(&bits) {
                 return None;
             }
             (bits as usize, false)
@@ -2878,7 +2878,7 @@ unsafe fn rewrite_lazy_array_fields(user_ptr: *mut u8, valid_ptrs: &ValidPointer
     let cache = (*lazy).materialized_elements;
     let bitmap = (*lazy).materialized_bitmap;
     if !cache.is_null() && !bitmap.is_null() && cached_length > 0 {
-        let bitmap_words = (cached_length + 63) / 64;
+        let bitmap_words = cached_length.div_ceil(64);
         for w in 0..bitmap_words {
             let word = *bitmap.add(w);
             if word == 0 {
@@ -2905,7 +2905,7 @@ unsafe fn rewrite_lazy_array_fields(user_ptr: *mut u8, valid_ptrs: &ValidPointer
 /// evac copies (marked at evac time) and surviving non-evacuated
 /// objects.
 fn rewrite_heap_objects(valid_ptrs: &ValidPointerSet) {
-    let mut rewrite_one = |header: *mut GcHeader| {
+    let rewrite_one = |header: *mut GcHeader| {
         unsafe {
             let flags = (*header).gc_flags;
             // FORWARDED originals are stale — first 8 bytes of
