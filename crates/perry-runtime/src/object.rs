@@ -1737,13 +1737,47 @@ pub extern "C" fn js_object_set_field(obj: *mut ObjectHeader, field_index: u32, 
     }
 }
 
-/// Get the class ID of an object
+/// Get the class ID of an object.
+///
+/// Returns 0 unless `obj` is a real GC-arena-allocated class instance.
+/// Issue #350 (round 2): the codegen's `idispatch` tower for unknown-receiver
+/// method calls (e.g. `set.has(c)` when the static type is `ReadonlySet<T>`,
+/// or `a.componentTypeSet.has(c)` where `a` is `Archetype | undefined`) uses
+/// this function to compare the receiver's class id against every user
+/// class implementing the same method name. Without the GC-type guard we
+/// blindly read 4 bytes at offset 4 of the receiver — which for a
+/// `SetHeader` (allocated via std::alloc, no GcHeader, layout
+/// `{ size: u32, capacity: u32, elements: *mut f64 }`) is its `capacity`
+/// field. `js_set_alloc(0)` defaults capacity to 4, which collides with
+/// whichever user class lands at id 4, routing the call into the wrong
+/// method body and crashing on the bogus `this` pointer.
 #[no_mangle]
 pub extern "C" fn js_object_get_class_id(obj: *const ObjectHeader) -> u32 {
-    if obj.is_null() || (obj as usize) < 0x100000 {
+    if obj.is_null() || (obj as usize) < crate::gc::GC_HEADER_SIZE + 0x1000 {
         return 0;
     }
-    unsafe { (*obj).class_id }
+    let addr = obj as usize;
+    // Built-in headers (Set / Map / Regex) live in their own per-type
+    // registries — they're never user class instances. Reject them first
+    // so we never try to read a GcHeader at obj-8, which doesn't exist
+    // for these std::alloc'd headers.
+    if crate::set::is_registered_set(addr)
+        || crate::map::is_registered_map(addr)
+        || crate::regex::is_regex_pointer(obj as *const u8)
+    {
+        return 0;
+    }
+    unsafe {
+        if !is_valid_obj_ptr(obj as *const u8) {
+            return 0;
+        }
+        let gc_header =
+            (obj as *const u8).sub(crate::gc::GC_HEADER_SIZE) as *const crate::gc::GcHeader;
+        if (*gc_header).obj_type != crate::gc::GC_TYPE_OBJECT {
+            return 0;
+        }
+        (*obj).class_id
+    }
 }
 
 /// Free an object (for manual memory management / testing)
