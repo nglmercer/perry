@@ -1173,6 +1173,10 @@ pub fn run_with_parse_cache(
                 let source = match export {
                     perry_hir::Export::ExportAll { source } => Some(source),
                     perry_hir::Export::ReExport { source, .. } => Some(source),
+                    // #310 — namespace re-export's target file must also be
+                    // initialized before this re-exporter so consumers see
+                    // populated export globals when they reach through.
+                    perry_hir::Export::NamespaceReExport { source, .. } => Some(source),
                     perry_hir::Export::Named { .. } => None,
                 };
                 if let Some(src) = source {
@@ -2355,6 +2359,116 @@ pub fn run_with_parse_cache(
                         }
                         perry_hir::ImportSpecifier::Namespace { .. } => unreachable!(),
                     };
+
+                    // Issue #310: when the source module re-exports the
+                    // imported name as a namespace (`export * as Foo from
+                    // "./Foo"`), the local binding behaves identically to
+                    // `import * as Foo from "pkg/Foo"` — `Foo.member` should
+                    // dispatch through the namespace path. Detect this by
+                    // looking at the source module's HIR exports for a
+                    // `NamespaceReExport` whose name matches the imported
+                    // name, then route the local through `namespace_imports`
+                    // + register the namespace target's full export surface.
+                    let mut handled_as_namespace_reexport = false;
+                    if let Some(src_hir) = source_module {
+                        for export in &src_hir.exports {
+                            if let perry_hir::Export::NamespaceReExport {
+                                source: ns_src,
+                                name,
+                            } = export
+                            {
+                                if name != &exported_name {
+                                    continue;
+                                }
+                                let importer = std::path::Path::new(&resolved_path_str);
+                                let Some((ns_target, _)) = resolve_import(
+                                    ns_src,
+                                    importer,
+                                    &ctx.project_root,
+                                    &ctx.compile_packages,
+                                    &ctx.compile_package_dirs,
+                                ) else {
+                                    break;
+                                };
+                                let ns_target_str = ns_target.to_string_lossy().to_string();
+                                let Some(target_exports) = all_module_exports.get(&ns_target_str)
+                                else {
+                                    break;
+                                };
+                                namespace_imports.push(local_name.clone());
+                                for (export_name, origin_path) in target_exports {
+                                    let origin_prefix =
+                                        compute_module_prefix(origin_path, &ctx.project_root);
+                                    import_function_prefixes
+                                        .insert(export_name.clone(), origin_prefix.clone());
+
+                                    let key = (origin_path.clone(), export_name.clone());
+                                    if let Some(&param_count) = exported_func_param_counts.get(&key)
+                                    {
+                                        imported_param_counts
+                                            .insert(export_name.clone(), param_count);
+                                    }
+                                    if let Some(class) = exported_classes.get(&key) {
+                                        imported_classes.push(perry_codegen::ImportedClass {
+                                            name: class.name.clone(),
+                                            local_alias: None,
+                                            source_prefix: origin_prefix.clone(),
+                                            constructor_param_count: class
+                                                .constructor
+                                                .as_ref()
+                                                .map(|c| c.params.len())
+                                                .unwrap_or(0),
+                                            method_names: class
+                                                .methods
+                                                .iter()
+                                                .map(|m| m.name.clone())
+                                                .collect(),
+                                            method_param_counts: class
+                                                .methods
+                                                .iter()
+                                                .map(|m| m.params.len())
+                                                .collect(),
+                                            static_method_names: class
+                                                .static_methods
+                                                .iter()
+                                                .map(|m| m.name.clone())
+                                                .collect(),
+                                            getter_names: class
+                                                .getters
+                                                .iter()
+                                                .map(|(n, _)| n.clone())
+                                                .collect(),
+                                            setter_names: class
+                                                .setters
+                                                .iter()
+                                                .map(|(n, _)| n.clone())
+                                                .collect(),
+                                            parent_name: class.extends_name.clone(),
+                                            field_names: class
+                                                .fields
+                                                .iter()
+                                                .map(|f| f.name.clone())
+                                                .collect(),
+                                            field_types: class
+                                                .fields
+                                                .iter()
+                                                .map(|f| f.ty.clone())
+                                                .collect(),
+                                            source_class_id: Some(class.id),
+                                        });
+                                    }
+                                    if let Some(members) = exported_enums.get(&key) {
+                                        imported_enums.push((export_name.clone(), members.clone()));
+                                    }
+                                }
+                                handled_as_namespace_reexport = true;
+                                break;
+                            }
+                        }
+                    }
+                    if handled_as_namespace_reexport {
+                        continue;
+                    }
 
                     let key = (resolved_path_str.clone(), exported_name.clone());
 

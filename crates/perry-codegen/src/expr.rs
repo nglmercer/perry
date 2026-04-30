@@ -4433,6 +4433,34 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     lowered.iter().map(|s| (DOUBLE, s.as_str())).collect();
                 return Ok(ctx.block().call(DOUBLE, &fn_name, &arg_slices));
             }
+            // #310: when the receiver is a namespace alias from an
+            // `import { Foo } from "pkg"` where the source module did
+            // `export * as Foo from "./Foo"`, the HIR's "uppercase Ident
+            // looks like a class" rule lifts `Foo.method(...)` to
+            // StaticMethodCall — but `Foo` isn't actually a class, so
+            // the methods-table lookup above misses. The CLI driver's
+            // namespace-import walk has already registered every export
+            // of the namespace target file under its own name in
+            // `import_function_prefixes`, so the function call resolves
+            // to the same `perry_fn_<src>__<method>` symbol a
+            // `import * as Foo from "pkg/Foo"` would have used.
+            if ctx.namespace_imports.contains(class_name) {
+                if let Some(source_prefix) = ctx.import_function_prefixes.get(method_name).cloned()
+                {
+                    let fn_name = format!("perry_fn_{}__{}", source_prefix, method_name);
+                    let mut lowered: Vec<String> = Vec::with_capacity(args.len());
+                    for a in args {
+                        lowered.push(lower_expr(ctx, a)?);
+                    }
+                    let arg_kinds: Vec<crate::types::LlvmType> =
+                        std::iter::repeat(DOUBLE).take(args.len()).collect();
+                    ctx.pending_declares
+                        .push((fn_name.clone(), DOUBLE, arg_kinds));
+                    let arg_slices: Vec<(crate::types::LlvmType, &str)> =
+                        lowered.iter().map(|s| (DOUBLE, s.as_str())).collect();
+                    return Ok(ctx.block().call(DOUBLE, &fn_name, &arg_slices));
+                }
+            }
             for a in args {
                 let _ = lower_expr(ctx, a)?;
             }
