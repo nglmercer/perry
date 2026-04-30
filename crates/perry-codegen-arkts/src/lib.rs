@@ -296,12 +296,24 @@ fn emit_widget(
                 ),
                 // Phase 2 v12 widgets.
                 "Tabs" => emit_tabs(
-                    args, bindings, depth, callbacks, text_slots, arkts_locals, classes,
+                    args,
+                    bindings,
+                    depth,
+                    callbacks,
+                    text_slots,
+                    arkts_locals,
+                    classes,
                 ),
                 "Modal" | "Dialog" => emit_modal(args, callbacks),
                 "Menu" | "ContextMenu" => emit_menu(args, callbacks),
                 "Grid" => emit_grid(
-                    args, bindings, depth, callbacks, text_slots, arkts_locals, classes,
+                    args,
+                    bindings,
+                    depth,
+                    callbacks,
+                    text_slots,
+                    arkts_locals,
+                    classes,
                 ),
                 other => format!(
                     "// unsupported perry/ui widget: {} (Phase 2 v12)\n\
@@ -1388,7 +1400,10 @@ fn emit_menu(args: &[Expr], callbacks: &mut Vec<Expr>) -> String {
             let action = pairs.iter().find(|(k, _)| k == "action").map(|(_, v)| v);
             // Reuse Button's emit shape so action closures register
             // correctly via the v2 callback pipeline.
-            let pseudo_args: Vec<Expr> = vec![Expr::String(label.clone()), action.cloned().unwrap_or(Expr::Number(0.0))];
+            let pseudo_args: Vec<Expr> = vec![
+                Expr::String(label.clone()),
+                action.cloned().unwrap_or(Expr::Number(0.0)),
+            ];
             emit_button(&pseudo_args, callbacks)
         })
         .collect();
@@ -1412,10 +1427,7 @@ fn emit_grid(
 ) -> String {
     let columns = numeric_arg(args, 0).unwrap_or(2.0) as i64;
     let columns = columns.clamp(1, 12);
-    let template = (0..columns)
-        .map(|_| "1fr")
-        .collect::<Vec<_>>()
-        .join(" ");
+    let template = (0..columns).map(|_| "1fr").collect::<Vec<_>>().join(" ");
     let items: Vec<&Expr> = match args.get(1) {
         Some(Expr::Array(items)) => items.iter().collect(),
         _ => Vec::new(),
@@ -2116,20 +2128,28 @@ mod tests {
 
     #[test]
     // ----- Phase 2 v12: Tabs / Modal / Menu / Grid -----
-
     #[test]
     fn tabs_emits_tabcontent_per_spec() {
         // Tabs([{label: "Home", body: Text("home content")}, {label: "Settings", body: Text("settings")}])
         let mut m = empty_module();
         let tab1 = Expr::Object(vec![
             ("label".into(), Expr::String("Home".into())),
-            ("body".into(), nmc("Text", vec![Expr::String("home content".into())])),
+            (
+                "body".into(),
+                nmc("Text", vec![Expr::String("home content".into())]),
+            ),
         ]);
         let tab2 = Expr::Object(vec![
             ("label".into(), Expr::String("Settings".into())),
-            ("body".into(), nmc("Text", vec![Expr::String("settings".into())])),
+            (
+                "body".into(),
+                nmc("Text", vec![Expr::String("settings".into())]),
+            ),
         ]);
-        m.init.push(app_with_body(nmc("Tabs", vec![Expr::Array(vec![tab1, tab2])])));
+        m.init.push(app_with_body(nmc(
+            "Tabs",
+            vec![Expr::Array(vec![tab1, tab2])],
+        )));
         let r = emit_index_ets(&mut m).unwrap().unwrap();
         assert!(r.ets_source.contains("Tabs() {"));
         assert!(r.ets_source.contains(".tabBar('Home')"));
@@ -2149,7 +2169,10 @@ mod tests {
             ("label".into(), Expr::String("Delete".into())),
             ("action".into(), closure_stub()),
         ]);
-        m.init.push(app_with_body(nmc("Menu", vec![Expr::Array(vec![item1, item2])])));
+        m.init.push(app_with_body(nmc(
+            "Menu",
+            vec![Expr::Array(vec![item1, item2])],
+        )));
         let r = emit_index_ets(&mut m).unwrap().unwrap();
         assert!(r.ets_source.contains("Button('Edit')"));
         assert!(r.ets_source.contains("Button('Delete')"));
@@ -2185,8 +2208,10 @@ mod tests {
     #[test]
     fn modal_emits_placeholder_with_runtime_hint() {
         let mut m = empty_module();
-        m.init
-            .push(app_with_body(nmc("Modal", vec![Expr::String("Title".into())])));
+        m.init.push(app_with_body(nmc(
+            "Modal",
+            vec![Expr::String("Title".into())],
+        )));
         let r = emit_index_ets(&mut m).unwrap().unwrap();
         // Phase 2 v12 emits a placeholder + comment pointing at the
         // showDialog runtime FFI follow-up.
