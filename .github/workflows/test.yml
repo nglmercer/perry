@@ -81,11 +81,21 @@ jobs:
         #   / perry-ui-visionos: depend on `objc2` which only compiles on
         #   Apple platforms (`compile_error!` in objc2/src/lib.rs:219).
         # - perry-ui-gtk4: needs system pango/gtk via pkg-config; runner
-        #   image doesn't have libgtk-4-dev installed by default. Wiring
-        #   it in is a follow-up — would add extra Linux UI coverage but
-        #   also extra compile time + an apt-install step.
+        #   image doesn't have libgtk-4-dev installed by default.
         # - perry-ui-android: needs Android NDK.
         # - perry-ui-windows: needs win32 headers.
+        # - perry-jsruntime: the perry-jsruntime test binary links both
+        #   perry-runtime (with strong V8 stubs gated on `cfg(not(target_os
+        #   = "macos"))` in closure.rs) AND perry-jsruntime (with the real
+        #   V8 FFI impls in interop.rs), causing rust-lld to error on 12
+        #   duplicate symbols on Linux. macOS uses .weak_definition
+        #   global_asm stubs so the duplicate is resolved at link time;
+        #   Linux ELF doesn't have an equivalent weak escape hatch wired
+        #   up in perry-runtime today (would need #[linkage = "weak"] which
+        #   is nightly-only, or hand-rolled .weak in inline asm). v0.5.297
+        #   noted that perry-jsruntime tests are independently flaky on
+        #   Linux due to V8/deno_core threading, so excluding here is also
+        #   consistent with that earlier finding.
         run: |
           cargo test --workspace \
             --exclude perry-ui-macos \
@@ -95,7 +105,8 @@ jobs:
             --exclude perry-ui-watchos \
             --exclude perry-ui-gtk4 \
             --exclude perry-ui-android \
-            --exclude perry-ui-windows
+            --exclude perry-ui-windows \
+            --exclude perry-jsruntime
 
   # ---------------------------------------------------------------------------
   # Parity tests (Perry output vs Node.js)
