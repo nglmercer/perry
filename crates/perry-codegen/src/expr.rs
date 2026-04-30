@@ -805,10 +805,21 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         // on bench_string_ops.
         Expr::LocalSet(id, value) => {
             // Detect the `x = x + y` self-append pattern.
-            // Skip for module globals — they use global variable loads,
-            // not alloca slots, and the self-append helper requires a slot.
+            // The fast path requires a plain alloca slot in `ctx.locals` —
+            // module globals (use `@global` loads), closure captures (use
+            // `js_closure_{get,set}_capture_f64`), and boxed vars (use
+            // `js_box_set` through a heap cell) all need different store
+            // mechanics, so they fall through to the regular `LocalSet`
+            // path below. Issue #319: without the `ctx.locals.contains_key`
+            // / closure_captures / boxed_vars guards, a closure-captured
+            // string-typed local that does `s = s + t` aborted codegen
+            // with `string self-append: local N not in scope` because the
+            // helper's `ctx.locals.get(id)` lookup whiffed.
             if matches!(ctx.local_types.get(id), Some(HirType::String))
                 && !ctx.module_globals.contains_key(id)
+                && !ctx.closure_captures.contains_key(id)
+                && !ctx.boxed_vars.contains(id)
+                && ctx.locals.contains_key(id)
             {
                 if let Expr::Binary {
                     op: BinaryOp::Add,
