@@ -239,10 +239,24 @@ fn emit_widget(
             let core = match method.as_str() {
                 "Text" => emit_text(args, text_slots, arkts_locals),
                 "VStack" => emit_stack(
-                    "Column", args, bindings, depth, callbacks, text_slots, arkts_locals, classes,
+                    "Column",
+                    args,
+                    bindings,
+                    depth,
+                    callbacks,
+                    text_slots,
+                    arkts_locals,
+                    classes,
                 ),
                 "HStack" => emit_stack(
-                    "Row", args, bindings, depth, callbacks, text_slots, arkts_locals, classes,
+                    "Row",
+                    args,
+                    bindings,
+                    depth,
+                    callbacks,
+                    text_slots,
+                    arkts_locals,
+                    classes,
                 ),
                 "Button" => emit_button(args, callbacks),
                 "TextField" => emit_textfield(args, callbacks),
@@ -252,15 +266,33 @@ fn emit_widget(
                 "Divider" => "Divider()".to_string(),
                 "Image" | "ImageFile" => emit_image(args),
                 "ScrollView" => emit_scrollview(
-                    args, bindings, depth, callbacks, text_slots, arkts_locals, classes,
+                    args,
+                    bindings,
+                    depth,
+                    callbacks,
+                    text_slots,
+                    arkts_locals,
+                    classes,
                 ),
                 "LazyVStack" => emit_lazy_vstack(
-                    args, bindings, depth, callbacks, text_slots, arkts_locals, classes,
+                    args,
+                    bindings,
+                    depth,
+                    callbacks,
+                    text_slots,
+                    arkts_locals,
+                    classes,
                 ),
                 "Picker" => emit_picker(args, callbacks),
                 "ProgressView" => emit_progressview(args),
                 "Section" => emit_section(
-                    args, bindings, depth, callbacks, text_slots, arkts_locals, classes,
+                    args,
+                    bindings,
+                    depth,
+                    callbacks,
+                    text_slots,
+                    arkts_locals,
+                    classes,
                 ),
                 other => format!(
                     "// unsupported perry/ui widget: {} (Phase 2 v4)\n\
@@ -273,8 +305,7 @@ fn emit_widget(
             // by checking whether the last arg is an object (style) or a
             // plain string (id) — Text("hi", "id") leaves args.last() as
             // a String which extract_style_object returns None for.
-            let style_props =
-                args.last().and_then(|a| extract_style_object(a, classes));
+            let style_props = args.last().and_then(|a| extract_style_object(a, classes));
             if let Some(props) = style_props {
                 let modifiers = emit_style_modifiers(&props);
                 if !modifiers.is_empty() {
@@ -345,7 +376,13 @@ fn emit_for_each(
             let mut locals = arkts_locals.clone();
             locals.insert(pid, "__item".to_string());
             let inner = emit_widget(
-                &body, bindings, depth + 1, callbacks, text_slots, &locals, classes,
+                &body,
+                bindings,
+                depth + 1,
+                callbacks,
+                text_slots,
+                &locals,
+                classes,
             );
             ("__item".to_string(), inner)
         }
@@ -391,8 +428,7 @@ fn arkts_array_source(e: &Expr, bindings: &HashMap<LocalId, Expr>) -> String {
             }
             // Phase 2 v5 limitation: complex array sources need real
             // ArkTS-side state binding. Emit a placeholder.
-            "[/* unresolved ForEach source — needs Phase 2 v6 state binding */]"
-                .to_string()
+            "[/* unresolved ForEach source — needs Phase 2 v6 state binding */]".to_string()
         }
         _ => "[/* unsupported ForEach source */]".to_string(),
     }
@@ -464,7 +500,9 @@ fn emit_text(
 fn extract_style_object(arg: &Expr, classes: &[Class]) -> Option<Vec<(String, Expr)>> {
     match arg {
         Expr::Object(props) => Some(props.clone()),
-        Expr::New { class_name, args, .. } if class_name.starts_with("__AnonShape_") => {
+        Expr::New {
+            class_name, args, ..
+        } if class_name.starts_with("__AnonShape_") => {
             let class = classes.iter().find(|c| &c.name == class_name)?;
             // Pair each field with its positional arg; missing args fall through.
             let pairs: Vec<(String, Expr)> = class
@@ -1841,10 +1879,14 @@ mod tests {
                 is_async: false,
             }),
         };
-        m.init
-            .push(app_with_body(nmc("VStack", vec![Expr::Array(vec![map_expr])])));
+        m.init.push(app_with_body(nmc(
+            "VStack",
+            vec![Expr::Array(vec![map_expr])],
+        )));
         let r = emit_index_ets(&mut m).unwrap().unwrap();
-        assert!(r.ets_source.contains("ForEach(['a', 'b', 'c'], (__item: any)"));
+        assert!(r
+            .ets_source
+            .contains("ForEach(['a', 'b', 'c'], (__item: any)"));
         // Body resolves `LocalGet(item_param.id)` → __item.
         assert!(r.ets_source.contains("Text(__item)"));
     }
