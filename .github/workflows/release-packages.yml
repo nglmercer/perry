@@ -171,7 +171,11 @@ jobs:
 
       - name: Install GTK4 development libraries (Linux glibc)
         if: runner.os == 'Linux' && !endsWith(matrix.target, '-musl')
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
+        # libgstreamer1.0-dev added in v0.5.456 — perry-ui-gtk4 pulls in
+        # gstreamer-sys via the perry/media (#351, v0.5.440) GTK4 backend
+        # for streaming audio playback. Mirrors the doc-tests-gtk4 fix
+        # from v0.5.441 (commit a535a984).
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev
 
       - name: Install musl tools (Linux musl)
         if: endsWith(matrix.target, '-musl')
