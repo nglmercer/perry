@@ -217,7 +217,12 @@ fn rewrite_state_in_stmt(stmt: &mut Stmt, reg: &HashMap<LocalId, StateBinding>) 
                 rewrite_state_calls_in_stmts(else_branch, reg);
             }
         }
-        Stmt::While { condition, body, .. } | Stmt::DoWhile { body, condition, .. } => {
+        Stmt::While {
+            condition, body, ..
+        }
+        | Stmt::DoWhile {
+            body, condition, ..
+        } => {
             rewrite_state_in_expr(condition, reg);
             rewrite_state_calls_in_stmts(body, reg);
         }
@@ -478,7 +483,7 @@ fn emit_widget(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 ),
                 "HStack" => emit_stack(
                     "Row",
@@ -489,7 +494,7 @@ fn emit_widget(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 ),
                 "Button" => emit_button(args, callbacks),
                 "TextField" => emit_textfield(args, callbacks),
@@ -506,7 +511,7 @@ fn emit_widget(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 ),
                 "LazyVStack" => emit_lazy_vstack(
                     args,
@@ -516,7 +521,7 @@ fn emit_widget(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 ),
                 "Picker" => emit_picker(args, callbacks),
                 "ProgressView" => emit_progressview(args),
@@ -528,7 +533,7 @@ fn emit_widget(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 ),
                 // Phase 2 v12 widgets.
                 "Tabs" => emit_tabs(
@@ -586,7 +591,7 @@ fn emit_widget(
             text_slots,
             arkts_locals,
             classes,
-        state_registry,
+            state_registry,
         ),
         _ => format!(
             "// unrecognized body expression (must be a perry/ui widget call)\n\
@@ -986,7 +991,7 @@ fn emit_stack(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 )
             })
             .collect::<Vec<_>>(),
@@ -1001,7 +1006,7 @@ fn emit_stack(
             text_slots,
             arkts_locals,
             classes,
-        state_registry,
+            state_registry,
         )],
         Some(_) => vec![format!(
             "// children arg wasn't an array literal — Phase 2 v1.5 limitation\n\
@@ -1240,7 +1245,7 @@ fn emit_scrollview(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 )
             })
             .collect(),
@@ -1252,7 +1257,7 @@ fn emit_scrollview(
             text_slots,
             arkts_locals,
             classes,
-        state_registry,
+            state_registry,
         )],
         _ => vec![],
     };
@@ -1317,7 +1322,7 @@ fn emit_lazy_vstack(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 )
             })
             .collect(),
@@ -1329,7 +1334,7 @@ fn emit_lazy_vstack(
             text_slots,
             arkts_locals,
             classes,
-        state_registry,
+            state_registry,
         )],
         _ => vec![],
     };
@@ -1458,7 +1463,7 @@ fn emit_section(
                     text_slots,
                     arkts_locals,
                     classes,
-                state_registry,
+                    state_registry,
                 )
             })
             .collect(),
@@ -1470,7 +1475,7 @@ fn emit_section(
             text_slots,
             arkts_locals,
             classes,
-        state_registry,
+            state_registry,
         )],
         _ => vec![],
     };
@@ -1580,7 +1585,7 @@ fn emit_tabs(
                         text_slots,
                         arkts_locals,
                         classes,
-                    state_registry,
+                        state_registry,
                     )
                 })
                 .unwrap_or_else(|| "Text('[empty tab]').fontSize(16)".to_string());
@@ -1701,7 +1706,7 @@ fn emit_grid(
                 text_slots,
                 arkts_locals,
                 classes,
-            state_registry,
+                state_registry,
             );
             let body_indent = "    ".repeat(depth + 2);
             let body_indented = body
@@ -2562,7 +2567,10 @@ mod tests {
             let has_settext = body.iter().any(|s| {
                 matches!(s, Stmt::Expr(Expr::NativeMethodCall { method, .. }) if method == "setText")
             });
-            assert!(has_settext, "closure body should have been rewritten to setText");
+            assert!(
+                has_settext,
+                "closure body should have been rewritten to setText"
+            );
         } else {
             panic!("expected Closure in callback registry");
         }
@@ -2594,7 +2602,9 @@ mod tests {
         )));
         let r = emit_index_ets(&mut m).unwrap().unwrap();
         assert!(r.ets_source.contains("@State text___state_0: string = '0'"));
-        assert!(r.ets_source.contains("@State text___state_1: string = 'Alice'"));
+        assert!(r
+            .ets_source
+            .contains("@State text___state_1: string = 'Alice'"));
         assert!(r.ets_source.contains("Text(this.text___state_0)"));
         assert!(r.ets_source.contains("Text(this.text___state_1)"));
     }
