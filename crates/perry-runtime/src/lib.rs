@@ -87,6 +87,12 @@ pub mod thread;
 /// in runtime (not stdlib) because it's a thin libc wrapper with no
 /// async-runtime dependency. The pump drain is hooked separately.
 pub mod tty;
+/// Native TUI engine (#358): cell-grid + double-buffered renderer +
+/// widget tree + FFI surface for `import { Box, Text, render } from
+/// "perry/tui"`. Lives in runtime so the `js_perry_tui_*` symbols are
+/// always available; no separate cargo dep, no async-runtime, no
+/// per-program link flag.
+pub mod tui;
 /// Cross-platform showToast / setText handler registry (Phase 2 v3.3).
 /// Always compiled — provides `perry_arkts_*` stubs on non-harmonyos
 /// builds so the codegen at lower_call/native.rs links cleanly without

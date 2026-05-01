@@ -73,6 +73,53 @@ pub(crate) fn lower_native_method_call(
     // HStack, etc.) are NOT dispatched yet so the body is the
     // zero-sentinel — the window appears with the right title/size but
     // no widget tree. Full widget dispatch is a separate followup.
+    // perry/tui Box(children) — TS shape is `Box([child1, child2, ...])`
+    // or bare `Box()`. Mirrors the perry/ui VStack pattern: create the
+    // Box handle, then iterate the children array calling
+    // `js_perry_tui_box_add_child(parent, child)` per element. Bare
+    // `Box()` falls through to the regular dispatch table below
+    // (lowers to a plain `js_perry_tui_box` call with no children).
+    // (#358 Phase 1.)
+    if module == "perry/tui" && method == "Box" && object.is_none() && !args.is_empty() {
+        ctx.pending_declares
+            .push(("js_perry_tui_box".to_string(), DOUBLE, vec![]));
+        ctx.pending_declares.push((
+            "js_perry_tui_box_add_child".to_string(),
+            DOUBLE,
+            vec![I64, I64],
+        ));
+        let blk = ctx.block();
+        let parent_d = blk.call(DOUBLE, "js_perry_tui_box", &[]);
+        let parent_slot = ctx.func.alloca_entry(DOUBLE);
+        ctx.block().store(DOUBLE, &parent_d, &parent_slot);
+
+        if let Some(children_expr) = args.first() {
+            let elements_owned: Option<Vec<Expr>> = match children_expr {
+                Expr::Array(elems) => Some(elems.clone()),
+                _ => None,
+            };
+            if let Some(elements) = elements_owned {
+                for child in &elements {
+                    let child_box = lower_expr(ctx, child)?;
+                    let blk = ctx.block();
+                    let child_handle = unbox_to_i64(blk, &child_box);
+                    let parent_reload = blk.load(DOUBLE, &parent_slot);
+                    let parent_handle = unbox_to_i64(blk, &parent_reload);
+                    blk.call_void(
+                        "js_perry_tui_box_add_child",
+                        &[(I64, &parent_handle), (I64, &child_handle)],
+                    );
+                }
+            } else {
+                let _ = lower_expr(ctx, children_expr)?;
+            }
+        }
+
+        let blk = ctx.block();
+        let parent_final = blk.load(DOUBLE, &parent_slot);
+        return Ok(parent_final);
+    }
+
     // perry/ui VStack/HStack — special-case because the TS shape is
     // `VStack(spacing, [child1, child2, ...])` (or just `VStack([...])`),
     // but the runtime takes only `(spacing) -> handle` and children get

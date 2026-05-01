@@ -125,6 +125,10 @@ pub const NATIVE_MODULES: &[&str] = &[
     // global-access machinery in lower/expr_member.rs handles property reads
     // on the imported binding the same as on the implicit global.
     "process",
+    // Perry native TUI engine (#358) — cell-grid + double-buffer
+    // renderer. Lives in perry-runtime/src/tui (always linked); no
+    // stdlib needed, so it's also in RUNTIME_ONLY_MODULES below.
+    "perry/tui",
     // Perry native UI
     "perry/ui",
     // Perry system APIs
@@ -184,6 +188,7 @@ const RUNTIME_ONLY_MODULES: &[&str] = &[
     "perry/i18n",
     "perry/thread",
     "perry/media",
+    "perry/tui",
     // tty (#347 Phase 3) — isatty + columns/rows live in perry-runtime.
     "tty",
 ];

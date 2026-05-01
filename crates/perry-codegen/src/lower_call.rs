@@ -6964,6 +6964,47 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         args: &[],
         ret: NR_STR,
     },
+    // ========== perry/tui (#358 Phase 1) ==========
+    // Text(content) and Box() return widget handles (NaN-boxed POINTER).
+    // The Box(children: Widget[]) shape is intercepted earlier in
+    // lower_call/native.rs and lowered as Box() + add_child*N; this
+    // table only matches the bare-arg shapes.
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "Text",
+        class_filter: None,
+        runtime: "js_perry_tui_text",
+        args: &[NA_STR],
+        ret: NR_PTR,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "Box",
+        class_filter: None,
+        runtime: "js_perry_tui_box",
+        args: &[],
+        ret: NR_PTR,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "render",
+        class_filter: None,
+        runtime: "js_perry_tui_render",
+        args: &[NA_PTR],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "enter",
+        class_filter: None,
+        runtime: "js_perry_tui_enter",
+        args: &[],
+        ret: NR_VOID,
+    },
     // ========== readline (#347 Phase 1) ==========
     // createInterface(opts) returns a Handle (i64, NaN-boxed POINTER).
     // Instance methods take that Handle as the first arg via has_receiver.
