@@ -2021,8 +2021,27 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
             class_name_opt.as_deref(),
             Some("Uint8Array") | Some("Buffer") | Some("Uint8ClampedArray")
         );
+        // Issue #392 followup: when the receiver's static class name is known
+        // but the class is NOT in `ctx.classes` (the canonical case is a
+        // type-only `import type { Changeset } from "./changeset"` which
+        // strips the module from `hir.imports` and produces no entry in
+        // `imported_classes` for this consumer module — see
+        // crates/perry/src/commands/compile.rs::is_unresolved_name where the
+        // class is considered "resolved" because it's in
+        // `all_program_type_names`, which short-circuits the
+        // `references_interface` full-visibility fallback), the static
+        // dispatch tower above can't find a method entry and would fall
+        // through to `js_closure_call<N>` against `obj.<method>` read as a
+        // closure-valued property — which silently no-ops on Map/Set field
+        // mutations like `this.adds.set(k, v)` inside the cross-module
+        // method. Route through `js_native_call_method` instead so the
+        // runtime's `CLASS_VTABLE_REGISTRY` (populated by v0.5.464's
+        // `js_register_class_method` calls in `emit_string_pool`) dispatches
+        // to the real `perry_method_<modprefix>__<class>__<method>`.
+        let class_unknown_to_codegen =
+            class_name_opt.as_ref().is_some_and(|n| !ctx.classes.contains_key(n));
         let skip_native = matches!(object.as_ref(), Expr::GlobalGet(_))
-            || (class_name_opt.is_some() && !is_buffer_class);
+            || (class_name_opt.is_some() && !is_buffer_class && !class_unknown_to_codegen);
         if !skip_native {
             // Issue #92 fast path: intrinsify Buffer numeric reads
             // (`buf.readInt32BE(off)` etc.) when the receiver is a tracked
