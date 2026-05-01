@@ -1853,6 +1853,46 @@ fn emit_widget(
             lazy_sources,
             mutations,
         ),
+        // Issue #408 follow-up — ternary `cond ? thenWidget : elseWidget`
+        // (HIR `Expr::Conditional`). Mango's pattern:
+        //
+        //     const toolbarRow = mobile
+        //       ? HStack(10, [...mobileChildren])
+        //       : HStack(10, [...desktopChildren]);
+        //
+        // Try to const-fold the condition first — if it resolves to a
+        // literal bool, emit the corresponding branch unconditionally.
+        // If the condition involves runtime values (function calls,
+        // unresolved props), we can't reliably pick — default to the
+        // then-branch (the heuristic that picks the "primary" / first-
+        // listed case, matching what users typically write first).
+        // Without this arm Conditional widget refs fell through to
+        // `[unrecognized body]` even though both branches are real
+        // widget calls the harvest CAN emit.
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let folded = evaluate_condition(condition, bindings, &HashMap::new());
+            let chosen = match folded {
+                Some(false) => else_expr,
+                _ => then_expr, // true OR unresolved → take the then-branch
+            };
+            emit_widget(
+                chosen,
+                bindings,
+                depth,
+                callbacks,
+                text_slots,
+                arkts_locals,
+                classes,
+                state_registry,
+                lazy_sources,
+                mutations,
+                local_hint,
+            )
+        }
         _ => format!(
             "// unrecognized body expression (must be a perry/ui widget call)\n\
              Text('[unrecognized body]').fontSize(16).fontColor('#888888')"
