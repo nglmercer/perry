@@ -207,9 +207,31 @@ pub fn emit_index_ets(module: &mut Module) -> Result<Option<HarvestResult>> {
     // `setInterval(100ms)` drain pump that pulls AVPlayer ops out of the
     // runtime's media queues and pushes state observations back in.
     let uses_media = module_uses_media(module);
+    // Build an analysis-only `init` that has top-level user-function calls
+    // expanded inline. The harvest's collectors then see widgetAddChild /
+    // setPadding / etc. that happen inside the called function's body.
+    // Mango's pattern:
+    //
+    //     const connListContainer = VStack(10, []);
+    //     function refreshConnectionList() {
+    //         widgetClearChildren(connListContainer);
+    //         if (connectionNames.length === 0) {
+    //             const welcomeCard = VStack(16, []);
+    //             widgetAddChild(connListContainer, welcomeCard);
+    //         }
+    //     }
+    //     refreshConnectionList();
+    //
+    // We CANNOT mutate `module.init` directly — the same module then goes
+    // through LLVM codegen and inlining a `return` from a void function
+    // becomes a top-level `return` from `main()`, which fails the LLVM type
+    // checker. So we work on a clone for analysis only. `find_and_strip_app`
+    // still mutates module.init below to remove the App() call before LLVM
+    // codegen sees it; that's the only intentional mutation.
+    let analysis_init = inlined_analysis_init(module);
     // Build a const-binding lookup for top-level `let x = <perry/ui call>;`
     // so the Body can reference a local: `App({body: x})` finds x's init.
-    let bindings = collect_const_bindings(&module.init);
+    let bindings = collect_const_bindings(&analysis_init);
     // Issue #410 — pre-walk for `declare const __platform__: number` style
     // compile-time constants. Used by serialize_condition to inline
     // `__platform__ === N` comparisons that would otherwise emit an
@@ -217,14 +239,17 @@ pub fn emit_index_ets(module: &mut Module) -> Result<Option<HarvestResult>> {
     // only invoked for `--target harmonyos[-simulator]`, so __platform__
     // is always 9 here (matches the table in
     // `crates/perry-codegen/src/codegen.rs::platform_number`).
-    let compile_time_consts = collect_compile_time_constants(&module.init);
+    let compile_time_consts = collect_compile_time_constants(&analysis_init);
     // Issue #408 — pre-walk for procedurally-built UI mutators
     // (widgetAddChild / scrollviewSetChild / setPadding / setCornerRadius /
     // widgetSetBackgroundColor / etc.). Recorded against their target
     // widget local so emit_widget can fold them into the ArkUI body.
     // Walks pre-strip so mutators that live alongside `App({...})` are
     // captured; the strip itself doesn't touch the mutator stmts.
-    let mutations = collect_mutations(&module.init, &bindings, &compile_time_consts);
+    // Walks the inlined `analysis_init` so mutators inside user-function
+    // bodies are seen too (e.g. Mango's `refreshConnectionList()` →
+    // `widgetAddChild(connListContainer, welcomeCard)`).
+    let mutations = collect_mutations(&analysis_init, &bindings, &compile_time_consts);
     let Some(body_expr) = find_and_strip_app(&mut module.init, &classes) else {
         return Ok(None);
     };
@@ -321,6 +346,256 @@ fn module_uses_media(module: &Module) -> bool {
 /// Phase 2 v6 — discover top-level `let x = state(initial)` declarations
 /// and assign each a synthetic id `__state_<N>`. The initial value is
 /// stringified for the v3.2 reactive-Text initial state.
+/// Build an analysis-only copy of `module.init` with calls to user-defined
+/// module-level functions expanded inline. The harvest's collectors
+/// (collect_const_bindings, collect_mutations, collect_compile_time_consts)
+/// run against this expanded view so widget mutations inside function
+/// bodies are seen — but `module.init` itself stays untouched so the
+/// downstream LLVM codegen sees the original program semantics.
+///
+/// Bounds: skip async/generator, ≤16 inlines per harvest call, skip
+/// recursive calls. Param substitution lands as synthesized `Stmt::Let`
+/// BEFORE the cloned body so collect_const_bindings picks them up the
+/// same way as real top-level lets.
+fn inlined_analysis_init(module: &Module) -> Vec<Stmt> {
+    use perry_hir::analysis::remap_local_ids_in_stmts;
+    use perry_types::FuncId;
+    use std::collections::HashSet;
+
+    let mut function_map: HashMap<FuncId, perry_hir::ir::Function> = HashMap::new();
+    for f in &module.functions {
+        if f.is_async || f.is_generator {
+            continue;
+        }
+        function_map.insert(f.id, f.clone());
+    }
+    if function_map.is_empty() {
+        return module.init.clone();
+    }
+
+    let mut next_local: u32 = max_local_id_in_module(module).saturating_add(1);
+    let mut budget: usize = 16;
+    let mut visited: HashSet<FuncId> = HashSet::new();
+
+    let mut new_init: Vec<Stmt> = Vec::with_capacity(module.init.len());
+    for stmt in &module.init {
+        if budget == 0 {
+            new_init.push(stmt.clone());
+            continue;
+        }
+        match stmt {
+            Stmt::Expr(Expr::Call { callee, args, .. }) => {
+                let func_id = match callee.as_ref() {
+                    Expr::FuncRef(id) => Some(*id),
+                    _ => None,
+                };
+                let Some(id) = func_id else {
+                    new_init.push(stmt.clone());
+                    continue;
+                };
+                if visited.contains(&id) {
+                    new_init.push(stmt.clone());
+                    continue;
+                }
+                let Some(func) = function_map.get(&id) else {
+                    new_init.push(stmt.clone());
+                    continue;
+                };
+                if func.params.len() != args.len() {
+                    new_init.push(stmt.clone());
+                    continue;
+                }
+                visited.insert(id);
+                let inlined =
+                    inline_one_call(func, args, &mut next_local, &remap_local_ids_in_stmts);
+                visited.remove(&id);
+                new_init.extend(inlined);
+                budget -= 1;
+            }
+            _ => new_init.push(stmt.clone()),
+        }
+    }
+    new_init
+}
+
+fn inline_one_call(
+    func: &perry_hir::ir::Function,
+    call_args: &[Expr],
+    next_local: &mut u32,
+    remap_fn: &dyn Fn(&mut Vec<Stmt>, &HashMap<u32, u32>),
+) -> Vec<Stmt> {
+    let mut local_ids: Vec<u32> = Vec::new();
+    for param in &func.params {
+        local_ids.push(param.id);
+    }
+    collect_local_ids_in_stmts(&func.body, &mut local_ids);
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    local_ids.retain(|id| seen.insert(*id));
+
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    for &id in &local_ids {
+        remap.insert(id, *next_local);
+        *next_local += 1;
+    }
+
+    let mut body = func.body.clone();
+    remap_fn(&mut body, &remap);
+    // perry-hir's `remap_local_ids_in_stmts` only walks Stmt::Let's init,
+    // not the Let's `id` field itself (its #212 design constraint:
+    // outer-scope captured ids shouldn't get rewritten when remapping
+    // inner-scope refs). We need both — the Let creates a new binding
+    // and the LocalGets that reference it must agree. Walk the inlined
+    // body once more and rewrite any Stmt::Let / catch-param / for-init
+    // ids that match the remap.
+    remap_let_ids_in_stmts(&mut body, &remap);
+
+    let mut out: Vec<Stmt> = Vec::with_capacity(func.params.len() + body.len());
+    for (i, param) in func.params.iter().enumerate() {
+        let new_id = remap[&param.id];
+        out.push(Stmt::Let {
+            id: new_id,
+            name: param.name.clone(),
+            ty: param.ty.clone(),
+            mutable: false,
+            init: Some(call_args[i].clone()),
+        });
+    }
+    out.extend(body);
+    out
+}
+
+fn max_local_id_in_module(module: &Module) -> u32 {
+    let mut buf: Vec<u32> = Vec::new();
+    collect_local_ids_in_stmts(&module.init, &mut buf);
+    for f in &module.functions {
+        for p in &f.params {
+            buf.push(p.id);
+        }
+        collect_local_ids_in_stmts(&f.body, &mut buf);
+    }
+    for c in &module.classes {
+        if let Some(ctor) = &c.constructor {
+            for p in &ctor.params {
+                buf.push(p.id);
+            }
+            collect_local_ids_in_stmts(&ctor.body, &mut buf);
+        }
+        for m in &c.methods {
+            for p in &m.params {
+                buf.push(p.id);
+            }
+            collect_local_ids_in_stmts(&m.body, &mut buf);
+        }
+    }
+    buf.into_iter().max().unwrap_or(0)
+}
+
+/// Walk Stmt::Let / catch-param / Stmt::For-init looking for declared
+/// local ids that match the remap; rewrite them in place. Sibling to
+/// `perry_hir::analysis::remap_local_ids_in_stmts` which only remaps
+/// LocalGet / LocalSet / Update references — not the declarations.
+/// The inliner needs both: the cloned body's let creates a new binding
+/// and the references to it must agree.
+fn remap_let_ids_in_stmts(stmts: &mut Vec<Stmt>, remap: &HashMap<u32, u32>) {
+    for s in stmts.iter_mut() {
+        remap_let_ids_in_stmt(s, remap);
+    }
+}
+
+fn remap_let_ids_in_stmt(stmt: &mut Stmt, remap: &HashMap<u32, u32>) {
+    match stmt {
+        Stmt::Let { id, .. } => {
+            if let Some(&new_id) = remap.get(id) {
+                *id = new_id;
+            }
+        }
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            remap_let_ids_in_stmts(then_branch, remap);
+            if let Some(eb) = else_branch {
+                remap_let_ids_in_stmts(eb, remap);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+            remap_let_ids_in_stmts(body, remap);
+        }
+        Stmt::For { init, body, .. } => {
+            if let Some(init_stmt) = init {
+                remap_let_ids_in_stmt(init_stmt.as_mut(), remap);
+            }
+            remap_let_ids_in_stmts(body, remap);
+        }
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+        } => {
+            remap_let_ids_in_stmts(body, remap);
+            if let Some(c) = catch {
+                if let Some((id, _)) = &mut c.param {
+                    if let Some(&new_id) = remap.get(id) {
+                        *id = new_id;
+                    }
+                }
+                remap_let_ids_in_stmts(&mut c.body, remap);
+            }
+            if let Some(f) = finally {
+                remap_let_ids_in_stmts(f, remap);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_local_ids_in_stmts(stmts: &[Stmt], out: &mut Vec<u32>) {
+    for s in stmts {
+        match s {
+            Stmt::Let { id, .. } => out.push(*id),
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_local_ids_in_stmts(then_branch, out);
+                if let Some(eb) = else_branch {
+                    collect_local_ids_in_stmts(eb, out);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                collect_local_ids_in_stmts(body, out);
+            }
+            Stmt::For { init, body, .. } => {
+                if let Some(init_stmt) = init {
+                    if let Stmt::Let { id, .. } = init_stmt.as_ref() {
+                        out.push(*id);
+                    }
+                }
+                collect_local_ids_in_stmts(body, out);
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                collect_local_ids_in_stmts(body, out);
+                if let Some(c) = catch {
+                    if let Some((id, _)) = &c.param {
+                        out.push(*id);
+                    }
+                    collect_local_ids_in_stmts(&c.body, out);
+                }
+                if let Some(f) = finally {
+                    collect_local_ids_in_stmts(f, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_state_bindings(init: &[Stmt]) -> HashMap<LocalId, StateBinding> {
     let mut map = HashMap::new();
     let mut counter: usize = 0;
@@ -1044,12 +1319,69 @@ fn mutator_background_color(args: &[Expr]) -> Option<String> {
 /// is to wrap any non-leaf serialized operand in parentheses before
 /// splicing into the parent operator string. Leaf shapes (literals,
 /// LocalGet that resolved to a literal, PropertyGet) don't need wrapping.
+/// Returns true iff every leaf in the expression is either a literal,
+/// a compile-time-const LocalGet, or a binding-resolvable LocalGet
+/// whose underlying init is itself cleanly serializable. PropertyGets,
+/// function calls, and unresolvable LocalGets all return false — those
+/// can't be safely interpolated as ArkTS condition source without
+/// emitting an undeclared identifier (#410) or a type-mismatched
+/// expression like `true.length === 0` (#413 follow-up).
+fn is_cleanly_serializable_condition(
+    e: &Expr,
+    bindings: &HashMap<LocalId, Expr>,
+    compile_time_consts: &HashMap<LocalId, f64>,
+) -> bool {
+    match e {
+        Expr::Bool(_) | Expr::Number(_) | Expr::Integer(_) | Expr::String(_) => true,
+        Expr::Null | Expr::Undefined => true,
+        Expr::LocalGet(id) => {
+            if compile_time_consts.contains_key(id) {
+                return true;
+            }
+            match bindings.get(id) {
+                Some(init) => is_cleanly_serializable_condition(init, bindings, compile_time_consts),
+                None => false,
+            }
+        }
+        Expr::Compare { left, right, .. } => {
+            is_cleanly_serializable_condition(left, bindings, compile_time_consts)
+                && is_cleanly_serializable_condition(right, bindings, compile_time_consts)
+        }
+        Expr::Logical { left, right, .. } => {
+            is_cleanly_serializable_condition(left, bindings, compile_time_consts)
+                && is_cleanly_serializable_condition(right, bindings, compile_time_consts)
+        }
+        Expr::Unary { operand, .. } => {
+            is_cleanly_serializable_condition(operand, bindings, compile_time_consts)
+        }
+        // PropertyGet, Call, NativeMethodCall, etc. — can't serialize.
+        // Caller falls back to `true` so the conditional always
+        // renders its then-branch (matching the v0.5.487 unresolvable-
+        // LocalGet heuristic).
+        _ => false,
+    }
+}
+
 fn serialize_condition(
     e: &Expr,
     bindings: &HashMap<LocalId, Expr>,
     compile_time_consts: &HashMap<LocalId, f64>,
 ) -> String {
     use perry_hir::ir::{CompareOp, LogicalOp};
+
+    // Pessimistic safety gate: if the expression contains anything that
+    // can't be cleanly serialized into ArkTS source (PropertyGet on an
+    // unresolvable LocalGet, function calls, complex member chains), the
+    // current per-node fallbacks would produce gibberish like
+    // `true.length === 0` or `true === connectionNames`. ArkTS strict
+    // mode rejects both. Degrade the entire condition to `true` (always-
+    // render the then-branch) — same heuristic as the unresolvable-
+    // LocalGet fallback at the leaf level, just lifted to the root so
+    // wrapping shapes (PropertyGet, Comparison-with-non-foldable-side)
+    // don't leak.
+    if !is_cleanly_serializable_condition(e, bindings, compile_time_consts) {
+        return "true".to_string();
+    }
     // Wrap a sub-expression's serialized form in parentheses if the
     // sub-expression is a Binary/Logical/Unary shape (post-resolve), so
     // splicing into a parent operator string can't invert precedence.
@@ -6513,15 +6845,25 @@ mod tests {
     #[test]
     fn issue_410_local_get_resolves_through_bindings_not_placeholder() {
         // `let mobile = (props.screen === 'mobile')` — when a condition
-        // references `mobile`, serialize_condition must resolve the
-        // local back to the init expression rather than emitting
-        // `__local_N` (Bug 2). The resolved condition contains the
-        // PropertyGet + string comparison.
+        // references `mobile`, serialize_condition resolves the local
+        // back to the init expression. The init contains a PropertyGet
+        // on an unresolvable LocalGet — post-v0.5.489 the cleanly-
+        // serializable gate at the top of serialize_condition catches
+        // this and degrades the entire condition to `true` (the
+        // unresolvable-LocalGet heuristic, lifted to root level).
+        // Pre-fix this emitted `true.screen === 'mobile'` which ArkTS
+        // strict-mode rejected with "Property 'screen' does not exist
+        // on type 'true'".
+        //
+        // The original test name still applies: the emitted source
+        // must NOT contain `__local_N` placeholder text. The exact
+        // shape changed from "resolved condition" to "true" once the
+        // root-level gate landed.
         let mobile_id: LocalId = 5;
         let init = Expr::Compare {
             op: perry_hir::ir::CompareOp::Eq,
             left: Box::new(Expr::PropertyGet {
-                object: Box::new(Expr::LocalGet(99)), // unresolvable -> "true"
+                object: Box::new(Expr::LocalGet(99)), // unresolvable
                 property: "screen".to_string(),
             }),
             right: Box::new(Expr::String("mobile".into())),
@@ -6535,12 +6877,11 @@ mod tests {
             "emitted __local_ placeholder — bug 2 regressed: {}",
             s
         );
-        assert!(
-            s.contains("'mobile'"),
-            "expected resolved condition, got: {}",
+        assert_eq!(
+            s, "true",
+            "PropertyGet on unresolvable LocalGet should degrade to 'true', got: {}",
             s
         );
-        assert!(s.contains(" === "), "expected eq op, got: {}", s);
     }
 
     #[test]
@@ -7299,29 +7640,28 @@ mod tests {
                     right: Box::new(Expr::Integer(2)),
                 }),
             }),
-            right: Box::new(Expr::Logical {
-                op: perry_hir::ir::LogicalOp::And,
-                left: Box::new(Expr::Unary {
-                    op: perry_hir::ir::UnaryOp::Not,
-                    operand: Box::new(Expr::LocalGet(isios_id)),
-                }),
-                right: Box::new(Expr::PropertyGet {
-                    object: Box::new(Expr::LocalGet(99)), // unresolvable
-                    property: "x".to_string(),
-                }),
+            right: Box::new(Expr::Unary {
+                op: perry_hir::ir::UnaryOp::Not,
+                operand: Box::new(Expr::LocalGet(isios_id)),
             }),
         };
         let s = serialize_condition(&chain, &bindings, &consts);
         // The buggy serialization documented in the issue:
-        //     `9 === 1 || 9 === 2 && !9 === 1 && true === 1`
-        // (note `!9 === 1` and `true === 1`). Post-fix these specific
-        // substrings must NOT appear.
+        //     `9 === 1 || 9 === 2 || !9 === 1`
+        // (note `!9 === 1` parses as `(!9) === 1`). Post-fix this
+        // specific substring must NOT appear.
         assert!(
             !s.contains("!9 === 1") && !s.contains("!9===1"),
             "precedence-inverted `!9 === 1` regressed: {}",
             s
         );
         // Unary `!` must wrap the resolved comparison in parens.
+        // (v0.5.489 note: dropped the `&& <unresolvable PropertyGet>`
+        // tail from the chain — the new cleanly-serializable gate at
+        // the root of serialize_condition would have degraded the whole
+        // condition to `true` once any sub-expression hits an
+        // unresolvable PropertyGet. The unary-paren behavior is still
+        // exercised by the now-resolvable chain.)
         assert!(
             s.contains("!(9 === 1)") || s.contains("!(9===1)"),
             "expected unary-not paren-wrap: {}",
