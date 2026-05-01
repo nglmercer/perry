@@ -1953,6 +1953,24 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     )
     .with_context(|| format!("lowering entry of module '{}'", hir.name))?;
 
+    // Issue #392: pre-intern every user-class method name into the
+    // string pool so `emit_string_pool` (which takes `&strings`) can
+    // emit the `js_register_class_method(class_id, name_ptr, ...)`
+    // calls in module init without needing mutable access to the
+    // pool. Only iterate classes DEFINED in this module — the
+    // `perry_method_*` symbols for imported classes live in the
+    // defining module's object file. `imported_class_prefix` lists
+    // every imported class name; we exclude those.
+    for class in &hir.classes {
+        let cid = class_ids.get(&class.name).copied().unwrap_or(0);
+        if cid == 0 {
+            continue;
+        }
+        for method in &class.methods {
+            let _ = strings.intern(&method.name);
+        }
+    }
+
     // After all user code is lowered, the string pool's contents are final.
     // Emit the bytes globals, handle globals, and the
     // `__perry_init_strings_<prefix>` function that runs once at startup.
@@ -3542,6 +3560,80 @@ fn emit_string_pool(
         blk.call_void(
             "js_register_class_parent",
             &[(I32, &cid.to_string()), (I32, &parent_cid.to_string())],
+        );
+    }
+
+    // Issue #392: register every user class method in the runtime
+    // VTABLE_REGISTRY so cross-module callers can dispatch via
+    // `js_native_call_method` even when the codegen of the calling
+    // module can't see the class definition. Same-module calls
+    // already resolve through the static idispatch tower in
+    // `lower_call.rs` (which iterates `ctx.classes` to find
+    // implementors); cross-module calls fall through to
+    // `js_native_call_method`, which reads the receiver's class_id
+    // and looks up the vtable.
+    //
+    // Only register classes DEFINED in this module — `class_ids` may
+    // include imported classes (Changeset imported from `shared.ts`
+    // into `main.ts` for `new Changeset()`), but the `perry_method_*`
+    // symbols for those live in the defining module's object file.
+    // Each module's init registers its own classes; the linker
+    // ensures all init functions run before main.
+    let mut method_triples: Vec<(u32, String, String, u32)> = Vec::new();
+    for (class_name, class) in classes.iter() {
+        let cid = match class_ids.get(class_name) {
+            Some(&c) if c != 0 => c,
+            _ => continue,
+        };
+        for method in &class.methods {
+            // Skip imported class stubs: their `body` is empty
+            // (they're just typed-name placeholders for cross-module
+            // dispatch). The defining module's init registers them.
+            // Local methods always have non-empty bodies.
+            if method.body.is_empty() {
+                continue;
+            }
+            let llvm_name = format!(
+                "perry_method_{}__{}__{}",
+                module_prefix,
+                sanitize(class_name),
+                sanitize(&method.name),
+            );
+            method_triples.push((
+                cid,
+                method.name.clone(),
+                llvm_name,
+                method.params.len() as u32,
+            ));
+        }
+    }
+    method_triples.sort_unstable();
+    for (cid, method_name, llvm_name, param_count) in method_triples {
+        // The pre-intern pass before `emit_string_pool` ensured every
+        // method name has a string pool entry; look it up here without
+        // mutating the pool.
+        let entry = match strings.iter().find(|e| e.value == method_name) {
+            Some(e) => e,
+            None => continue,
+        };
+        let bytes_global = format!("@{}", entry.bytes_global);
+        let len_str = entry.byte_len.to_string();
+        // Cast the method function pointer to i64 via ptrtoint so the
+        // runtime can store it as a `usize` in the VTABLE_REGISTRY
+        // entry. The `inttoptr` round-trip in `call_vtable_method`
+        // restores it for the indirect call.
+        let func_ref = format!("@{}", llvm_name);
+        let func_i64 = blk.ptrtoint(&func_ref, I64);
+        let bytes_i64 = blk.ptrtoint(&bytes_global, I64);
+        blk.call_void(
+            "js_register_class_method",
+            &[
+                (I64, &cid.to_string()),
+                (I64, &bytes_i64),
+                (I64, &len_str),
+                (I64, &func_i64),
+                (I64, &param_count.to_string()),
+            ],
         );
     }
 
