@@ -478,10 +478,7 @@ pub unsafe extern "C" fn js_handle_property_dispatch(
     // these slots when the user meant something else (same disjoint
     // method-set discipline as the method dispatch above).
     #[cfg(feature = "http-client")]
-    if matches!(
-        property_name,
-        "status" | "data" | "statusText" | "headers"
-    ) {
+    if matches!(property_name, "status" | "data" | "statusText" | "headers") {
         if with_handle::<crate::axios::AxiosResponseHandle, bool, _>(handle, |_| true)
             .unwrap_or(false)
         {

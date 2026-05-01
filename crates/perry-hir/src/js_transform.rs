@@ -2129,12 +2129,7 @@ pub fn fix_local_native_instances(module: &mut Module) {
             &local_native_instances,
             &local_id_native_instances,
         );
-        fix_class_field_stmt(
-            stmt,
-            &class_field_natives,
-            &init_local_user_classes,
-            None,
-        );
+        fix_class_field_stmt(stmt, &class_field_natives, &init_local_user_classes, None);
     }
 
     // Process each function separately with its own local variable scope
@@ -2262,10 +2257,7 @@ fn build_class_field_natives(
 /// which the inliner has already copied (substituting `this` with the
 /// receiver local). Recurses through control-flow constructs so
 /// guarded `let` bindings still register.
-fn scan_stmt_for_user_class_instances(
-    stmt: &Stmt,
-    user_classes: &mut HashMap<LocalId, String>,
-) {
+fn scan_stmt_for_user_class_instances(stmt: &Stmt, user_classes: &mut HashMap<LocalId, String>) {
     match stmt {
         Stmt::Let { id, init, .. } => {
             if let Some(init_expr) = init {
@@ -2419,7 +2411,12 @@ fn fix_class_field_stmt(
             discriminant,
             cases,
         } => {
-            fix_class_field_expr(discriminant, class_field_natives, user_classes, current_class);
+            fix_class_field_expr(
+                discriminant,
+                class_field_natives,
+                user_classes,
+                current_class,
+            );
             for case in cases {
                 if let Some(test) = &mut case.test {
                     fix_class_field_expr(test, class_field_natives, user_classes, current_class);
@@ -2539,12 +2536,7 @@ fn fix_class_field_expr(
                     direct
                 }
                 _ => {
-                    fix_class_field_expr(
-                        callee,
-                        class_field_natives,
-                        user_classes,
-                        current_class,
-                    );
+                    fix_class_field_expr(callee, class_field_natives, user_classes, current_class);
                     None
                 }
             };
@@ -2633,8 +2625,7 @@ fn fix_class_field_expr(
                                 );
                             }
                             let args_owned: Vec<Expr> = std::mem::take(args);
-                            let receiver =
-                                std::mem::replace(outer_obj.as_mut(), Expr::Undefined);
+                            let receiver = std::mem::replace(outer_obj.as_mut(), Expr::Undefined);
                             let module_owned = module_name.clone();
                             let class_owned = class_name.clone();
                             let method_owned = method_name.clone();
@@ -2732,9 +2723,7 @@ fn chained_native_class(module: &str, prior_method: &str) -> Option<&'static str
         ("better-sqlite3", "prepare") => Some("Statement"),
         ("mongodb", "db") => Some("Database"),
         ("mongodb", "collection") => Some("Collection"),
-        ("mysql2", "getConnection") | ("mysql2/promise", "getConnection") => {
-            Some("PoolConnection")
-        }
+        ("mysql2", "getConnection") | ("mysql2/promise", "getConnection") => Some("PoolConnection"),
         ("pg", "connect") => Some("PoolClient"),
         ("ioredis", "duplicate") => Some("Redis"),
         _ => None,
@@ -2946,8 +2935,7 @@ fn fix_field_native_instance_expr(
                                 fix_field_native_instance_expr(arg, field_instances);
                             }
                             let args_owned: Vec<Expr> = std::mem::take(args);
-                            let receiver =
-                                std::mem::replace(outer_obj.as_mut(), Expr::Undefined);
+                            let receiver = std::mem::replace(outer_obj.as_mut(), Expr::Undefined);
                             *expr = Expr::NativeMethodCall {
                                 module: module_name.clone(),
                                 class_name: Some(class_name.clone()),
@@ -2973,16 +2961,13 @@ fn fix_field_native_instance_expr(
                     ..
                 } = outer_obj.as_ref()
                 {
-                    if let Some(result_class) =
-                        chained_native_class(prev_module, prior_method)
-                    {
+                    if let Some(result_class) = chained_native_class(prev_module, prior_method) {
                         for arg in args.iter_mut() {
                             fix_field_native_instance_expr(arg, field_instances);
                         }
                         let args_owned: Vec<Expr> = std::mem::take(args);
                         let module_owned = prev_module.clone();
-                        let receiver =
-                            std::mem::replace(outer_obj.as_mut(), Expr::Undefined);
+                        let receiver = std::mem::replace(outer_obj.as_mut(), Expr::Undefined);
                         *expr = Expr::NativeMethodCall {
                             module: module_owned,
                             class_name: Some(result_class.to_string()),
@@ -3014,8 +2999,7 @@ fn fix_field_native_instance_expr(
                     } = outer_obj.as_ref()
                     {
                         if matches!(inner_obj.as_ref(), Expr::This) {
-                            if let Some((module_name, class_name)) =
-                                field_instances.get(field_name)
+                            if let Some((module_name, class_name)) = field_instances.get(field_name)
                             {
                                 for arg in args.iter_mut() {
                                     fix_field_native_instance_expr(arg, field_instances);
