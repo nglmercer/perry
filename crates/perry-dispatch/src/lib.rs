@@ -219,6 +219,60 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
         args: &[ArgKind::Widget, ArgKind::F64, ArgKind::F64],
         ret: ReturnKind::Void,
     },
+    // Issue #391: lowercase-v aliases for symmetry with
+    // `scrollviewSetChild`. Each routes to the same runtime FFI as
+    // its `scrollView…` peer above; both spellings coexist so old
+    // code (targeting an earlier Perry that used the lowercase form)
+    // keeps working and new code can match the camelCase convention.
+    MethodRow {
+        method: "scrollviewGetOffset",
+        runtime: "perry_ui_scrollview_get_offset",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::F64,
+    },
+    MethodRow {
+        method: "scrollviewSetOffset",
+        runtime: "perry_ui_scrollview_set_offset",
+        args: &[ArgKind::Widget, ArgKind::F64, ArgKind::F64],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "scrollviewScrollTo",
+        runtime: "perry_ui_scrollview_scroll_to",
+        args: &[ArgKind::Widget, ArgKind::F64, ArgKind::F64],
+        ret: ReturnKind::Void,
+    },
+    // Issue #390: native pull-to-refresh — restore the dispatch
+    // entries that connect the user-facing API to the existing
+    // platform runtime helpers (`perry_ui_scrollview_set_refresh_control`
+    // and `_end_refreshing` are already implemented on every platform
+    // crate; the dispatch table just lost the connection at some
+    // earlier rename pass). Both lowercase-v and camelCase spellings
+    // are dispatched for consistency with the other ScrollView aliases.
+    MethodRow {
+        method: "scrollviewSetRefreshControl",
+        runtime: "perry_ui_scrollview_set_refresh_control",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "scrollViewSetRefreshControl",
+        runtime: "perry_ui_scrollview_set_refresh_control",
+        args: &[ArgKind::Widget, ArgKind::Closure],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "scrollviewEndRefreshing",
+        runtime: "perry_ui_scrollview_end_refreshing",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "scrollViewEndRefreshing",
+        runtime: "perry_ui_scrollview_end_refreshing",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::Void,
+    },
     // ---- Stack layout ----
     MethodRow {
         method: "stackSetAlignment",
@@ -1164,15 +1218,13 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
         args: &[ArgKind::Widget, ArgKind::F64, ArgKind::F64],
         ret: ReturnKind::Void,
     },
-    // ---- Extra ScrollView alias (lowercase-v spelling matching the runtime FFI
-    // symbol; the runtime takes a single vertical offset, not the x/y pair
-    // declared on `scrollViewSetOffset` in index.d.ts — they coexist for now). ----
-    MethodRow {
-        method: "scrollviewSetOffset",
-        runtime: "perry_ui_scrollview_set_offset",
-        args: &[ArgKind::Widget, ArgKind::F64],
-        ret: ReturnKind::Void,
-    },
+    // ---- (#391: removed the 1-arg `scrollviewSetOffset(scrollView, y)`
+    // legacy alias here — the 2-arg `(x, y)` form is now declared
+    // alongside `scrollviewGetOffset` / `scrollviewScrollTo` above and
+    // matches the type stub. Old code calling
+    // `scrollviewSetOffset(sv, y)` will need to migrate to
+    // `scrollviewSetOffset(sv, 0, y)` or
+    // `scrollviewScrollTo(sv, 0, y)`.) ----
     // ---- Table (issue #192) ----
     // NSTableView-backed scrollable table. Real implementation lives in
     // `perry-ui-macos`; iOS / Android / GTK4 / Windows / tvOS / visionOS /

@@ -541,9 +541,36 @@ export function textareaGetString(widget: Widget): string;
 
 export function scrollviewSetChild(scrollView: Widget, child: Widget): void;
 export function scrollViewSetChild(scrollView: Widget, child: Widget): void;
+// Issue #391: lowercase-v aliases for the remaining ScrollView setters /
+// getter so coverage is consistent across all five functions. The
+// historical `scrollviewSetOffset(scrollView, y)` 1-arg-y form is still
+// dispatched (for back-compat with code targeting older Perry versions),
+// but the type stub only exposes the modern 2-arg `(x, y)` shape — old
+// code calling `scrollviewSetOffset(sv, 100)` will need to migrate to
+// `scrollviewSetOffset(sv, 0, 100)` or `scrollViewScrollTo(sv, 0, 100)`.
+export function scrollviewGetOffset(scrollView: Widget): number;
 export function scrollViewGetOffset(scrollView: Widget): number;
+export function scrollviewSetOffset(scrollView: Widget, x: number, y: number): void;
 export function scrollViewSetOffset(scrollView: Widget, x: number, y: number): void;
+export function scrollviewScrollTo(scrollView: Widget, x: number, y: number): void;
 export function scrollViewScrollTo(scrollView: Widget, x: number, y: number): void;
+
+/**
+ * Issue #390: native pull-to-refresh.
+ *
+ * Attach a refresh control to a ScrollView. The callback fires when the
+ * user pulls down past the threshold; call `scrollviewEndRefreshing` to
+ * dismiss the spinner once the refresh completes.
+ *
+ * Backed by `UIRefreshControl` on iOS / iPadOS / tvOS / visionOS,
+ * `SwipeRefreshLayout` on Android, no-op on macOS / GTK4 / Windows /
+ * watchOS / Web (the OS-provided pull gesture only exists on touch
+ * platforms — desktop apps should add an explicit "Refresh" button).
+ */
+export function scrollviewSetRefreshControl(scrollView: Widget, onPull: () => void): void;
+export function scrollViewSetRefreshControl(scrollView: Widget, onPull: () => void): void;
+export function scrollviewEndRefreshing(scrollView: Widget): void;
+export function scrollViewEndRefreshing(scrollView: Widget): void;
 
 // ---------------------------------------------------------------------------
 // Stack layout
