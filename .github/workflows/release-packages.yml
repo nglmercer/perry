@@ -170,17 +170,19 @@ jobs:
           targets: ${{ matrix.target }}
 
       # Closes #394: Homebrew bottle was missing libperry_ui_ios.a so
-      # `perry compile foo.ts -o app --target ios-simulator` failed at link
+      # `perry compile foo.ts -o app --target ios[-simulator]` failed at link
       # with `perry/ui imported but libperry_ui_ios.a not found`. Both macOS
       # legs of the matrix now also cross-compile perry-runtime / perry-stdlib
-      # / perry-ui-ios for the iOS simulator triple and ship the resulting .a
-      # files alongside the host artifacts (with the _ios suffix convention
-      # library_search.rs's iOS arm already understands). iOS-device
-      # (aarch64-apple-ios) and the tier-3 tvOS/visionOS/watchOS targets are
-      # follow-ups — see the iOS-cross step + the staging copy below.
-      - name: Install iOS simulator Rust target (macOS)
+      # / perry-ui-ios for BOTH the iOS device and simulator triples and ship
+      # the resulting .a files alongside the host artifacts. Device libs use
+      # the canonical _ios suffix (`libperry_ui_ios.a`); simulator libs use
+      # `_ios_sim` (`libperry_ui_ios_sim.a`) so they don't collide in the
+      # bottle's flat lib dir. library_search.rs's cross-compile branch
+      # picks the right variant per --target. tier-3 tvOS/visionOS/watchOS
+      # are still a follow-up (need nightly + -Zbuild-std).
+      - name: Install iOS Rust targets (macOS)
         if: runner.os == 'macOS'
-        run: rustup target add aarch64-apple-ios-sim
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
       - name: Install GTK4 development libraries (Linux glibc)
         if: runner.os == 'Linux' && !endsWith(matrix.target, '-musl')
@@ -215,20 +217,20 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo build --release --target ${{ matrix.target }} -p perry-ui-macos
 
-      # Closes #394: cross-compile the runtime + stdlib + UI for the iOS
-      # simulator triple so the macOS bottle can link `--target ios-simulator`
-      # out of the box. Only sim is shipped today (stable Tier-2 target);
-      # iOS-device (aarch64-apple-ios) is also Tier-2 but ships under the
-      # same lib name (libperry_ui_ios.a) and would collide — adding it
-      # needs a name-differentiation pass in library_search.rs and is a
-      # separate follow-up. tvOS/visionOS/watchOS are Tier-3 (need nightly
-      # + -Zbuild-std) and out of scope for this fix.
-      - name: Build iOS simulator cross-compile libraries (macOS)
+      # Closes #394: cross-compile the runtime + stdlib + UI for both the
+      # iOS device and simulator triples (both Tier-2 stable). Library
+      # filenames are disambiguated in the staging step — device libs keep
+      # the canonical `_ios` name, simulator libs get a `_sim` variant
+      # suffix so the bottle can ship both side-by-side. tvOS/visionOS/
+      # watchOS are Tier-3 (need nightly + -Zbuild-std) and out of scope.
+      - name: Build iOS cross-compile libraries (macOS)
         if: runner.os == 'macOS'
         run: |
-          cargo build --release --target aarch64-apple-ios-sim -p perry-runtime
-          cargo build --release --target aarch64-apple-ios-sim -p perry-stdlib
-          cargo build --release --target aarch64-apple-ios-sim -p perry-ui-ios
+          for triple in aarch64-apple-ios aarch64-apple-ios-sim; do
+            cargo build --release --target "$triple" -p perry-runtime
+            cargo build --release --target "$triple" -p perry-stdlib
+            cargo build --release --target "$triple" -p perry-ui-ios
+          done
 
       - name: Build UI library (Linux glibc)
         if: runner.os == 'Linux' && !endsWith(matrix.target, '-musl')
@@ -249,20 +251,31 @@ jobs:
               cp "target/${{ matrix.target }}/release/$lib" staging/
             fi
           done
-          # Closes #394: macOS legs also ship iOS-cross-compiled libs with
-          # the _ios suffix that library_search.rs's iOS arm already looks
-          # for next to the perry binary (and, post-this-release, in
-          # <prefix>/lib/ for Homebrew bottle layout).
+          # Closes #394: macOS legs also ship iOS-cross-compiled libs.
+          # Device variant uses the canonical `_ios` suffix; simulator
+          # variant gets a `_sim` suffix so both can coexist in the
+          # bottle's flat lib dir. library_search.rs's cross-compile
+          # branch composes the right name based on --target.
           if [ "${{ runner.os }}" = "macOS" ]; then
-            ios_dir="target/aarch64-apple-ios-sim/release"
-            if [ -f "$ios_dir/libperry_runtime.a" ]; then
-              cp "$ios_dir/libperry_runtime.a" "staging/libperry_runtime_ios.a"
+            dev_dir="target/aarch64-apple-ios/release"
+            if [ -f "$dev_dir/libperry_runtime.a" ]; then
+              cp "$dev_dir/libperry_runtime.a" "staging/libperry_runtime_ios.a"
             fi
-            if [ -f "$ios_dir/libperry_stdlib.a" ]; then
-              cp "$ios_dir/libperry_stdlib.a" "staging/libperry_stdlib_ios.a"
+            if [ -f "$dev_dir/libperry_stdlib.a" ]; then
+              cp "$dev_dir/libperry_stdlib.a" "staging/libperry_stdlib_ios.a"
             fi
-            if [ -f "$ios_dir/libperry_ui_ios.a" ]; then
-              cp "$ios_dir/libperry_ui_ios.a" "staging/libperry_ui_ios.a"
+            if [ -f "$dev_dir/libperry_ui_ios.a" ]; then
+              cp "$dev_dir/libperry_ui_ios.a" "staging/libperry_ui_ios.a"
+            fi
+            sim_dir="target/aarch64-apple-ios-sim/release"
+            if [ -f "$sim_dir/libperry_runtime.a" ]; then
+              cp "$sim_dir/libperry_runtime.a" "staging/libperry_runtime_ios_sim.a"
+            fi
+            if [ -f "$sim_dir/libperry_stdlib.a" ]; then
+              cp "$sim_dir/libperry_stdlib.a" "staging/libperry_stdlib_ios_sim.a"
+            fi
+            if [ -f "$sim_dir/libperry_ui_ios.a" ]; then
+              cp "$sim_dir/libperry_ui_ios.a" "staging/libperry_ui_ios_sim.a"
             fi
           fi
           cd staging

@@ -528,6 +528,39 @@ fn winget_lib_candidates(_name: &str) -> Vec<PathBuf> {
     Vec::new()
 }
 
+/// Compose the platform-suffixed name for an Apple / HarmonyOS cross-compile
+/// lib in a flat install dir (Homebrew bottle, hand-staged install, etc.).
+///
+/// Inputs:
+/// - `name`: the canonical lib filename cargo emits (e.g. `libperry_ui_ios.a`,
+///   `libperry_runtime.a`).
+/// - `class`: the platform class suffix, with leading underscore
+///   (`"_ios"` / `"_tvos"` / etc.).
+/// - `is_sim`: whether this is the simulator variant — appends `_sim` before
+///   `.a` so device + sim libs can coexist in the same dir without colliding.
+///
+/// The composition rule:
+/// - If the stem already ends with `class` (e.g. `libperry_ui_ios` for `_ios`),
+///   only append the variant: `libperry_ui_ios.a` / `libperry_ui_ios_sim.a`.
+/// - Otherwise, append both class + variant: `libperry_runtime_ios.a` /
+///   `libperry_runtime_ios_sim.a`.
+///
+/// Used by the cross-compile candidate list in `collect_library_candidates`.
+fn apple_class_lib_name(name: &str, class: &str, is_sim: bool) -> String {
+    let variant_suffix = if is_sim { "_sim" } else { "" };
+    if let Some(stem) = name.strip_suffix(".a") {
+        if stem.ends_with(class) {
+            format!("{}{}.a", stem, variant_suffix)
+        } else {
+            format!("{}{}{}.a", stem, class, variant_suffix)
+        }
+    } else {
+        // Non-`.a` (Windows-style names shouldn't hit this branch — the
+        // cross-compile callers above only fire for Unix targets).
+        name.to_string()
+    }
+}
+
 pub(super) fn collect_library_candidates(name: &str, target: Option<&str>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -585,32 +618,42 @@ pub(super) fn collect_library_candidates(name: &str, target: Option<&str>) -> Ve
 
                 // For Apple / HarmonyOS cross-compile targets, check the exe
                 // directory for libs with the platform-suffix naming convention:
-                // - Libs already named with the suffix (e.g. libperry_ui_ios.a) → direct
+                // - Libs already named with the class suffix (e.g. libperry_ui_ios.a) → direct
                 // - Other libs (e.g. libperry_runtime.a stored as libperry_runtime_ios.a)
                 //
                 // Closes #394: also probe `<prefix>/lib/<suffixed-name>` so a
                 // Homebrew-installed bottle (binary at `<prefix>/bin/perry`,
                 // libs at `<prefix>/lib/`) resolves cross-compile libs the
-                // same way the host-build branch already does. Pre-fix the
-                // bottle could ship `libperry_ui_ios.a` next to the macOS
-                // libs but `--target ios-simulator` couldn't find it.
-                let suffix = match target {
-                    Some("ios")
-                    | Some("ios-simulator")
-                    | Some("ios-widget")
-                    | Some("ios-widget-simulator") => Some("_ios"),
-                    Some("visionos") | Some("visionos-simulator") => Some("_visionos"),
-                    Some("watchos") | Some("watchos-simulator") => Some("_watchos"),
-                    Some("tvos") | Some("tvos-simulator") => Some("_tvos"),
-                    Some("harmonyos") | Some("harmonyos-simulator") => Some("_harmonyos"),
+                // same way the host-build branch already does.
+                //
+                // Device + simulator share the same canonical lib name (e.g.
+                // `libperry_ui_ios.a` is what cargo emits for both
+                // `aarch64-apple-ios` and `aarch64-apple-ios-sim`) — fine in
+                // dev because the triple-specific candidates above isolate
+                // them, but they collide in a flat lib dir like Homebrew's
+                // `<prefix>/lib/`. Differentiate with a `_sim` suffix BEFORE
+                // `.a` (e.g. `libperry_ui_ios_sim.a` for the simulator
+                // variant) so both can coexist in the bottle. The sim-only
+                // v0.5.470 fix shipped only the sim variant and named it
+                // `libperry_ui_ios.a` (same name as device); v0.5.472+ ships
+                // both and uses this suffix to disambiguate.
+                let class_and_sim = match target {
+                    Some("ios") | Some("ios-widget") => Some(("_ios", false)),
+                    Some("ios-simulator") | Some("ios-widget-simulator") => {
+                        Some(("_ios", true))
+                    }
+                    Some("visionos") => Some(("_visionos", false)),
+                    Some("visionos-simulator") => Some(("_visionos", true)),
+                    Some("watchos") => Some(("_watchos", false)),
+                    Some("watchos-simulator") => Some(("_watchos", true)),
+                    Some("tvos") => Some(("_tvos", false)),
+                    Some("tvos-simulator") => Some(("_tvos", true)),
+                    Some("harmonyos") => Some(("_harmonyos", false)),
+                    Some("harmonyos-simulator") => Some(("_harmonyos", true)),
                     _ => None,
                 };
-                if let Some(suffix) = suffix {
-                    let suffixed = if name.contains(suffix) {
-                        name.to_string()
-                    } else {
-                        name.replace(".a", &format!("{}.a", suffix))
-                    };
+                if let Some((class, is_sim)) = class_and_sim {
+                    let suffixed = apple_class_lib_name(name, class, is_sim);
                     candidates.push(dir.join(&suffixed));
                     if let Some(prefix) = dir.parent() {
                         candidates.push(prefix.join("lib").join(&suffixed));
@@ -1022,6 +1065,60 @@ pub(super) fn build_geisterhand_libs(target: Option<&str>, format: OutputFormat)
 /// A pair of (runtime, stdlib) static libraries built with the auto-mode
 /// chosen profile (custom feature set, optional `panic = "abort"`).
 #[derive(Debug, Clone)]
+#[cfg(test)]
+mod apple_lib_name_tests {
+    use super::apple_class_lib_name;
+
+    #[test]
+    fn class_stem_device_uses_canonical_name() {
+        // libperry_ui_ios.a stem already carries _ios → device adds nothing.
+        assert_eq!(
+            apple_class_lib_name("libperry_ui_ios.a", "_ios", false),
+            "libperry_ui_ios.a"
+        );
+    }
+
+    #[test]
+    fn class_stem_sim_appends_sim_suffix() {
+        // Same stem, simulator variant → _sim before .a.
+        assert_eq!(
+            apple_class_lib_name("libperry_ui_ios.a", "_ios", true),
+            "libperry_ui_ios_sim.a"
+        );
+    }
+
+    #[test]
+    fn generic_stem_device_appends_class() {
+        // libperry_runtime.a → device gets _ios appended.
+        assert_eq!(
+            apple_class_lib_name("libperry_runtime.a", "_ios", false),
+            "libperry_runtime_ios.a"
+        );
+    }
+
+    #[test]
+    fn generic_stem_sim_appends_class_and_sim() {
+        // libperry_runtime.a → simulator gets _ios_sim appended.
+        assert_eq!(
+            apple_class_lib_name("libperry_runtime.a", "_ios", true),
+            "libperry_runtime_ios_sim.a"
+        );
+    }
+
+    #[test]
+    fn handles_other_class_suffixes() {
+        // Spot-check non-iOS classes to make sure the helper isn't iOS-specific.
+        assert_eq!(
+            apple_class_lib_name("libperry_ui_tvos.a", "_tvos", true),
+            "libperry_ui_tvos_sim.a"
+        );
+        assert_eq!(
+            apple_class_lib_name("libperry_stdlib.a", "_visionos", false),
+            "libperry_stdlib_visionos.a"
+        );
+    }
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod windows_toolchain_tests {
     use super::msvc_vswhere_installation_path_args;

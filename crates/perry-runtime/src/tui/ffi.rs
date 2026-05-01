@@ -87,6 +87,19 @@ pub extern "C" fn js_perry_tui_render(root: i64) -> f64 {
     f64::from_bits(0x7FFC_0000_0000_0001)
 }
 
+/// Same as `js_perry_tui_render` but exposed to other tui submodules
+/// (the render loop in run.rs) without the FFI wrapper. Pulled out so
+/// `run.rs` doesn't have to call into its own crate's `extern "C"`
+/// surface.
+pub(super) fn paint_root_for_run(root: i64) {
+    let (w, h) = current_term_size();
+    let mut g = grid().lock().unwrap();
+    g.resize(w, h);
+    g.clear_back();
+    let _ = paint(&mut g, root, 0, 0);
+    render::flush(&mut g);
+}
+
 /// Initialize the renderer — clear screen and home the cursor.
 #[no_mangle]
 pub extern "C" fn js_perry_tui_enter() -> f64 {

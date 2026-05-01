@@ -1141,6 +1141,14 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                             // through to dynamic dispatch and never reach
                                             // js_readline_question / js_readline_on / etc.
                                             ("readline", "createInterface") => Some("Interface"),
+                                            // perry/tui state(initial) returns a handle whose
+                                            // .get()/.set() methods dispatch via the
+                                            // ("perry/tui", true, "get"/"set", class_filter:
+                                            // Some("State")) entries in lower_call.rs's
+                                            // NativeModSig table. Without this registration,
+                                            // those calls fall through to dynamic dispatch and
+                                            // never reach the runtime FFI. (#358 Phase 2.)
+                                            ("perry/tui", "state") => Some("State"),
                                             _ => None,
                                         };
                                         if let Some(class_name) = class_name {
@@ -1169,22 +1177,37 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                 );
                             }
                             // Check if this is a named import that returns a handle (e.g., State from perry/ui)
-                            if let Some((module_name, Some(method_name))) =
-                                ctx.lookup_native_module(func_name)
-                            {
+                            // Clone module_name + method_name to owned String first
+                            // so the immutable borrow of ctx ends before we call
+                            // register_native_instance (mutable borrow).
+                            let mod_method: Option<(String, String)> = ctx
+                                .lookup_native_module(func_name)
+                                .and_then(|(m, mm)| mm.map(|x| (m.to_string(), x.to_string())));
+                            if let Some((module_name, method_name)) = mod_method {
                                 if module_name == "perry/ui" {
-                                    match method_name {
+                                    match method_name.as_str() {
                                         "Canvas" | "State" | "Sheet" | "Toolbar" | "Window"
                                         | "LazyVStack" | "NavigationStack" | "Picker" | "Table"
                                         | "TabBar" => {
                                             ctx.register_native_instance(
                                                 name.clone(),
-                                                module_name.to_string(),
-                                                method_name.to_string(),
+                                                module_name.clone(),
+                                                method_name.clone(),
                                             );
                                         }
                                         _ => {}
                                     }
+                                }
+                                // perry/tui state(initial) — register the receiver as a
+                                // "State" native instance so subsequent .get()/.set()
+                                // calls dispatch via the perry/tui NativeModSig table
+                                // (class_filter: Some("State")). (#358 Phase 2.)
+                                if module_name == "perry/tui" && method_name == "state" {
+                                    ctx.register_native_instance(
+                                        name.clone(),
+                                        module_name,
+                                        "State".to_string(),
+                                    );
                                 }
                             }
                         }

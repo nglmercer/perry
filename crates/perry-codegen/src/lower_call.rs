@@ -7005,6 +7005,63 @@ const NATIVE_MODULE_TABLE: &[NativeModSig] = &[
         args: &[],
         ret: NR_VOID,
     },
+    // perry/tui Phase 2 — state container, useInput, run loop, exit.
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "state",
+        class_filter: None,
+        runtime: "js_perry_tui_state_alloc",
+        args: &[NA_F64],
+        ret: NR_PTR,
+    },
+    // state.get() — receiver call, dispatches against class "State"
+    // registered by destructuring.rs.
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: true,
+        method: "get",
+        class_filter: Some("State"),
+        runtime: "js_perry_tui_state_get",
+        args: &[],
+        ret: NR_F64,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: true,
+        method: "set",
+        class_filter: Some("State"),
+        runtime: "js_perry_tui_state_set",
+        args: &[NA_F64],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "useInput",
+        class_filter: None,
+        runtime: "js_perry_tui_use_input",
+        args: &[NA_PTR],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "run",
+        class_filter: None,
+        runtime: "js_perry_tui_run",
+        args: &[NA_PTR],
+        ret: NR_VOID,
+    },
+    NativeModSig {
+        module: "perry/tui",
+        has_receiver: false,
+        method: "exit",
+        class_filter: None,
+        runtime: "js_perry_tui_exit",
+        args: &[],
+        ret: NR_VOID,
+    },
     // ========== readline (#347 Phase 1) ==========
     // createInterface(opts) returns a Handle (i64, NaN-boxed POINTER).
     // Instance methods take that Handle as the first arg via has_receiver.
