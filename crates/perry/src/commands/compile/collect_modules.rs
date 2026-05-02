@@ -11,7 +11,10 @@
 
 use anyhow::{anyhow, Result};
 use perry_hir::ModuleKind;
-use perry_transform::{inline_functions, transform_async_to_generator, transform_generators};
+use perry_transform::{
+    gather_cross_module_methods, inline_functions, transform_async_to_generator,
+    transform_generators, MethodCandidate,
+};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -207,8 +210,27 @@ pub(super) fn collect_modules(
     *next_class_id = new_next_class_id; // Update the global class_id counter
 
     if !skip_transforms {
-        // Apply function inlining optimization
-        inline_functions(&mut hir_module);
+        // Apply function inlining optimization. Pass already-collected
+        // cross-module-safe methods so a `let world = new World(); ...
+        // world.set(...)` site in this module can resolve `("World",
+        // "set")` even though `World` is defined in a previously-processed
+        // module. Only methods whose bodies use module-stable references
+        // (no FuncRef / ExternFuncRef / GlobalGet) qualify — see
+        // `is_cross_module_safe` for the exact criteria.
+        let mut extra_methods: std::collections::HashMap<
+            (String, String),
+            MethodCandidate,
+        > = std::collections::HashMap::new();
+        for prior_module in ctx.native_modules.values() {
+            for (k, v) in gather_cross_module_methods(prior_module) {
+                // First-write-wins: a class defined in two modules
+                // (uncommon but possible — see issue #309 for the cycle-
+                // breaking pass that handles imported_class_stubs) keeps
+                // whichever copy was processed first.
+                extra_methods.entry(k).or_insert(v);
+            }
+        }
+        inline_functions(&mut hir_module, &extra_methods);
 
         // Issue #256: rewrite plain async functions into generators with
         // was_plain_async set, so the generator transform below produces

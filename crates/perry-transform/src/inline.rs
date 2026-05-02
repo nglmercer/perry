@@ -12,15 +12,28 @@ use std::collections::{HashMap, HashSet};
 const MAX_INLINE_STMTS: usize = 10;
 
 /// Information about a method that can be inlined
-#[derive(Clone)]
-struct MethodCandidate {
-    func: Function,
+#[derive(Clone, Debug)]
+pub struct MethodCandidate {
+    pub func: Function,
     /// The index of the `this` parameter (if present)
-    this_param_id: Option<LocalId>,
+    pub this_param_id: Option<LocalId>,
 }
 
-/// Inline small functions and methods in the module
-pub fn inline_functions(module: &mut Module) {
+/// Inline small functions and methods in the module.
+///
+/// `extra_methods` carries inlinable methods harvested from previously-
+/// compiled modules. The driver in `collect_modules.rs` assembles it from
+/// `ctx.native_modules` so that when a method body in module M calls
+/// `imported_world.set(...)`, the inliner can look up `("World", "set")`
+/// even though `World` isn't defined in M. Only "cross-module safe"
+/// methods (no FuncRef / ExternFuncRef / GlobalGet — i.e. nothing whose
+/// resolution would dangle in another module's symbol space) appear in
+/// `extra_methods`; the safety filter is `gather_cross_module_methods`
+/// below.
+pub fn inline_functions(
+    module: &mut Module,
+    extra_methods: &HashMap<(String, String), MethodCandidate>,
+) {
     // Phases 0 + 1 fused (Tier 4.1, v0.5.335): single iteration over
     // module.functions collects both Math.imul polyfill ids AND
     // inlinable-function candidates. Pre-Tier-4 these were two separate
@@ -68,6 +81,11 @@ pub fn inline_functions(module: &mut Module) {
     // collection.
     let mut method_candidates: HashMap<(String, String), MethodCandidate> = HashMap::new();
     let mut class_names: HashMap<String, String> = HashMap::new();
+    // Seed with cross-module candidates harvested by the driver. Local
+    // entries below override on a name collision (a same-named class
+    // defined in this module wins over its imported-stub counterpart),
+    // matching the precedence the codegen's class_table uses.
+    method_candidates.extend(extra_methods.iter().map(|(k, v)| (k.clone(), v.clone())));
     for class in &module.classes {
         class_names.insert(class.name.clone(), class.name.clone());
 
@@ -301,6 +319,133 @@ fn is_inlinable(func: &Function) -> bool {
     }
 
     true
+}
+
+/// Returns true iff `body` only references symbols whose resolution stays
+/// stable across modules. Concretely: the body must not contain any of
+/// `Expr::FuncRef` (callee bound to a same-module function id), `Expr::ExternFuncRef`
+/// (an import — fine in the source module but not necessarily present in the
+/// destination), `Expr::GlobalGet`/`Expr::GlobalSet` (module-level state),
+/// or `Expr::NativeModuleRef`. Method calls (`Expr::Call` whose callee is a
+/// `PropertyGet` on `This` / a local / a property), `Expr::NativeMethodCall`,
+/// property/index access, control flow, primitives, object/array literals,
+/// and arithmetic are all OK — runtime dispatch via the class registry works
+/// uniformly across modules. Used by `gather_cross_module_methods` to filter
+/// the candidates the driver feeds back in via `extra_methods`.
+pub fn is_cross_module_safe(body: &[Stmt]) -> bool {
+    fn check_expr(expr: &Expr) -> bool {
+        match expr {
+            // The disqualifying variants — anything tied to a particular
+            // module's symbol table.
+            Expr::FuncRef(_)
+            | Expr::ExternFuncRef { .. }
+            | Expr::GlobalGet(_)
+            | Expr::GlobalSet(_, _)
+            | Expr::NativeModuleRef(_) => false,
+            // Closures are out of scope for cross-module inlining: the
+            // closure body has its own LocalIds, captures lists, and may
+            // reference symbols we can't safely move.
+            Expr::Closure { .. } => false,
+            // Everything else: descend into all sub-expressions via the
+            // central walker.
+            other => {
+                let mut ok = true;
+                walk_expr_children(other, &mut |child| {
+                    if !check_expr(child) {
+                        ok = false;
+                    }
+                });
+                ok
+            }
+        }
+    }
+    fn check_stmt(s: &Stmt) -> bool {
+        match s {
+            Stmt::Let { init, .. } => init.as_ref().is_none_or(check_expr),
+            Stmt::Expr(e) | Stmt::Throw(e) | Stmt::Return(Some(e)) => check_expr(e),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => true,
+            Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => true,
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                check_expr(condition)
+                    && then_branch.iter().all(check_stmt)
+                    && else_branch
+                        .as_ref()
+                        .is_none_or(|eb| eb.iter().all(check_stmt))
+            }
+            Stmt::While { condition, body } | Stmt::DoWhile { body, condition } => {
+                check_expr(condition) && body.iter().all(check_stmt)
+            }
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body,
+            } => {
+                init.as_ref().is_none_or(|s| check_stmt(s))
+                    && condition.as_ref().is_none_or(check_expr)
+                    && update.as_ref().is_none_or(check_expr)
+                    && body.iter().all(check_stmt)
+            }
+            Stmt::Switch { discriminant, cases } => {
+                check_expr(discriminant)
+                    && cases.iter().all(|c| {
+                        c.test.as_ref().is_none_or(check_expr)
+                            && c.body.iter().all(check_stmt)
+                    })
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                body.iter().all(check_stmt)
+                    && catch
+                        .as_ref()
+                        .is_none_or(|c| c.body.iter().all(check_stmt))
+                    && finally.as_ref().is_none_or(|f| f.iter().all(check_stmt))
+            }
+            Stmt::Labeled { body, .. } => check_stmt(body.as_ref()),
+        }
+    }
+    body.iter().all(check_stmt)
+}
+
+/// Harvest inlinable, cross-module-safe methods from `module`. Used by the
+/// compile driver to assemble the `extra_methods` map that subsequent modules
+/// receive in `inline_functions`. Only methods that pass both `is_inlinable`
+/// (the existing per-module gate) and `is_cross_module_safe` (the symbol-
+/// frontier gate) make it into the result. Constructors, getters, setters,
+/// and static methods are excluded — those have either non-trivial dispatch
+/// semantics or a class-tied receiver that cross-module callers can't supply.
+pub fn gather_cross_module_methods(
+    module: &Module,
+) -> HashMap<(String, String), MethodCandidate> {
+    let mut out: HashMap<(String, String), MethodCandidate> = HashMap::new();
+    for class in &module.classes {
+        if class.native_extends.is_some() {
+            continue;
+        }
+        for method in &class.methods {
+            if !is_inlinable(method) {
+                continue;
+            }
+            if !is_cross_module_safe(&method.body) {
+                continue;
+            }
+            out.insert(
+                (class.name.clone(), method.name.clone()),
+                MethodCandidate {
+                    func: method.clone(),
+                    this_param_id: None,
+                },
+            );
+        }
+    }
+    out
 }
 
 /// Check if a body contains Expr::SuperCall or Expr::SuperMethodCall (recursively).
