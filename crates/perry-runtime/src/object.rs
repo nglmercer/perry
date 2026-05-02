@@ -4138,14 +4138,29 @@ pub unsafe extern "C" fn js_native_call_method(
                 let null_obj_ptr = &NULL_OBJECT_BYTES as *const NullObjectBytes as *mut u8;
                 return f64::from_bits(JSValue::pointer(null_obj_ptr).bits());
             }
-            let method_key =
-                crate::string::js_string_from_bytes(method_name.as_ptr(), method_name.len() as u32);
-
+            // Compare method_name bytes directly against each stored key
+            // instead of allocating a transient StringHeader via
+            // js_string_from_bytes — that allocation showed up as ~10% of
+            // perf-comprehensive's hot-path samples (one alloc per
+            // dynamic-dispatch method call × N keys-array lookups).
+            let method_bytes = method_name.as_bytes();
             for i in 0..key_count {
                 let key_val = crate::array::js_array_get(keys, i as u32);
                 if key_val.is_string() {
                     let stored_key = key_val.as_string_ptr();
-                    if crate::string::js_string_equals(method_key, stored_key) != 0 {
+                    let matches = if !crate::string::is_valid_string_ptr(stored_key) {
+                        false
+                    } else {
+                        let blen = (*stored_key).byte_len as usize;
+                        if blen != method_bytes.len() {
+                            false
+                        } else {
+                            let stored_data = crate::string::string_data(stored_key);
+                            let stored = std::slice::from_raw_parts(stored_data, blen);
+                            stored == method_bytes
+                        }
+                    };
+                    if matches {
                         // Found the method — delegate to `js_native_call_value`
                         // which handles both NaN-boxed pointers (POINTER_TAG)
                         // and raw-pointer-bits (e.g. the resolve/reject

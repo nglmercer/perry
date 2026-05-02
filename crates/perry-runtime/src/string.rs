@@ -492,7 +492,7 @@ pub extern "C" fn js_string_length(s: *const StringHeader) -> u32 {
 }
 
 /// Get the data pointer for a string
-fn string_data(s: *const StringHeader) -> *const u8 {
+pub(crate) fn string_data(s: *const StringHeader) -> *const u8 {
     unsafe { (s as *const u8).add(std::mem::size_of::<StringHeader>()) }
 }
 
