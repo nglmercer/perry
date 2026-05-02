@@ -9,10 +9,10 @@
 use crate::arena::arena_alloc_gc;
 use crate::ArrayHeader;
 use crate::JSValue;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::RwLock;
 
 /// Overflow field storage for objects that exceed their pre-allocated inline slot count.
@@ -854,6 +854,7 @@ pub unsafe extern "C" fn js_register_class_method(
             param_count: param_count as u32,
         },
     );
+    VTABLE_GEN.fetch_add(1, Ordering::Release);
 }
 
 /// Register a class getter in the vtable registry.
@@ -882,6 +883,122 @@ pub unsafe extern "C" fn js_register_class_getter(
         getters: HashMap::new(),
     });
     vtable.getters.insert(name, func_ptr as usize);
+    VTABLE_GEN.fetch_add(1, Ordering::Release);
+}
+
+// ============================================================================
+// Per-callsite-keyed inline cache for vtable method dispatch.
+//
+// `js_native_call_method` is the hot dispatch tower for cross-module class
+// instance method calls (e.g. `archetype.set(...)` from CommandBuffer.execute
+// in the ECS workloads). Per profile, ~12% of perf-comprehensive samples land
+// in `core::hash::BuildHasher` from the per-call `HashMap.get(method_name)`
+// SipHash on the vtable lookup.
+//
+// Cache key: `(class_id, method_name_ptr)` where `method_name_ptr` is the
+// rodata byte-pointer perry-codegen passes for the interned method name. The
+// pointer is stable across calls within a module, so its address acts as a
+// faster identity than re-hashing the bytes. Different modules may produce
+// different rodata copies of the same name — the cache simply gets one entry
+// per (class_id, name_pointer) pair, no correctness impact.
+//
+// Invalidation: a global `VTABLE_GEN` atomic is bumped on every
+// `js_register_class_method` / `js_register_class_getter`. Each cache entry
+// records the gen at populate time; lookups skip stale entries. Registration
+// is one-shot at init in practice, so steady-state lookups never miss on
+// gen.
+// ============================================================================
+
+static VTABLE_GEN: AtomicU64 = AtomicU64::new(1);
+
+const VTABLE_IC_SIZE: usize = 4096;
+const VTABLE_IC_MASK: usize = VTABLE_IC_SIZE - 1;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct VTableICEntry {
+    gen: u64,
+    class_id: u32,
+    _pad: u32,
+    method_name_ptr: usize,
+    func_ptr: usize,
+    param_count: u32,
+    _pad2: u32,
+}
+
+const EMPTY_VTABLE_IC_ENTRY: VTableICEntry = VTableICEntry {
+    gen: 0,
+    class_id: 0,
+    _pad: 0,
+    method_name_ptr: 0,
+    func_ptr: 0,
+    param_count: 0,
+    _pad2: 0,
+};
+
+thread_local! {
+    static VTABLE_IC: UnsafeCell<[VTableICEntry; VTABLE_IC_SIZE]> = const {
+        UnsafeCell::new([EMPTY_VTABLE_IC_ENTRY; VTABLE_IC_SIZE])
+    };
+}
+
+#[inline(always)]
+fn vtable_ic_slot(class_id: u32, method_name_ptr: usize) -> usize {
+    // Mix class_id into the upper bits of the pointer to spread (class, name)
+    // pairs across slots. method_name_ptr is at least 1-byte aligned but
+    // typically 8+ for rodata strings, so shift by 3 to drop the alignment
+    // zeros before masking.
+    let key = method_name_ptr
+        .rotate_left(13)
+        .wrapping_add((class_id as usize).wrapping_mul(0x9E37_79B9));
+    (key >> 3) & VTABLE_IC_MASK
+}
+
+#[inline(always)]
+unsafe fn vtable_ic_lookup(class_id: u32, method_name_ptr: usize) -> Option<(usize, u32)> {
+    if method_name_ptr == 0 {
+        return None;
+    }
+    let cur_gen = VTABLE_GEN.load(Ordering::Relaxed);
+    let slot = vtable_ic_slot(class_id, method_name_ptr);
+    VTABLE_IC.with(|cell| {
+        let cache = &*cell.get();
+        let entry = &cache[slot];
+        if entry.gen == cur_gen
+            && entry.class_id == class_id
+            && entry.method_name_ptr == method_name_ptr
+        {
+            Some((entry.func_ptr, entry.param_count))
+        } else {
+            None
+        }
+    })
+}
+
+#[inline(always)]
+unsafe fn vtable_ic_insert(
+    class_id: u32,
+    method_name_ptr: usize,
+    func_ptr: usize,
+    param_count: u32,
+) {
+    if method_name_ptr == 0 {
+        return;
+    }
+    let cur_gen = VTABLE_GEN.load(Ordering::Relaxed);
+    let slot = vtable_ic_slot(class_id, method_name_ptr);
+    VTABLE_IC.with(|cell| {
+        let cache = &mut *cell.get();
+        cache[slot] = VTableICEntry {
+            gen: cur_gen,
+            class_id,
+            _pad: 0,
+            method_name_ptr,
+            func_ptr,
+            param_count,
+            _pad2: 0,
+        };
+    });
 }
 
 /// Call a vtable method with the correct arity.
@@ -3826,13 +3943,27 @@ pub unsafe extern "C" fn js_native_call_method(
                 }
             }
 
-            // Vtable lookup for class instances
+            // Vtable lookup for class instances — fast path via per-callsite IC
             let class_id = (*obj).class_id;
             if class_id != 0 {
+                if let Some((func_ptr, param_count)) =
+                    vtable_ic_lookup(class_id, method_name_ptr as usize)
+                {
+                    let this_i64 = jsval.as_pointer::<u8>() as i64;
+                    return call_vtable_method(
+                        func_ptr, this_i64, args_ptr, args_len, param_count,
+                    );
+                }
                 if let Ok(registry) = CLASS_VTABLE_REGISTRY.read() {
                     if let Some(ref reg) = *registry {
                         if let Some(vtable) = reg.get(&class_id) {
                             if let Some(entry) = vtable.methods.get(method_name) {
+                                vtable_ic_insert(
+                                    class_id,
+                                    method_name_ptr as usize,
+                                    entry.func_ptr,
+                                    entry.param_count,
+                                );
                                 let this_i64 = jsval.as_pointer::<u8>() as i64;
                                 return call_vtable_method(
                                     entry.func_ptr,
@@ -3994,13 +4125,27 @@ pub unsafe extern "C" fn js_native_call_method(
                 }
             }
 
-            // Vtable lookup
+            // Vtable lookup — fast path via per-callsite IC
             let class_id = (*obj).class_id;
             if class_id != 0 {
+                if let Some((func_ptr, param_count)) =
+                    vtable_ic_lookup(class_id, method_name_ptr as usize)
+                {
+                    let this_i64 = raw_bits as i64;
+                    return call_vtable_method(
+                        func_ptr, this_i64, args_ptr, args_len, param_count,
+                    );
+                }
                 if let Ok(registry) = CLASS_VTABLE_REGISTRY.read() {
                     if let Some(ref reg) = *registry {
                         if let Some(vtable) = reg.get(&class_id) {
                             if let Some(entry) = vtable.methods.get(method_name) {
+                                vtable_ic_insert(
+                                    class_id,
+                                    method_name_ptr as usize,
+                                    entry.func_ptr,
+                                    entry.param_count,
+                                );
                                 let this_i64 = raw_bits as i64;
                                 return call_vtable_method(
                                     entry.func_ptr,
