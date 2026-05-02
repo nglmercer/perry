@@ -1699,6 +1699,24 @@ fn mark_registered_roots(valid_ptrs: &ValidPointerSet) {
             try_mark_value(value.to_bits(), valid_ptrs);
         });
     }
+
+    // Singleton closures (no-capture closures cached by `js_closure_alloc_singleton`)
+    // are reachable from emitted code via cached pointers, not via JSValue refs the
+    // tracer would otherwise find. Mark them explicitly so the sweep doesn't
+    // reclaim a cached entry that's about to be loaded by the next call site.
+    for closure_ptr in crate::closure::snapshot_singleton_closures() {
+        let user = closure_ptr as usize;
+        if user != 0 && valid_ptrs.contains(&user) {
+            unsafe {
+                let header = header_from_user_ptr(user as *const u8);
+                if (*header).gc_flags & GC_FLAG_MARKED == 0
+                    && (*header).gc_flags & GC_FLAG_PINNED == 0
+                {
+                    (*header).gc_flags |= GC_FLAG_MARKED;
+                }
+            }
+        }
+    }
 }
 
 /// Gen-GC Phase C3: mark the remembered set as roots. Old-gen

@@ -3575,13 +3575,27 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
 
             let func_ref = format!("@{}", func_name);
             let cap_count = total_caps.to_string();
+            // Closures with NO captures (and no `this` to patch) are
+            // observationally identical across every call site that
+            // produces them, so route through `js_closure_alloc_singleton`
+            // to share a single ClosureHeader cached by func_ptr. This
+            // skips gc_malloc + gc_check_trigger on the hot path — the
+            // dominant cost when a non-capturing arrow is created
+            // per-iteration of a tight loop (witnessed via `sample`:
+            // `isDontFragmentRelation` → `js_closure_alloc` →
+            // `gc_collect_minor` was 7/11 samples in sync-hotpath).
+            let use_singleton = total_caps == 0;
             let closure_handle = {
                 let blk = ctx.block();
-                blk.call(
-                    I64,
-                    "js_closure_alloc",
-                    &[(PTR, &func_ref), (I32, &cap_count)],
-                )
+                if use_singleton {
+                    blk.call(I64, "js_closure_alloc_singleton", &[(PTR, &func_ref)])
+                } else {
+                    blk.call(
+                        I64,
+                        "js_closure_alloc",
+                        &[(PTR, &func_ref), (I32, &cap_count)],
+                    )
+                }
             };
             {
                 let blk = ctx.block();
@@ -5473,11 +5487,12 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             let wrap_name = format!("__perry_wrap_{}", func_name);
             let blk = ctx.block();
             let wrap_ptr = format!("@{}", wrap_name);
-            // js_closure_alloc(func_ptr, capture_count=0) → ClosureHeader*
-            // The first arg is a `ptr` in LLVM IR (since the runtime
-            // takes `*const u8`). Pass `@wrap_name` directly — LLVM
-            // handles the implicit function-to-pointer cast.
-            let closure_handle = blk.call(I64, "js_closure_alloc", &[(PTR, &wrap_ptr), (I32, "0")]);
+            // FuncRef wrappers always have 0 captures, so we can route
+            // through the singleton-cached allocator: same func_ptr always
+            // yields the same ClosureHeader. Eliminates the per-evaluation
+            // gc_malloc + gc_check_trigger that was the dominant cost in
+            // tight loops which pass a function as a callback.
+            let closure_handle = blk.call(I64, "js_closure_alloc_singleton", &[(PTR, &wrap_ptr)]);
             Ok(nanbox_pointer_inline(blk, &closure_handle))
         }
 

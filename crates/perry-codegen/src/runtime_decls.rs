@@ -188,6 +188,11 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     //     (see crates/perry-runtime/src/closure.rs); the call site cap in
     //     lower_call.rs matches.
     module.declare_function("js_closure_alloc", I64, &[PTR, I32]);
+    // Singleton-cached variant for non-capturing closures and FuncRef
+    // wrappers — same `func_ptr` returns the same cached ClosureHeader,
+    // skipping gc_malloc + gc_check_trigger on the hot loop. See
+    // `crates/perry-runtime/src/closure.rs::js_closure_alloc_singleton`.
+    module.declare_function("js_closure_alloc_singleton", I64, &[PTR]);
     module.declare_function("js_closure_set_capture_f64", VOID, &[I64, I32, DOUBLE]);
     module.declare_function("js_closure_get_capture_f64", DOUBLE, &[I64, I32]);
     module.declare_function("js_closure_call0", DOUBLE, &[I64]);
