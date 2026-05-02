@@ -34,6 +34,7 @@ pub mod date;
 pub mod error;
 pub mod event_pump;
 pub mod exception;
+pub mod fast_hash;
 pub mod fs;
 pub mod gc;
 pub mod map;

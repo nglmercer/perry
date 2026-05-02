@@ -29,14 +29,14 @@ fn buffer_layout(capacity: usize) -> Layout {
 /// Thread-local registry of buffer pointers for instanceof checks.
 /// Since BufferHeader has the same layout as ArrayHeader (no type_id field),
 /// we track buffer pointers separately to distinguish them from arrays.
+use crate::fast_hash::{new_ptr_hash_set, PtrHashSet};
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 thread_local! {
-    static BUFFER_REGISTRY: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static BUFFER_REGISTRY: RefCell<PtrHashSet<usize>> = RefCell::new(new_ptr_hash_set());
     /// Buffers that were specifically created via `new Uint8Array(...)` —
     /// formatted as `Uint8Array(N) [ a, b, c ]` instead of `<Buffer aa bb cc>`.
-    static UINT8ARRAY_FROM_CTOR: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static UINT8ARRAY_FROM_CTOR: RefCell<PtrHashSet<usize>> = RefCell::new(new_ptr_hash_set());
 }
 
 /// Register a buffer pointer in the thread-local registry
@@ -1691,7 +1691,7 @@ mod tests {
             assert!(!buf.is_null(), "slab alloc returned null at i={}", i);
             ptrs.push(buf);
         }
-        let addrs: HashSet<usize> = ptrs.iter().map(|&p| p as usize).collect();
+        let addrs: std::collections::HashSet<usize> = ptrs.iter().map(|&p| p as usize).collect();
         assert_eq!(
             addrs.len(),
             n,

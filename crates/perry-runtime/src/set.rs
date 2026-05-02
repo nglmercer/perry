@@ -4,15 +4,16 @@
 //! The elements array is separately allocated and can be reallocated
 //! without changing the SetHeader address.
 
+use crate::fast_hash::{new_ptr_hash_set, PtrHashSet};
 use crate::string::StringHeader;
 use std::alloc::{alloc, realloc, Layout};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ptr;
 
 thread_local! {
-    static SET_REGISTRY: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static SET_REGISTRY: RefCell<PtrHashSet<usize>> = RefCell::new(new_ptr_hash_set());
 }
 
 /// A wrapper around f64 JSValues that implements Hash and Eq using

@@ -4,10 +4,11 @@
 //! The entries array is separately allocated and can be reallocated
 //! without changing the MapHeader address.
 
+use crate::fast_hash::{new_ptr_hash_set, PtrHashSet};
 use crate::string::StringHeader;
 use std::alloc::{alloc, realloc, Layout};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::ptr;
 
@@ -15,7 +16,7 @@ use std::ptr;
 const TAG_UNDEFINED: u64 = 0x7FFC_0000_0000_0001;
 
 thread_local! {
-    static MAP_REGISTRY: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static MAP_REGISTRY: RefCell<PtrHashSet<usize>> = RefCell::new(new_ptr_hash_set());
 }
 
 fn register_map(ptr: *mut MapHeader) {
