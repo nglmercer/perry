@@ -166,13 +166,18 @@ pub(crate) struct MallocState {
     pub(crate) objects: Vec<*mut GcHeader>,
     /// O(1) lookup set for validating malloc pointers (mirrors `objects`).
     /// Used by `gc_realloc` to distinguish live, GC-freed, and arena pointers.
-    pub(crate) set: HashSet<usize>,
+    /// Uses `PtrHasher` (Fibonacci-multiplicative) instead of the default
+    /// `RandomState` SipHash — pointers are well-distributed and these keys
+    /// never come from external input, so cryptographic mixing buys nothing
+    /// and burns ~30 ns per insert/lookup. Hot on every gc_malloc'd
+    /// allocation (Map/String/BigInt/Promise/Error/Closure …).
+    pub(crate) set: crate::fast_hash::PtrHashSet<usize>,
 }
 
 thread_local! {
     pub(crate) static MALLOC_STATE: RefCell<MallocState> = RefCell::new(MallocState {
         objects: Vec::new(),
-        set: HashSet::new(),
+        set: crate::fast_hash::new_ptr_hash_set(),
     });
 
     /// Free list of arena slots available for reuse: (user_ptr, payload_size)
