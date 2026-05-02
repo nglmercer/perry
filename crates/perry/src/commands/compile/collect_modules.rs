@@ -12,8 +12,8 @@
 use anyhow::{anyhow, Result};
 use perry_hir::ModuleKind;
 use perry_transform::{
-    gather_cross_module_methods, inline_functions, transform_async_to_generator,
-    transform_generators, MethodCandidate,
+    gather_cross_module_methods, gather_cross_module_methods_with_extern_imports,
+    inline_functions, transform_async_to_generator, transform_generators, MethodCandidate,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -208,41 +208,6 @@ pub(super) fn collect_modules(
             imported_class_fields,
         )?;
     *next_class_id = new_next_class_id; // Update the global class_id counter
-
-    if !skip_transforms {
-        // Apply function inlining optimization. Pass already-collected
-        // cross-module-safe methods so a `let world = new World(); ...
-        // world.set(...)` site in this module can resolve `("World",
-        // "set")` even though `World` is defined in a previously-processed
-        // module. Only methods whose bodies use module-stable references
-        // (no FuncRef / ExternFuncRef / GlobalGet) qualify — see
-        // `is_cross_module_safe` for the exact criteria.
-        let mut extra_methods: std::collections::HashMap<
-            (String, String),
-            MethodCandidate,
-        > = std::collections::HashMap::new();
-        for prior_module in ctx.native_modules.values() {
-            for (k, v) in gather_cross_module_methods(prior_module) {
-                // First-write-wins: a class defined in two modules
-                // (uncommon but possible — see issue #309 for the cycle-
-                // breaking pass that handles imported_class_stubs) keeps
-                // whichever copy was processed first.
-                extra_methods.entry(k).or_insert(v);
-            }
-        }
-        inline_functions(&mut hir_module, &extra_methods);
-
-        // Issue #256: rewrite plain async functions into generators with
-        // was_plain_async set, so the generator transform below produces
-        // a state machine wrapped in an async-step driver. Must run AFTER
-        // inline_functions (so inlined async bodies are also rewritten)
-        // and BEFORE transform_generators (which consumes the generator
-        // shape we produce).
-        transform_async_to_generator(&mut hir_module);
-
-        // Transform generator functions into state machines
-        transform_generators(&mut hir_module);
-    }
 
     // Process imports and update their resolved paths and module kinds
     for import in &mut hir_module.imports {
@@ -512,6 +477,54 @@ pub(super) fn collect_modules(
                 }
             }
         }
+    }
+
+    // Run HIR transforms AFTER imports/re-exports have been recursively
+    // collected, so `ctx.native_modules` already contains every dependency
+    // of this module. The cross-module method-inlining harvester below
+    // pulls inlinable methods from those prior modules — without this
+    // ordering, a consumer (e.g. `sync-hotpath.test.ts`) would inline
+    // BEFORE `world.ts` finished processing, missing every `World.*`
+    // candidate and leaving the hot `world.set(...)` call as a runtime
+    // dispatch.
+    //
+    // Pre-existing constraint: `transform_async_to_generator` runs AFTER
+    // `inline_functions` (so inlined async bodies are still rewritten)
+    // and BEFORE `transform_generators` (which consumes the generator
+    // shape it produces). Issue #256.
+    if !skip_transforms {
+        let mut extra_methods: std::collections::HashMap<
+            (String, String),
+            MethodCandidate,
+        > = std::collections::HashMap::new();
+        if std::env::var("PERRY_INLINE_DEBUG").is_ok() {
+            eprintln!(
+                "[INLINE-DRIVER] processing {}: prior modules={:?}",
+                hir_module.name,
+                ctx.native_modules
+                    .values()
+                    .map(|m| m.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+        for prior_module in ctx.native_modules.values() {
+            // The strict harvester rejects ExternFuncRef-using methods.
+            // The loose variant records each required extern name;
+            // `inline_functions` filters by destination imports.
+            // First-write-wins on key collision (rare — issue #309 cycle
+            // breaker). Strict-harvest entries are functionally equivalent
+            // when colliding with the loose variant (same body), so
+            // either ordering is correct.
+            for (k, v) in gather_cross_module_methods_with_extern_imports(prior_module) {
+                extra_methods.entry(k).or_insert(v);
+            }
+            for (k, v) in gather_cross_module_methods(prior_module) {
+                extra_methods.entry(k).or_insert(v);
+            }
+        }
+        inline_functions(&mut hir_module, &extra_methods);
+        transform_async_to_generator(&mut hir_module);
+        transform_generators(&mut hir_module);
     }
 
     // Detect fetch() usage — js_fetch_with_options lives in perry-stdlib

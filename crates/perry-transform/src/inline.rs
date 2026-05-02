@@ -17,6 +17,15 @@ pub struct MethodCandidate {
     pub func: Function,
     /// The index of the `this` parameter (if present)
     pub this_param_id: Option<LocalId>,
+    /// `Expr::ExternFuncRef` names referenced inside the body, paired with
+    /// the `resolved_path` of the source module that originally exported
+    /// each name. Empty for methods harvested via `gather_cross_module_methods`
+    /// (those reject any extern-ref). Non-empty for methods harvested via
+    /// `gather_cross_module_methods_with_extern_imports`, where the inliner
+    /// uses the `resolved_path` to add any missing import to the destination
+    /// module's `hir.imports` so the codegen's `import_function_prefixes`
+    /// table can dispatch the cross-module call (`perry_fn_<source_prefix>__<name>`).
+    pub required_extern_imports: Vec<(String, String)>,
 }
 
 /// Inline small functions and methods in the module.
@@ -81,11 +90,99 @@ pub fn inline_functions(
     // collection.
     let mut method_candidates: HashMap<(String, String), MethodCandidate> = HashMap::new();
     let mut class_names: HashMap<String, String> = HashMap::new();
-    // Seed with cross-module candidates harvested by the driver. Local
-    // entries below override on a name collision (a same-named class
-    // defined in this module wins over its imported-stub counterpart),
-    // matching the precedence the codegen's class_table uses.
-    method_candidates.extend(extra_methods.iter().map(|(k, v)| (k.clone(), v.clone())));
+    // Build the `(name, resolved_path) -> Import` map once for deduping.
+    // For each Named import in dest, we know which (name, path) is already
+    // satisfied. Anything required by an admitted candidate that isn't here
+    // gets appended below.
+    let mut dest_named_imports: HashSet<(String, String)> = HashSet::new();
+    let mut dest_resolved_paths: HashSet<String> = HashSet::new();
+    for imp in &module.imports {
+        if let Some(p) = &imp.resolved_path {
+            dest_resolved_paths.insert(p.clone());
+            for spec in &imp.specifiers {
+                if let perry_hir::ImportSpecifier::Named { local, .. } = spec {
+                    dest_named_imports.insert((local.clone(), p.clone()));
+                }
+            }
+        }
+    }
+    // Source-of-truth: for each (name, source_path) combination requested by
+    // an admitted candidate, look up the matching `Import` from extra_methods
+    // (we need the original `Import` shape — `is_native`, `module_kind` —
+    // so the codegen processes the new entry the same way it processes a
+    // user-written import). Since we only have the resolved_path (not the
+    // original source string or module_kind) on the candidate side, we
+    // reconstruct a minimal Import here. `is_native = false` because the
+    // strict-cross-module-safe check already excluded NativeMethodCall and
+    // other native-only patterns; `module_kind = NativeCompiled` because
+    // that's the only category the codegen consults for
+    // `import_function_prefixes`.
+    let mut needed_imports: HashMap<String, Vec<String>> = HashMap::new();
+    method_candidates.extend(extra_methods.iter().filter_map(|(k, v)| {
+        // If any required (name, path) is missing from dest, queue an import.
+        // We always admit when the path is reachable from the destination —
+        // if dest has no import that resolves to that path, we synthesize
+        // one. (A path that names a module not in `ctx.native_modules` would
+        // still fail at codegen, but that's a pre-existing issue; the
+        // harvester wouldn't populate `required_extern_imports` from such a
+        // path.)
+        for (name, path) in &v.required_extern_imports {
+            if !dest_named_imports.contains(&(name.clone(), path.clone())) {
+                needed_imports
+                    .entry(path.clone())
+                    .or_default()
+                    .push(name.clone());
+            }
+        }
+        Some((k.clone(), v.clone()))
+    }));
+    // Synthesize import entries for the needed names. Group per source-path.
+    for (path, mut names) in needed_imports {
+        names.sort();
+        names.dedup();
+        // If dest already has an Import for this resolved_path, append the
+        // names there to keep the imports list clean. Otherwise create a
+        // fresh Import.
+        let existing_idx = module.imports.iter().position(|imp| {
+            imp.resolved_path
+                .as_deref()
+                .is_some_and(|p| p == path.as_str())
+        });
+        match existing_idx {
+            Some(idx) => {
+                for name in names {
+                    if !module.imports[idx]
+                        .specifiers
+                        .iter()
+                        .any(|s| matches!(s, perry_hir::ImportSpecifier::Named { local, .. } if local == &name))
+                    {
+                        module.imports[idx]
+                            .specifiers
+                            .push(perry_hir::ImportSpecifier::Named {
+                                imported: name.clone(),
+                                local: name,
+                            });
+                    }
+                }
+            }
+            None => {
+                module.imports.push(perry_hir::Import {
+                    source: path.clone(),
+                    specifiers: names
+                        .into_iter()
+                        .map(|name| perry_hir::ImportSpecifier::Named {
+                            imported: name.clone(),
+                            local: name,
+                        })
+                        .collect(),
+                    is_native: false,
+                    module_kind: perry_hir::ModuleKind::NativeCompiled,
+                    resolved_path: Some(path),
+                });
+            }
+        }
+    }
+    let _ = dest_resolved_paths; // kept for future deduping diagnostics
     for class in &module.classes {
         class_names.insert(class.name.clone(), class.name.clone());
 
@@ -106,6 +203,7 @@ pub fn inline_functions(
                     MethodCandidate {
                         func: method.clone(),
                         this_param_id: None,
+                        required_extern_imports: Vec::new(),
                     },
                 );
             }
@@ -441,11 +539,182 @@ pub fn gather_cross_module_methods(
                 MethodCandidate {
                     func: method.clone(),
                     this_param_id: None,
+                    required_extern_imports: Vec::new(),
                 },
             );
         }
     }
     out
+}
+
+/// Like `gather_cross_module_methods`, but additionally permits methods that
+/// invoke `Expr::ExternFuncRef` — recording each referenced name in
+/// `required_extern_imports` so the inline-time safety check can verify the
+/// destination module imports the same names before inlining.
+///
+/// `Expr::FuncRef` (same-module function-id reference) and `Expr::GlobalGet`
+/// remain disallowed: function-id and module-globals can't survive a cross-
+/// module move at all (the source module's symbol space isn't visible).
+/// Closures and `Expr::NativeModuleRef` also remain disallowed.
+///
+/// The hot motivator here is `World.resolveSetOperation` — its body invokes
+/// the imported `getDetailedIdType` (an ExternFuncRef in the World module),
+/// which the strict filter rejected. With this looser filter the method
+/// becomes a candidate; the inline-time check then permits it iff the
+/// destination module also imports `getDetailedIdType`.
+pub fn gather_cross_module_methods_with_extern_imports(
+    module: &Module,
+) -> HashMap<(String, String), MethodCandidate> {
+    let mut out: HashMap<(String, String), MethodCandidate> = HashMap::new();
+    // Pre-build a name → resolved_path map from this module's imports so we
+    // can resolve each ExternFuncRef in a method body to its source-of-truth.
+    // The destination module needs that resolved_path to add the matching
+    // Import (the codegen's import_function_prefixes lookup keys on it).
+    let mut import_name_to_path: HashMap<String, String> = HashMap::new();
+    for imp in &module.imports {
+        let Some(path) = imp.resolved_path.clone() else {
+            continue;
+        };
+        for spec in &imp.specifiers {
+            if let perry_hir::ImportSpecifier::Named { local, .. } = spec {
+                import_name_to_path.insert(local.clone(), path.clone());
+            }
+        }
+    }
+    for class in &module.classes {
+        if class.native_extends.is_some() {
+            continue;
+        }
+        for method in &class.methods {
+            if !is_inlinable(method) {
+                continue;
+            }
+            let mut extern_names: Vec<String> = Vec::new();
+            if !is_cross_module_safe_with_externs(&method.body, &mut extern_names) {
+                continue;
+            }
+            extern_names.sort();
+            extern_names.dedup();
+            // Resolve each extern name against this module's imports. If
+            // any name is unresolvable (it's referenced via ExternFuncRef
+            // but doesn't appear as a Named import in this module — could
+            // happen for built-ins like `setTimeout` that get
+            // ExternFuncRef'd without a corresponding import statement),
+            // skip the candidate entirely. The inline-time path needs a
+            // concrete source path to copy over.
+            let mut required: Vec<(String, String)> = Vec::with_capacity(extern_names.len());
+            let mut resolvable = true;
+            for name in &extern_names {
+                if let Some(p) = import_name_to_path.get(name) {
+                    required.push((name.clone(), p.clone()));
+                } else {
+                    resolvable = false;
+                    break;
+                }
+            }
+            if !resolvable {
+                continue;
+            }
+            out.insert(
+                (class.name.clone(), method.name.clone()),
+                MethodCandidate {
+                    func: method.clone(),
+                    this_param_id: None,
+                    required_extern_imports: required,
+                },
+            );
+        }
+    }
+    out
+}
+
+/// Variant of `is_cross_module_safe` that allows `Expr::ExternFuncRef` and
+/// records each referenced name into `extern_names`. Used by
+/// `gather_cross_module_methods_with_extern_imports`. Same disqualifying
+/// rules for FuncRef / GlobalGet / NativeModuleRef / Closure.
+fn is_cross_module_safe_with_externs(body: &[Stmt], extern_names: &mut Vec<String>) -> bool {
+    fn check_expr(expr: &Expr, extern_names: &mut Vec<String>) -> bool {
+        match expr {
+            Expr::FuncRef(_)
+            | Expr::GlobalGet(_)
+            | Expr::GlobalSet(_, _)
+            | Expr::NativeModuleRef(_) => false,
+            Expr::Closure { .. } => false,
+            Expr::ExternFuncRef { name, .. } => {
+                extern_names.push(name.clone());
+                true
+            }
+            other => {
+                let mut ok = true;
+                walk_expr_children(other, &mut |child| {
+                    if !check_expr(child, extern_names) {
+                        ok = false;
+                    }
+                });
+                ok
+            }
+        }
+    }
+    fn check_stmt(s: &Stmt, extern_names: &mut Vec<String>) -> bool {
+        match s {
+            Stmt::Let { init, .. } => init
+                .as_ref()
+                .is_none_or(|e| check_expr(e, extern_names)),
+            Stmt::Expr(e) | Stmt::Throw(e) | Stmt::Return(Some(e)) => check_expr(e, extern_names),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => true,
+            Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => true,
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                check_expr(condition, extern_names)
+                    && then_branch.iter().all(|s| check_stmt(s, extern_names))
+                    && else_branch
+                        .as_ref()
+                        .is_none_or(|eb| eb.iter().all(|s| check_stmt(s, extern_names)))
+            }
+            Stmt::While { condition, body } | Stmt::DoWhile { body, condition } => {
+                check_expr(condition, extern_names)
+                    && body.iter().all(|s| check_stmt(s, extern_names))
+            }
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body,
+            } => {
+                init.as_ref().is_none_or(|s| check_stmt(s, extern_names))
+                    && condition
+                        .as_ref()
+                        .is_none_or(|e| check_expr(e, extern_names))
+                    && update.as_ref().is_none_or(|e| check_expr(e, extern_names))
+                    && body.iter().all(|s| check_stmt(s, extern_names))
+            }
+            Stmt::Switch { discriminant, cases } => {
+                check_expr(discriminant, extern_names)
+                    && cases.iter().all(|c| {
+                        c.test.as_ref().is_none_or(|e| check_expr(e, extern_names))
+                            && c.body.iter().all(|s| check_stmt(s, extern_names))
+                    })
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                body.iter().all(|s| check_stmt(s, extern_names))
+                    && catch
+                        .as_ref()
+                        .is_none_or(|c| c.body.iter().all(|s| check_stmt(s, extern_names)))
+                    && finally
+                        .as_ref()
+                        .is_none_or(|f| f.iter().all(|s| check_stmt(s, extern_names)))
+            }
+            Stmt::Labeled { body, .. } => check_stmt(body.as_ref(), extern_names),
+        }
+    }
+    body.iter().all(|s| check_stmt(s, extern_names))
 }
 
 /// Check if a body contains Expr::SuperCall or Expr::SuperMethodCall (recursively).
