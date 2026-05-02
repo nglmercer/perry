@@ -574,19 +574,33 @@ pub extern "C" fn js_map_entries(map: *const MapHeader) -> *mut crate::array::Ar
     unsafe {
         let size = (*map).size as usize;
         let entries = entries_ptr(map);
-        let result = crate::array::js_array_alloc(size as u32);
+
+        // Outer Array sized exactly to hold N pair pointers — set length
+        // up front so we can write directly into the elements buffer
+        // instead of going through `js_array_push_f64` per pair.
+        let result = crate::array::js_array_alloc_with_length(size as u32);
+        let result_elems =
+            (result as *mut u8).add(std::mem::size_of::<crate::array::ArrayHeader>()) as *mut u64;
 
         for i in 0..size {
-            // Create a pair array [key, value]
-            let pair = crate::array::js_array_alloc(2);
             let key = ptr::read(entries.add(i * 2));
             let value = ptr::read(entries.add(i * 2 + 1));
-            crate::array::js_array_push_f64(pair, key);
-            crate::array::js_array_push_f64(pair, value);
 
-            // Push the pair as a pointer-NaN-boxed value
+            // Inner pair Array: allocate via js_array_alloc (which floors
+            // to MIN_ARRAY_CAPACITY), then write key/value/length directly.
+            // Skips the two `js_array_push_f64` calls per pair (each does
+            // its own bounds + capacity check).
+            let pair = crate::array::js_array_alloc(2);
+            let pair_elems =
+                (pair as *mut u8).add(std::mem::size_of::<crate::array::ArrayHeader>()) as *mut u64;
+            std::ptr::write(pair_elems, key.to_bits());
+            std::ptr::write(pair_elems.add(1), value.to_bits());
+            (*pair).length = 2;
+
+            // Write the NaN-boxed pair pointer directly into the outer
+            // array's element slot — no push.
             let pair_boxed = crate::value::js_nanbox_pointer(pair as i64);
-            crate::array::js_array_push_f64(result, pair_boxed);
+            std::ptr::write(result_elems.add(i), pair_boxed.to_bits());
         }
 
         result
