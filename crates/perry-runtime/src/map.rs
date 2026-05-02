@@ -81,11 +81,26 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-/// Drop the side-table entry for a map address that's about to be reused
-/// or freed (called from gc::sweep). Safe to call on unregistered addrs.
+/// Drop the side-table entry AND deregister from `MAP_REGISTRY` for a
+/// map address that's about to be reused or freed (called from
+/// `gc::sweep`). Safe to call on unregistered addresses.
+///
+/// Without the `MAP_REGISTRY.remove`, a freed Map's address would
+/// permanently identify as a Map even after the GC slot is reused for
+/// (say) an Array — so `js_array_get_f64` would route through the Map
+/// branch, read the new Array's first u32 as `(*map).size`, the next
+/// 8 bytes as `(*map).entries`, and dereference whatever bit pattern
+/// happened to land at offset 8. With gen-GC churn this manifested as
+/// an `EXC_BAD_ACCESS` at address 0x7ffd_02xx_xxxx_xxxx (POINTER_TAG
+/// bits read as a raw pointer) inside `js_array_get_f64 + 672` while
+/// `processCommands` iterated `commands[i]` over an Array whose memory
+/// had been a Map a few collections earlier.
 pub fn drop_map_index(addr: usize) {
     MAP_INDEX.with(|idx| {
         idx.borrow_mut().remove(&addr);
+    });
+    MAP_REGISTRY.with(|r| {
+        r.borrow_mut().remove(&addr);
     });
 }
 
