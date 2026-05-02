@@ -3591,32 +3591,71 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // ClosureHeader and skips gc_malloc + gc_check_trigger.
             //
             // We skip the captured-singleton path for closures whose
-            // body mutates a capture (or that capture `this`, which we
-            // patch in-place after creation): both want fresh per-site
-            // identity.
+            // body mutates a capture: those want fresh per-site identity
+            // because each call site might want its own writable slot.
+            //
+            // Closures that capture `this` are still routable through
+            // the captured-singleton path — we include the `this` value
+            // in the cache buffer (at slot `auto_captures.len()`,
+            // matching the runtime layout), so distinct receivers
+            // produce distinct cache keys. Hot ECS class methods like
+            // `World.executeEntityCommands` benefit from this: their
+            // inner arrow `(eid, arch, compId) => ... changeset ...`
+            // is created per-call but always with the same `this` (the
+            // World) and same captures (`this._changeset`).
             let body_mutates_capture = !mutable_captures.is_empty()
                 && auto_captures
                     .iter()
                     .any(|id| mutable_captures.contains(id));
+            // Boxed captures store a fresh box pointer per closure
+            // creation site, so their bits differ between calls even
+            // when the box's logical value is the same. That breaks
+            // the cache — every call would miss. Skip the captured
+            // singleton path when any capture is boxed.
+            let captures_any_boxed = auto_captures
+                .iter()
+                .any(|id| ctx.boxed_vars.contains(id));
             let no_capture_singleton = total_caps == 0;
             let captured_singleton =
-                !no_capture_singleton && !*captures_this && !body_mutates_capture;
+                !no_capture_singleton && !body_mutates_capture && !captures_any_boxed;
+
+            // For captures_this, the cache buffer needs an extra slot
+            // for the `this` value so the cache key distinguishes
+            // closures with different receivers. We load `this` here
+            // (mirroring the post-create patch site below) when we're
+            // taking the captured-singleton path.
+            let this_value_for_cache = if captured_singleton && *captures_this {
+                let this_slot = ctx.this_stack.last().cloned();
+                Some(if let Some(slot) = this_slot {
+                    ctx.block().load(DOUBLE, &slot)
+                } else {
+                    double_literal(0.0)
+                })
+            } else {
+                None
+            };
 
             let closure_handle = if no_capture_singleton {
                 let blk = ctx.block();
                 blk.call(I64, "js_closure_alloc_singleton", &[(PTR, &func_ref)])
             } else if captured_singleton {
-                // Stack-allocate a `[u64; N]` capture buffer in the
-                // function entry block, populate it with the lowered
-                // capture values, then call the captured-singleton
-                // helper which copies them into the cached closure.
-                let n = captured_values.len();
-                let buf = ctx.func.alloca_entry_array(I64, n);
+                // Stack-allocate a `[u64; total_caps]` capture buffer
+                // (auto captures, plus `this` at the reserved slot if
+                // captures_this). The runtime helper copies these
+                // verbatim into the cached closure's capture slots.
+                let n_total = total_caps;
+                let buf = ctx.func.alloca_entry_array(I64, n_total);
                 {
                     let blk = ctx.block();
                     for (i, v) in captured_values.iter().enumerate() {
                         let slot = blk.gep(I64, &buf, &[(I64, &format!("{}", i))]);
                         let v_bits = blk.bitcast_double_to_i64(v);
+                        blk.store(I64, &v_bits, &slot);
+                    }
+                    if let Some(this_v) = &this_value_for_cache {
+                        let this_idx = auto_captures.len();
+                        let slot = blk.gep(I64, &buf, &[(I64, &format!("{}", this_idx))]);
+                        let v_bits = blk.bitcast_double_to_i64(this_v);
                         blk.store(I64, &v_bits, &slot);
                     }
                 }
