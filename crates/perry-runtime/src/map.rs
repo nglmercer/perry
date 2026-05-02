@@ -102,9 +102,18 @@ fn is_safe_numeric_key(bits: u64) -> bool {
 /// Side-table mapping `map_ptr -> (NumericKey-bits -> entries-array-index)`.
 /// O(1) `find_key_index` for numeric keys; pointer keys still take the
 /// linear-scan path so they remain correct under gen-GC string forwarding.
+///
+/// Both nesting levels use `PtrHasher` (Fibonacci-multiplicative + xorshift
+/// avalanche, see `crate::fast_hash`). The xorshift step is essential here
+/// because `NumericKey(u64)` holds f64 bit-patterns — small whole-number
+/// EntityIds have mantissa-zero, so pure multiplicative hashing would
+/// collapse hundreds of keys into bucket 0 (caught by a 2x regression
+/// the first time around). With the avalanche step, even the worst-case
+/// integer-f64 inputs distribute across buckets normally.
 thread_local! {
-    static MAP_INDEX: RefCell<HashMap<usize, HashMap<NumericKey, u32>>> =
-        RefCell::new(HashMap::new());
+    static MAP_INDEX: RefCell<
+        crate::fast_hash::PtrHashMap<usize, crate::fast_hash::PtrHashMap<NumericKey, u32>>,
+    > = RefCell::new(crate::fast_hash::new_ptr_hash_map());
 }
 
 /// Drop the side-table entry AND deregister from `MAP_REGISTRY` for a
@@ -325,7 +334,8 @@ pub extern "C" fn js_map_alloc(capacity: u32) -> *mut MapHeader {
         // gc_malloc may recycle a freed Map's GC slot, so a stale index
         // entry from the prior occupant must be cleared here.
         MAP_INDEX.with(|idx| {
-            idx.borrow_mut().insert(ptr as usize, HashMap::new());
+            idx.borrow_mut()
+                .insert(ptr as usize, crate::fast_hash::new_ptr_hash_map());
         });
 
         ptr
@@ -464,7 +474,9 @@ pub extern "C" fn js_map_set(map: *mut MapHeader, key: f64, value: f64) -> *mut 
         if is_safe_numeric_key(key_bits) {
             MAP_INDEX.with(|idx| {
                 let mut idx = idx.borrow_mut();
-                let slot = idx.entry(map as usize).or_insert_with(HashMap::new);
+                let slot = idx
+                    .entry(map as usize)
+                    .or_insert_with(crate::fast_hash::new_ptr_hash_map);
                 slot.insert(NumericKey(key_bits), size);
             });
         }

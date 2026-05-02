@@ -629,6 +629,7 @@ pub extern "C" fn js_arena_alloc(size: u32) -> *mut u8 {
 /// + old-gen). Reads the running sum maintained via deltas at the four
 /// mutation sites — one TLS load instead of an O(blocks) walk on the
 /// gc-trigger hot path.
+#[inline]
 pub fn arena_total_bytes() -> usize {
     ARENA_TOTAL_BYTES.with(|t| t.get())
 }

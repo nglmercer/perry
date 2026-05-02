@@ -52,16 +52,35 @@ impl Hasher for PtrHasherImpl {
         for &b in bytes {
             h = h.rotate_left(5) ^ (b as u64);
         }
-        self.0 = h.wrapping_mul(PTR_MIX);
+        self.0 = mix(h.wrapping_mul(PTR_MIX));
     }
     #[inline]
     fn write_u64(&mut self, n: u64) {
-        self.0 = n.wrapping_mul(PTR_MIX);
+        self.0 = mix(n.wrapping_mul(PTR_MIX));
     }
     #[inline]
     fn write_usize(&mut self, n: usize) {
-        self.0 = (n as u64).wrapping_mul(PTR_MIX);
+        self.0 = mix((n as u64).wrapping_mul(PTR_MIX));
     }
+}
+
+/// Avalanche step (xorshift on the upper half) so values with all-zero
+/// low bits — typical of integer-encoded f64 keys (whole numbers
+/// store as mantissa = 0) — don't all collide on a single bucket
+/// when `HashMap` uses `hash & (capacity - 1)` for bucket indexing.
+/// Pure multiplicative hashing puts entropy in the upper bits, but
+/// std `HashMap` reads bucket indices from the lower bits.
+///
+/// Tested on perf-comprehensive: removing this step + applying
+/// `PtrHasher` to `MAP_INDEX`'s inner `NumericKey(u64)` map (which
+/// stores f64 bit-patterns of EntityIds, all with mantissa-zero
+/// for whole numbers) regressed from 455 ms → 830 ms because
+/// EntityId 1024..15000 all hashed to bucket 0. The `^= h >> 32`
+/// fixes the case at ~1 cycle of cost on the heap-ptr-keyed
+/// registries that don't need it.
+#[inline(always)]
+fn mix(h: u64) -> u64 {
+    h ^ (h >> 32)
 }
 
 pub type PtrHashSet<T> = HashSet<T, PtrHasher>;
