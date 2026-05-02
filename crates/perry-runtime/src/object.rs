@@ -2855,10 +2855,21 @@ pub extern "C" fn js_object_get_field_ic_miss(
                         // slow path which handles overflow correctly.
                         break;
                     }
-                    if i < 8 {
-                        (*cache)[0] = keys as i64;
-                        (*cache)[1] = i as i64;
-                    }
+                    // The codegen IC fast path computes `obj + 24 + slot*8`
+                    // and does a direct load. Any inline slot (`i <
+                    // alloc_limit`) is reachable via that path, so cache
+                    // every inline slot — including the ones at index >= 8
+                    // for classes whose `field_count` exceeds the
+                    // MIN_FIELD_SLOTS=8 baseline (e.g. World.commandBuffer
+                    // sits at slot 12). Pre-fix this branch capped the cache
+                    // at `i < 8` which left every >8-slot field permanently
+                    // missing the cache: every access fell through to a
+                    // fresh keys_array walk + js_string_equals chain. On
+                    // perf-comprehensive's hot loops that path was hit
+                    // ~900k times per run (40% inclusive samples per
+                    // perfcomp.profile).
+                    (*cache)[0] = keys as i64;
+                    (*cache)[1] = i as i64;
                     let field_ptr = (obj as *const u8)
                         .add(std::mem::size_of::<ObjectHeader>() + i * 8)
                         as *const f64;
