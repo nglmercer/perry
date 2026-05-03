@@ -100,6 +100,94 @@ struct StateBinding {
     initial_str: String,
 }
 
+/// Phase 2 v3.5 — leaf-mutator state binding for `widgetSetHidden`.
+///
+/// Mango's pattern (and any procedurally-built Perry UI):
+/// ```text
+/// const formContainer = VStack(12, []);
+/// widgetSetHidden(formContainer, 1);              // module-init: initial = hidden
+/// // ...
+/// btn.onClick = () => { widgetSetHidden(formContainer, 0); };  // closure: flip
+/// ```
+///
+/// HarmonyOS has no runtime widget tree to mutate (no `perry-ui-harmonyos`
+/// crate by design — ArkUI renders declaratively from `@State`). Pre-fix,
+/// the closure-time `widgetSetHidden(formContainer, 0)` call was a no-op
+/// (auto-stubbed in `perry-runtime/build.rs`); the form never appeared.
+///
+/// The fix: any widget that's targeted by `widgetSetHidden` from a closure
+/// or function body gets a synth-id, an `@State hidden_<id>: boolean`
+/// field on the page struct, and `.visibility(this.hidden_<id> ? Hidden :
+/// Visible)` modifier. Closure-time calls are HIR-rewritten to
+/// `perry_arkts_set_visibility(synth_id, hidden)` which pushes to a NAPI
+/// drain queue; ArkTS pumps the queue and updates the `@State` field;
+/// ArkUI re-renders.
+#[derive(Debug, Clone)]
+struct VisibilityBinding {
+    /// Synth identifier — `vis_0`, `vis_1`, … one per unique target LocalId.
+    synth_id: String,
+    /// Initial visibility from module init: `true` = hidden by default.
+    /// Determined by the LAST literal `widgetSetHidden(target, V)` seen in
+    /// `module.init` (latest wins). When no module-init call is found,
+    /// defaults to `false` (visible) — matches the fact that widgets are
+    /// born visible in Perry.
+    initial_hidden: bool,
+}
+
+/// Phase 2 v3.6 — tree-mutator state binding for view-builder functions.
+///
+/// Mango's pattern: a function called from a closure that builds a widget
+/// tree and attaches it to a module-level container via `widgetAddChild(target,
+/// root)`. On HarmonyOS those addChild + clearChildren calls are no-op stubs,
+/// so the runtime construction is dead — but the *resulting widget tree* is
+/// statically determinable. We lift it.
+///
+/// ```text
+/// function showConnectionForm(): void {
+///     widgetClearChildren(formContainer);
+///     const formCard = VStack(12, []);
+///     widgetAddChild(formCard, title);
+///     ...
+///     widgetAddChild(formContainer, formCard);  // ← terminal
+/// }
+/// // Caller:
+/// const ctaBtn = Button('+', () => { showConnectionForm(); });
+/// ```
+///
+/// The lift:
+/// - allocates `@State contentView_<target_synth>: string = 'default'` on
+///   the page struct
+/// - runs the function body's mutations through `collect_mutations` with
+///   a synthetic condition `this.contentView_<target_synth> === '<view_id>'`
+/// - merges those into the main mutations map so the target's
+///   `emit_widget` produces a conditional `if (cond) { … }` branch
+/// - rewrites the closure call site to PREPEND a
+///   `perry/arkts.setContentView(target_synth, view_id)` call (the
+///   original call still runs to drive non-UI side effects)
+/// - on click: closure pushes `(target_synth, view_id)` to the runtime
+///   drain queue; ArkTS pumps via `drainContentViewUpdate` and assigns to
+///   `@State contentView_<target_synth>`; ArkUI re-renders, picking up
+///   the new branch.
+#[derive(Debug, Clone)]
+struct ViewBuilder {
+    /// Function id (matches `Function::id` in the HIR).
+    func_id: perry_types::FuncId,
+    /// Function name (used for the synth view id when sanitized).
+    func_name: String,
+    /// Module-level container LocalId that this function adds children to
+    /// via the terminal `widgetAddChild(LocalGet(target_id), X)` call.
+    target_id: LocalId,
+    /// Synth identifier for the target — `cv_<n>`. Stable across re-runs.
+    target_synth: String,
+    /// Synth view id for THIS function — sanitized function name. Used as
+    /// both the `@State contentView_<target_synth>` field's expected value
+    /// and the case-arm key in `applyContentViewUpdate`.
+    view_id: String,
+    /// Mutation group id used to keep this view's lifted addChild +
+    /// modifier mutations grouped together in `fold_child_mutations`.
+    group_id: u32,
+}
+
 /// Issue #408 — mutation tracking for procedurally-built UIs.
 ///
 /// Many Perry apps build their widget tree imperatively after construction:
@@ -138,6 +226,16 @@ enum Mutation {
     /// An untraceable / unsupported mutator shape — emit a comment when this
     /// fires so the user can see the gap.
     Comment(String),
+    /// Phase 2 v3.5 — leaf-mutator state binding for `widgetSetHidden`. When
+    /// pre-walk detects a `widgetSetHidden(target, _)` call inside ANY
+    /// function or closure body (i.e. the call fires at runtime, post-mount,
+    /// not during the static module init harvest), the target widget gets
+    /// a synth-id and the modifier `.visibility(this.hidden_<id> ? Hidden :
+    /// Visible)` is emitted instead of the static `.visibility(Visibility.X)`
+    /// the v0.5.480 module-init path produces. Closure-time calls then route
+    /// through a NAPI drain queue (`perry_arkts_set_visibility`) which
+    /// ArkTS pumps into the bound `@State hidden_<id>: boolean` field.
+    VisibilityBinding(String),
 }
 
 /// A recorded mutation plus its enclosing condition, if any.
@@ -201,6 +299,45 @@ pub fn emit_index_ets(module: &mut Module) -> Result<Option<HarvestResult>> {
     if !state_registry.is_empty() {
         rewrite_state_calls_in_stmts(&mut module.init, &state_registry);
     }
+    // Phase 2 v3.5 — leaf-mutator state binding for `widgetSetHidden`.
+    // Pre-walk the entire module (init + functions + closures) for any
+    // `widgetSetHidden(LocalGet(target), _)` call. Targets touched outside
+    // module.init earn a `VisibilityBinding`; their widget gets a bound
+    // `.visibility(this.hidden_<id> ? ...)` modifier and closure-time
+    // calls route through the NAPI drain queue at runtime. See
+    // `VisibilityBinding` doc for the full design.
+    let visibility_bindings = collect_visibility_bindings(module);
+    if !visibility_bindings.is_empty() {
+        // HIR rewrite: walk every `module.functions[*].body` and every
+        // closure body. `widgetSetHidden(LocalGet(target), value)` calls
+        // for a target with a binding get rewritten to
+        // `setVisibility(synth_id, value)`. Module.init is intentionally
+        // skipped — its `widgetSetHidden` calls are static-analyzed for
+        // the `@State` initial value via `collect_visibility_bindings`'
+        // pass 2 and don't need a runtime push at main()-time.
+        for f in module.functions.iter_mut() {
+            rewrite_set_hidden_calls_in_stmts(&mut f.body, &visibility_bindings);
+        }
+        rewrite_set_hidden_in_closures_in_stmts(&mut module.init, &visibility_bindings);
+    }
+    // Phase 2 v3.6 — view-builder lifting for tree-mutator functions.
+    // See `ViewBuilder` doc for the full design. Pre-walk identifies
+    // functions that are called from closures and build widget trees on
+    // a module-level container; their body's mutations get lifted as
+    // conditional branches keyed on `@State contentView_<target>`, and
+    // closure call sites get a `setContentView(target, view_id)` call
+    // prepended that pushes through the NAPI drain queue.
+    let mut view_builder_group_counter: u32 = 1_000_000; // start high to avoid collision with v0.5.480 collect_mutations group counter
+    let view_builders = collect_view_builders(module, &mut view_builder_group_counter);
+    if !view_builders.is_empty() {
+        // Inject `setContentView(target, view_id)` calls into every
+        // closure body that calls a view-builder function. This rewrite
+        // walks module.init's closures + every function's closures.
+        rewrite_view_builder_calls_in_stmts(&mut module.init, &view_builders);
+        for f in module.functions.iter_mut() {
+            rewrite_view_builder_calls_in_stmts(&mut f.body, &view_builders);
+        }
+    }
     // Issue #369 — detect `perry/media` usage (createPlayer / play / etc.)
     // anywhere in the module's init stmts or function bodies. When seen,
     // wrap_index_page injects a `@ohos.multimedia.media` import + a
@@ -249,7 +386,130 @@ pub fn emit_index_ets(module: &mut Module) -> Result<Option<HarvestResult>> {
     // Walks the inlined `analysis_init` so mutators inside user-function
     // bodies are seen too (e.g. Mango's `refreshConnectionList()` →
     // `widgetAddChild(connListContainer, welcomeCard)`).
-    let mutations = collect_mutations(&analysis_init, &bindings, &compile_time_consts);
+    let mut mutations = collect_mutations(&analysis_init, &bindings, &compile_time_consts);
+    // Phase 2 v3.5 — for any widget targeted by `widgetSetHidden` outside
+    // module init (closures, function bodies), upgrade its mutation list
+    // by (a) prepending a `Mutation::VisibilityBinding(synth_id)` entry
+    // (consumed by `emit_modifier_mutations` to emit the bound modifier),
+    // and (b) dropping any static `.visibility(Visibility.X)` entries that
+    // collect_mutations recorded from module-init `widgetSetHidden` calls
+    // (the @State init value handles those). The VisibilityBinding goes
+    // FIRST in the vec so the modifier-chain ordering remains stable.
+    if !visibility_bindings.is_empty() {
+        for (target_id, binding) in &visibility_bindings {
+            let entries = mutations.entry(*target_id).or_default();
+            entries.retain(|e| {
+                !matches!(&e.mutation,
+                    Mutation::Modifier(s) if s.starts_with(".visibility(Visibility."))
+            });
+            entries.insert(
+                0,
+                MutationEntry {
+                    mutation: Mutation::VisibilityBinding(binding.synth_id.clone()),
+                    condition: None,
+                },
+            );
+        }
+    }
+    // Phase 2 v3.6 — for each view-builder function, run collect_mutations
+    // on its body with a synthetic condition that gates emission on
+    // `this.contentView_<target_synth> === '<view_id>'`. The resulting
+    // conditional mutations get merged into the main mutations map so
+    // the target container's emit produces:
+    //
+    //     Column() {
+    //         <default content>            // unconditional from module init
+    //         if (this.contentView_X === 'Y') {
+    //             <lifted view body>       // from showConnectionForm
+    //         }
+    //     }
+    //
+    // Each ViewBuilder gets its own group_id so multiple views (e.g.
+    // showConnectionForm, showSettings) targeting the same container
+    // emit as separate `if` blocks rather than colliding.
+    //
+    // The function body's local `let X = VStack(...)` etc. need to be
+    // visible during emit so child references like `widgetAddChild(parent,
+    // X)` can resolve. We MERGE the function-body bindings into the
+    // main `bindings` map. Function-local LocalIds are unique per the
+    // perry-hir lowering pass, so collisions are not expected; if any
+    // arise, the function body's binding wins (consistent with
+    // collect_const_bindings' last-write-wins semantics).
+    let mut bindings = bindings;
+    if !view_builders.is_empty() {
+        // Build the function map needed by `expr_level_inline_pass` so
+        // helper calls like `makeLabel(...)` / `makeSecondary(...)`
+        // inside the view-builder body get inlined and their result
+        // expression substitutes the call. Without this, emit_widget
+        // hits `[unrecognized body]` for every helper-wrapped Text /
+        // Stack child.
+        let function_map_inline: HashMap<perry_types::FuncId, perry_hir::ir::Function> =
+            module.functions.iter().map(|f| (f.id, f.clone())).collect();
+        let function_lookup: HashMap<perry_types::FuncId, &perry_hir::ir::Function> =
+            module.functions.iter().map(|f| (f.id, f)).collect();
+        // Start view-builder Phase B remap counter ABOVE the highest
+        // LocalId already used by `analysis_init` (Phase A + B inlining
+        // for module.init). Without this, my view-builder body's
+        // remapped lets collide with analysis_init's remapped lets and
+        // bindings get clobbered (Mango: helper-call-from-init's
+        // inlined `let X = Text('Databases & Collections')` overwritten
+        // by view-builder's inlined `let X = Text('Explorer')` because
+        // both ended up at the same X).
+        let mut analysis_init_locals: Vec<u32> = Vec::new();
+        collect_local_ids_in_stmts(&analysis_init, &mut analysis_init_locals);
+        let analysis_init_max = analysis_init_locals.into_iter().max().unwrap_or(0);
+        let module_max = max_local_id_in_module(module);
+        let mut next_local: u32 = module_max.max(analysis_init_max).saturating_add(1);
+        for builder in &view_builders {
+            let Some(func) = function_lookup.get(&builder.func_id) else {
+                continue;
+            };
+            // Phase B inline pass on a CLONE of the view-builder's body
+            // so helper-function calls (`makeLabel(...)`) become
+            // resolvable LocalGet references with their let-init hoisted
+            // before the parent stmt. Same machinery as v0.5.491's
+            // module-init inlining, just applied per-function.
+            let mut inline_budget: usize = 256;
+            let body_clone: Vec<Stmt> = func.body.clone();
+            let body_bindings_pre = collect_const_bindings(&body_clone);
+            let inlined_body = expr_level_inline_pass(
+                body_clone,
+                &function_map_inline,
+                &body_bindings_pre,
+                &mut next_local,
+                &mut inline_budget,
+            );
+            // Build a synthetic enclosing condition. Re-use
+            // collect_mutations' if/else-walking machinery to splice
+            // the mutations into the right group + branch.
+            let cond_str = format!(
+                "this.contentView_{} === '{}'",
+                builder.target_synth, builder.view_id
+            );
+            let synthetic_cond = MutationCondition {
+                cond_str,
+                branch: Branch::Then,
+                group: builder.group_id,
+            };
+            let mut local_group_counter = builder.group_id + 1;
+            let view_bindings = collect_const_bindings(&inlined_body);
+            // Merge view-body bindings into the global map so emit_widget
+            // can resolve the conditional addChild's child references.
+            for (k, v) in &view_bindings {
+                bindings.entry(*k).or_insert_with(|| v.clone());
+            }
+            for stmt in &inlined_body {
+                collect_mutations_in_stmt(
+                    stmt,
+                    Some(synthetic_cond.clone()),
+                    &mut mutations,
+                    &mut local_group_counter,
+                    &view_bindings,
+                    &compile_time_consts,
+                );
+            }
+        }
+    }
     let Some(body_expr) = find_and_strip_app(&mut module.init, &classes) else {
         return Ok(None);
     };
@@ -271,7 +531,14 @@ pub fn emit_index_ets(module: &mut Module) -> Result<Option<HarvestResult>> {
         None,
     );
     Ok(Some(HarvestResult {
-        ets_source: wrap_index_page(&widget_arkui, &text_slots, &lazy_sources, uses_media),
+        ets_source: wrap_index_page(
+            &widget_arkui,
+            &text_slots,
+            &lazy_sources,
+            uses_media,
+            &visibility_bindings,
+            &view_builders,
+        ),
         callbacks,
     }))
 }
@@ -1010,6 +1277,1290 @@ fn collect_state_bindings(init: &[Stmt]) -> HashMap<LocalId, StateBinding> {
     map
 }
 
+/// Phase 2 v3.5 — pre-walk for `widgetSetHidden(LocalGet(target), _)` calls
+/// across the ENTIRE module (init + every function body + every closure body
+/// recursively). Targets that get touched in any non-init scope earn a
+/// `VisibilityBinding` with a synth-id; the harvest then emits a bound
+/// `.visibility(this.hidden_<id> ? Hidden : Visible)` modifier on the
+/// widget instead of the static `.visibility(Visibility.X)` it would
+/// otherwise produce, AND the closure-body call sites are HIR-rewritten to
+/// route through the NAPI drain queue.
+///
+/// Initial value: walks `module.init` only, picking the LAST literal
+/// `widgetSetHidden(target, V)` it finds. Latest-wins matches Mango's
+/// pattern where the file might call `widgetSetHidden(formContainer, 0)`
+/// then `widgetSetHidden(formContainer, 1)` at module-init top-level (the
+/// second is the actual initial state). Non-literal init values fall
+/// through to `false` (visible) — same default as widgets in general.
+fn collect_visibility_bindings(module: &Module) -> HashMap<LocalId, VisibilityBinding> {
+    let mut map: HashMap<LocalId, VisibilityBinding> = HashMap::new();
+    let mut counter: usize = 0;
+
+    // Pass 1 — discover all targets reached from runtime call paths only.
+    // Module-init TOP-LEVEL `widgetSetHidden(target, V)` calls stay static
+    // (the v0.5.480 collect_mutations path emits `.visibility(Visibility.X)`
+    // directly). A target earns a binding only when there's a call site
+    // that fires AT RUNTIME — i.e. inside a function body that's invoked
+    // post-mount, or inside a closure (anywhere). Module-init init-time
+    // calls are out of scope by design.
+    let mut targets: std::collections::BTreeSet<LocalId> = std::collections::BTreeSet::new();
+    walk_init_for_closure_targets(&module.init, &mut targets);
+    for f in &module.functions {
+        walk_for_set_hidden_targets_in_stmts(&f.body, &mut targets);
+    }
+
+    // Stable synth-id assignment by sorted LocalId (BTreeSet iteration is
+    // ordered) so re-running the harvest produces the same .ets bytes.
+    for target_id in &targets {
+        let synth_id = format!("vis_{}", counter);
+        counter += 1;
+        map.insert(
+            *target_id,
+            VisibilityBinding {
+                synth_id,
+                initial_hidden: false, // overwritten below if a literal init call is found
+            },
+        );
+    }
+
+    // Pass 2 — walk module.init only for initial value detection.
+    // Only top-level Stmt::Expr is considered; nested if/loop init values
+    // intentionally skip (the runtime branch only fires after main()
+    // returns control to ArkUI in the harvest model anyway).
+    for stmt in &module.init {
+        if let Stmt::Expr(e) = stmt {
+            if let Some((target_id, hide)) = extract_widget_set_hidden_literal(e) {
+                if let Some(binding) = map.get_mut(&target_id) {
+                    binding.initial_hidden = hide;
+                }
+            }
+        }
+    }
+
+    map
+}
+
+fn walk_for_set_hidden_targets_in_stmts(
+    stmts: &[Stmt],
+    out: &mut std::collections::BTreeSet<LocalId>,
+) {
+    for stmt in stmts {
+        walk_for_set_hidden_targets_in_stmt(stmt, out);
+    }
+}
+
+/// Variant for walking module.init: descends through nested control flow
+/// + sub-exprs WITHOUT recording any widgetSetHidden targets it sees at
+/// the outer scope, but when it encounters an `Expr::Closure`, switches
+/// to the unrestricted target-recording walker for the closure body. This
+/// is what makes "module-init top-level widgetSetHidden stays static" work
+/// while "widgetSetHidden inside an onClick closure earns a binding"
+/// also work — same module, different scope.
+fn walk_init_for_closure_targets(
+    stmts: &[Stmt],
+    out: &mut std::collections::BTreeSet<LocalId>,
+) {
+    for stmt in stmts {
+        walk_init_for_closure_targets_in_stmt(stmt, out);
+    }
+}
+
+fn walk_init_for_closure_targets_in_stmt(
+    stmt: &Stmt,
+    out: &mut std::collections::BTreeSet<LocalId>,
+) {
+    match stmt {
+        Stmt::Expr(e)
+        | Stmt::Let { init: Some(e), .. }
+        | Stmt::Return(Some(e)) => {
+            walk_init_for_closure_targets_in_expr(e, out);
+        }
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            walk_init_for_closure_targets_in_expr(condition, out);
+            walk_init_for_closure_targets(then_branch, out);
+            if let Some(eb) = else_branch {
+                walk_init_for_closure_targets(eb, out);
+            }
+        }
+        Stmt::While { condition, body, .. } | Stmt::DoWhile { body, condition, .. } => {
+            walk_init_for_closure_targets_in_expr(condition, out);
+            walk_init_for_closure_targets(body, out);
+        }
+        Stmt::For {
+            init,
+            condition,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                walk_init_for_closure_targets_in_stmt(i.as_ref(), out);
+            }
+            if let Some(c) = condition {
+                walk_init_for_closure_targets_in_expr(c, out);
+            }
+            if let Some(u) = update {
+                walk_init_for_closure_targets_in_expr(u, out);
+            }
+            walk_init_for_closure_targets(body, out);
+        }
+        _ => {}
+    }
+}
+
+fn walk_init_for_closure_targets_in_expr(
+    e: &Expr,
+    out: &mut std::collections::BTreeSet<LocalId>,
+) {
+    // The whole point: a Closure body switches to the unrestricted walker.
+    if let Expr::Closure { body, .. } = e {
+        walk_for_set_hidden_targets_in_stmts(body, out);
+        return;
+    }
+    // Otherwise descend without recording.
+    match e {
+        Expr::Call { callee, args, .. } => {
+            walk_init_for_closure_targets_in_expr(callee, out);
+            for a in args {
+                walk_init_for_closure_targets_in_expr(a, out);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                walk_init_for_closure_targets_in_expr(o, out);
+            }
+            for a in args {
+                walk_init_for_closure_targets_in_expr(a, out);
+            }
+        }
+        Expr::PropertyGet { object, .. } => {
+            walk_init_for_closure_targets_in_expr(object, out);
+        }
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            walk_init_for_closure_targets_in_expr(condition, out);
+            walk_init_for_closure_targets_in_expr(then_expr, out);
+            walk_init_for_closure_targets_in_expr(else_expr, out);
+        }
+        Expr::Binary { left, right, .. } | Expr::Logical { left, right, .. } => {
+            walk_init_for_closure_targets_in_expr(left, out);
+            walk_init_for_closure_targets_in_expr(right, out);
+        }
+        Expr::Unary { operand, .. } => {
+            walk_init_for_closure_targets_in_expr(operand, out);
+        }
+        Expr::Array(items) => {
+            for i in items {
+                walk_init_for_closure_targets_in_expr(i, out);
+            }
+        }
+        Expr::Object(props) => {
+            for (_, v) in props {
+                walk_init_for_closure_targets_in_expr(v, out);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args {
+                walk_init_for_closure_targets_in_expr(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn walk_for_set_hidden_targets_in_stmt(
+    stmt: &Stmt,
+    out: &mut std::collections::BTreeSet<LocalId>,
+) {
+    match stmt {
+        Stmt::Expr(e)
+        | Stmt::Let { init: Some(e), .. }
+        | Stmt::Return(Some(e)) => {
+            walk_for_set_hidden_targets_in_expr(e, out);
+        }
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            walk_for_set_hidden_targets_in_expr(condition, out);
+            walk_for_set_hidden_targets_in_stmts(then_branch, out);
+            if let Some(eb) = else_branch {
+                walk_for_set_hidden_targets_in_stmts(eb, out);
+            }
+        }
+        Stmt::While {
+            condition, body, ..
+        }
+        | Stmt::DoWhile {
+            body, condition, ..
+        } => {
+            walk_for_set_hidden_targets_in_expr(condition, out);
+            walk_for_set_hidden_targets_in_stmts(body, out);
+        }
+        Stmt::For {
+            init,
+            condition,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                walk_for_set_hidden_targets_in_stmt(i.as_ref(), out);
+            }
+            if let Some(c) = condition {
+                walk_for_set_hidden_targets_in_expr(c, out);
+            }
+            if let Some(u) = update {
+                walk_for_set_hidden_targets_in_expr(u, out);
+            }
+            walk_for_set_hidden_targets_in_stmts(body, out);
+        }
+        _ => {}
+    }
+}
+
+fn walk_for_set_hidden_targets_in_expr(
+    e: &Expr,
+    out: &mut std::collections::BTreeSet<LocalId>,
+) {
+    // Detect `widgetSetHidden(LocalGet(target), _)` shape first.
+    if let Some((target, _)) = extract_widget_set_hidden_literal(e)
+        .or_else(|| extract_widget_set_hidden_target(e))
+    {
+        out.insert(target);
+    }
+    // Recurse into all sub-expressions so closures, nested calls, etc.
+    // contribute their targets too.
+    match e {
+        Expr::Closure { body, .. } => {
+            walk_for_set_hidden_targets_in_stmts(body, out);
+        }
+        Expr::Call { callee, args, .. } => {
+            walk_for_set_hidden_targets_in_expr(callee, out);
+            for a in args {
+                walk_for_set_hidden_targets_in_expr(a, out);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                walk_for_set_hidden_targets_in_expr(o, out);
+            }
+            for a in args {
+                walk_for_set_hidden_targets_in_expr(a, out);
+            }
+        }
+        Expr::PropertyGet { object, .. } => {
+            walk_for_set_hidden_targets_in_expr(object, out);
+        }
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            walk_for_set_hidden_targets_in_expr(condition, out);
+            walk_for_set_hidden_targets_in_expr(then_expr, out);
+            walk_for_set_hidden_targets_in_expr(else_expr, out);
+        }
+        Expr::Binary { left, right, .. } | Expr::Logical { left, right, .. } => {
+            walk_for_set_hidden_targets_in_expr(left, out);
+            walk_for_set_hidden_targets_in_expr(right, out);
+        }
+        Expr::Unary { operand, .. } => {
+            walk_for_set_hidden_targets_in_expr(operand, out);
+        }
+        Expr::Array(items) => {
+            for i in items {
+                walk_for_set_hidden_targets_in_expr(i, out);
+            }
+        }
+        Expr::Object(props) => {
+            for (_, v) in props {
+                walk_for_set_hidden_targets_in_expr(v, out);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args {
+                walk_for_set_hidden_targets_in_expr(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recognize `widgetSetHidden(LocalGet(target), V)` where V is a literal,
+/// returning `(target_id, hide)`. Both the perry/ui native-method shape
+/// AND the bare-call shape from non-typed-import paths are accepted.
+fn extract_widget_set_hidden_literal(e: &Expr) -> Option<(LocalId, bool)> {
+    let (target, val) = extract_widget_set_hidden_call(e)?;
+    let hide = match val {
+        Expr::Bool(true) => true,
+        Expr::Bool(false) => false,
+        Expr::Number(n) => *n != 0.0,
+        Expr::Integer(n) => *n != 0,
+        _ => return None,
+    };
+    Some((target, hide))
+}
+
+/// Recognize `widgetSetHidden(LocalGet(target), _)` — target only, no
+/// requirement on the value being a literal. Used in target collection.
+fn extract_widget_set_hidden_target(e: &Expr) -> Option<(LocalId, bool)> {
+    let (target, _) = extract_widget_set_hidden_call(e)?;
+    Some((target, false))
+}
+
+/// Phase 2 v3.6 — pre-walk that returns one `ViewBuilder` per function
+/// matching the view-builder pattern: at least one
+/// `widgetAddChild(LocalGet(target), X)` call where `target` is a
+/// MODULE-LEVEL `let X = widget` declaration AND the function is invoked
+/// from at least one `Expr::Closure` body anywhere in the module.
+///
+/// Functions called only from `module.init` (e.g. Mango's
+/// `refreshConnectionList()` at the top-level) are EXCLUDED — they're
+/// already inlined by `inlined_analysis_init`'s Phase A and the result
+/// becomes module-init mutations directly. Lifting them as conditional
+/// branches would emit duplicate content.
+///
+/// Functions called from BOTH module-init AND closures are also excluded
+/// from this pass for now (the duplicate-emit hazard would require a
+/// more involved merge); they fall back to v0.5.489 inlining (renders
+/// the initial state but doesn't update on tap). Tracked as a follow-up.
+fn collect_view_builders(
+    module: &Module,
+    next_group_id: &mut u32,
+) -> Vec<ViewBuilder> {
+    use std::collections::HashSet;
+
+    // Pass 1 — collect every module-level `let X = ...` LocalId.
+    let mut module_level_locals: HashSet<LocalId> = HashSet::new();
+    for stmt in &module.init {
+        if let Stmt::Let { id, .. } = stmt {
+            module_level_locals.insert(*id);
+        }
+    }
+
+    // Pass 2 — collect every function's `widgetAddChild(LocalGet(id), _)`
+    // targets that are module-level. Pick the function's "primary target"
+    // as the first matching one (Mango's pattern is one terminal target
+    // per view-builder; multi-target view-builders aren't supported yet).
+    let mut primary_target: HashMap<perry_types::FuncId, LocalId> = HashMap::new();
+    for f in &module.functions {
+        if f.is_async || f.is_generator {
+            continue;
+        }
+        let mut found: Option<LocalId> = None;
+        scan_module_level_addchild(&f.body, &module_level_locals, &mut found);
+        if let Some(target) = found {
+            primary_target.insert(f.id, target);
+        }
+    }
+    if primary_target.is_empty() {
+        return Vec::new();
+    }
+
+    // Pass 3 — find functions called from any `Expr::Closure` body
+    // anywhere in the module (closures in module.init AND inside other
+    // function bodies). Calls inside top-level Stmts of module.init or
+    // function bodies that are NOT inside a closure don't count.
+    let mut called_from_closure: HashSet<perry_types::FuncId> = HashSet::new();
+    walk_for_funcref_calls_in_closures_in_stmts(&module.init, &mut called_from_closure);
+    for f in &module.functions {
+        walk_for_funcref_calls_in_closures_in_stmts(&f.body, &mut called_from_closure);
+    }
+
+    // Pass 4 — find functions called from module.init OR from a function
+    // that's itself called from module.init. Used to EXCLUDE module-init
+    // call paths from view-builder treatment (avoids duplicate emit).
+    let mut called_from_module_init: HashSet<perry_types::FuncId> = HashSet::new();
+    walk_for_funcref_calls_top_level_in_stmts(&module.init, &mut called_from_module_init);
+
+    // Pass 5 — assemble ViewBuilders. Stable target_synth assignment by
+    // sorted target LocalId so re-runs produce the same output.
+    let mut target_synth_for: HashMap<LocalId, String> = HashMap::new();
+    let mut next_target_synth: usize = 0;
+
+    let mut builders: Vec<ViewBuilder> = Vec::new();
+    let function_lookup: HashMap<perry_types::FuncId, &perry_hir::ir::Function> =
+        module.functions.iter().map(|f| (f.id, f)).collect();
+    let mut sorted_func_ids: Vec<perry_types::FuncId> = primary_target.keys().copied().collect();
+    sorted_func_ids.sort();
+    for func_id in sorted_func_ids {
+        if !called_from_closure.contains(&func_id) {
+            continue;
+        }
+        if called_from_module_init.contains(&func_id) {
+            // Mixed call sites — defer.
+            continue;
+        }
+        let target_id = primary_target[&func_id];
+        let target_synth = target_synth_for
+            .entry(target_id)
+            .or_insert_with(|| {
+                let synth = format!("cv_{}", next_target_synth);
+                next_target_synth += 1;
+                synth
+            })
+            .clone();
+        let func_name = function_lookup
+            .get(&func_id)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| format!("fn_{}", func_id));
+        let view_id = sanitize_view_id(&func_name);
+        let group_id = *next_group_id;
+        *next_group_id += 1;
+        builders.push(ViewBuilder {
+            func_id,
+            func_name: func_name.clone(),
+            target_id,
+            target_synth,
+            view_id,
+            group_id,
+        });
+    }
+    builders
+}
+
+fn sanitize_view_id(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("view");
+    }
+    out
+}
+
+fn scan_module_level_addchild(
+    stmts: &[Stmt],
+    module_locals: &std::collections::HashSet<LocalId>,
+    found: &mut Option<LocalId>,
+) {
+    for stmt in stmts {
+        scan_module_level_addchild_in_stmt(stmt, module_locals, found);
+    }
+}
+
+fn scan_module_level_addchild_in_stmt(
+    stmt: &Stmt,
+    module_locals: &std::collections::HashSet<LocalId>,
+    found: &mut Option<LocalId>,
+) {
+    if found.is_some() {
+        return;
+    }
+    match stmt {
+        Stmt::Expr(e)
+        | Stmt::Let { init: Some(e), .. }
+        | Stmt::Return(Some(e)) => {
+            scan_module_level_addchild_in_expr(e, module_locals, found);
+        }
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            scan_module_level_addchild(then_branch, module_locals, found);
+            if let Some(eb) = else_branch {
+                scan_module_level_addchild(eb, module_locals, found);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+            scan_module_level_addchild(body, module_locals, found);
+        }
+        Stmt::For { body, .. } => {
+            scan_module_level_addchild(body, module_locals, found);
+        }
+        _ => {}
+    }
+}
+
+fn scan_module_level_addchild_in_expr(
+    e: &Expr,
+    module_locals: &std::collections::HashSet<LocalId>,
+    found: &mut Option<LocalId>,
+) {
+    if found.is_some() {
+        return;
+    }
+    if let Expr::NativeMethodCall {
+        module,
+        method,
+        args,
+        object: None,
+        ..
+    } = e
+    {
+        if module == "perry/ui" && method == "widgetAddChild" && args.len() == 2 {
+            if let Expr::LocalGet(target_id) = &args[0] {
+                if module_locals.contains(target_id) {
+                    *found = Some(*target_id);
+                    return;
+                }
+            }
+        }
+    }
+    // Don't recurse into closures — only the outer function body counts
+    // for primary-target detection. (We will still handle the closure
+    // body separately if it contains a view-builder pattern.)
+    match e {
+        Expr::Call { callee, args, .. } => {
+            scan_module_level_addchild_in_expr(callee, module_locals, found);
+            for a in args {
+                scan_module_level_addchild_in_expr(a, module_locals, found);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                scan_module_level_addchild_in_expr(o, module_locals, found);
+            }
+            for a in args {
+                scan_module_level_addchild_in_expr(a, module_locals, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn walk_for_funcref_calls_in_closures_in_stmts(
+    stmts: &[Stmt],
+    out: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    for stmt in stmts {
+        walk_for_funcref_calls_in_closures_in_stmt(stmt, out);
+    }
+}
+
+fn walk_for_funcref_calls_in_closures_in_stmt(
+    stmt: &Stmt,
+    out: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    match stmt {
+        Stmt::Expr(e)
+        | Stmt::Let { init: Some(e), .. }
+        | Stmt::Return(Some(e)) => {
+            walk_for_funcref_calls_in_closures_in_expr(e, out);
+        }
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            walk_for_funcref_calls_in_closures_in_stmts(then_branch, out);
+            if let Some(eb) = else_branch {
+                walk_for_funcref_calls_in_closures_in_stmts(eb, out);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+            walk_for_funcref_calls_in_closures_in_stmts(body, out);
+        }
+        Stmt::For { body, .. } => {
+            walk_for_funcref_calls_in_closures_in_stmts(body, out);
+        }
+        _ => {}
+    }
+}
+
+fn walk_for_funcref_calls_in_closures_in_expr(
+    e: &Expr,
+    out: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    if let Expr::Closure { body, .. } = e {
+        walk_for_funcref_calls_in_body(body, out);
+        return;
+    }
+    match e {
+        Expr::Call { callee, args, .. } => {
+            walk_for_funcref_calls_in_closures_in_expr(callee, out);
+            for a in args {
+                walk_for_funcref_calls_in_closures_in_expr(a, out);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                walk_for_funcref_calls_in_closures_in_expr(o, out);
+            }
+            for a in args {
+                walk_for_funcref_calls_in_closures_in_expr(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Walks the body recording every `Expr::Call { callee: Expr::FuncRef(id) }`
+/// — the inverse of the outer "skip into closures" walker. Used to record
+/// which functions are called transitively inside a closure body.
+fn walk_for_funcref_calls_in_body(
+    stmts: &[Stmt],
+    out: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    for stmt in stmts {
+        walk_for_funcref_calls_in_body_stmt(stmt, out);
+    }
+}
+
+fn walk_for_funcref_calls_in_body_stmt(
+    stmt: &Stmt,
+    out: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    match stmt {
+        Stmt::Expr(e)
+        | Stmt::Let { init: Some(e), .. }
+        | Stmt::Return(Some(e)) => {
+            walk_for_funcref_calls_in_body_expr(e, out);
+        }
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            walk_for_funcref_calls_in_body(then_branch, out);
+            if let Some(eb) = else_branch {
+                walk_for_funcref_calls_in_body(eb, out);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+            walk_for_funcref_calls_in_body(body, out);
+        }
+        Stmt::For { body, .. } => {
+            walk_for_funcref_calls_in_body(body, out);
+        }
+        _ => {}
+    }
+}
+
+fn walk_for_funcref_calls_in_body_expr(
+    e: &Expr,
+    out: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    if let Expr::Call { callee, args, .. } = e {
+        if let Expr::FuncRef(id) = callee.as_ref() {
+            out.insert(*id);
+        }
+        walk_for_funcref_calls_in_body_expr(callee, out);
+        for a in args {
+            walk_for_funcref_calls_in_body_expr(a, out);
+        }
+        return;
+    }
+    match e {
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                walk_for_funcref_calls_in_body_expr(o, out);
+            }
+            for a in args {
+                walk_for_funcref_calls_in_body_expr(a, out);
+            }
+        }
+        Expr::Closure { body, .. } => {
+            walk_for_funcref_calls_in_body(body, out);
+        }
+        _ => {}
+    }
+}
+
+/// Variant that walks ONLY top-level Stmts (skips into closures and
+/// nested functions). Used to find functions called from module.init's
+/// top-level (Phase A inlining sees these and inlines them).
+fn walk_for_funcref_calls_top_level_in_stmts(
+    stmts: &[Stmt],
+    out: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    for stmt in stmts {
+        if let Stmt::Expr(e) = stmt {
+            if let Expr::Call { callee, .. } = e {
+                if let Expr::FuncRef(id) = callee.as_ref() {
+                    out.insert(*id);
+                }
+            }
+        }
+    }
+}
+
+/// Phase 2 v3.6 — rewrite every closure body's call to a view-builder
+/// function: prepend a `setContentView(target_synth, view_id)` call
+/// before the existing function call. The function call itself is left
+/// untouched so non-UI side effects (state assignments to module locals,
+/// etc.) continue to fire. Widget construction inside the function is
+/// no-op stubs on harmonyos so doesn't need stripping.
+fn rewrite_view_builder_calls_in_stmts(
+    stmts: &mut Vec<Stmt>,
+    builders: &[ViewBuilder],
+) {
+    if builders.is_empty() {
+        return;
+    }
+    let lookup: HashMap<perry_types::FuncId, &ViewBuilder> =
+        builders.iter().map(|b| (b.func_id, b)).collect();
+    rewrite_view_builder_calls_in_stmts_with_lookup(stmts, &lookup);
+}
+
+fn rewrite_view_builder_calls_in_stmts_with_lookup(
+    stmts: &mut Vec<Stmt>,
+    lookup: &HashMap<perry_types::FuncId, &ViewBuilder>,
+) {
+    let mut i = 0;
+    while i < stmts.len() {
+        rewrite_view_builder_calls_in_stmt(&mut stmts[i], lookup);
+        // After rewrite, the stmt's expr may have been wrapped — but we
+        // don't insert siblings here; the prepend happens INSIDE closures,
+        // not at the call's enclosing stmt level. (Top-level closure-call
+        // shape is `Stmt::Expr(Closure { body: vec![Stmt::Expr(Call(...))] })`,
+        // so the prepend lands inside the closure body.)
+        i += 1;
+    }
+}
+
+fn rewrite_view_builder_calls_in_stmt(
+    stmt: &mut Stmt,
+    lookup: &HashMap<perry_types::FuncId, &ViewBuilder>,
+) {
+    match stmt {
+        Stmt::Expr(e)
+        | Stmt::Return(Some(e)) => {
+            rewrite_view_builder_calls_in_expr(e, lookup);
+        }
+        Stmt::Let { init: Some(e), .. } => {
+            rewrite_view_builder_calls_in_expr(e, lookup);
+        }
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_view_builder_calls_in_expr(condition, lookup);
+            rewrite_view_builder_calls_in_stmts_with_lookup(then_branch, lookup);
+            if let Some(eb) = else_branch {
+                rewrite_view_builder_calls_in_stmts_with_lookup(eb, lookup);
+            }
+        }
+        Stmt::While {
+            condition, body, ..
+        }
+        | Stmt::DoWhile {
+            body, condition, ..
+        } => {
+            rewrite_view_builder_calls_in_expr(condition, lookup);
+            rewrite_view_builder_calls_in_stmts_with_lookup(body, lookup);
+        }
+        Stmt::For {
+            init,
+            condition,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                rewrite_view_builder_calls_in_stmt(i.as_mut(), lookup);
+            }
+            if let Some(c) = condition {
+                rewrite_view_builder_calls_in_expr(c, lookup);
+            }
+            if let Some(u) = update {
+                rewrite_view_builder_calls_in_expr(u, lookup);
+            }
+            rewrite_view_builder_calls_in_stmts_with_lookup(body, lookup);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_view_builder_calls_in_expr(
+    e: &mut Expr,
+    lookup: &HashMap<perry_types::FuncId, &ViewBuilder>,
+) {
+    // When we hit a closure: prepend a setContentView call for every
+    // view-builder funcref called inside the closure's body, then recurse
+    // into the body for any nested closures.
+    if let Expr::Closure { body, .. } = e {
+        // Collect all view-builder funcrefs called inside this closure.
+        let mut called_builders: Vec<&ViewBuilder> = Vec::new();
+        let mut seen: std::collections::HashSet<perry_types::FuncId> = std::collections::HashSet::new();
+        scan_closure_body_for_view_builder_calls(body, lookup, &mut called_builders, &mut seen);
+        if !called_builders.is_empty() {
+            // Prepend one setContentView call per unique view-builder
+            // (deduped by func_id). Order: stable by sorted target_synth
+            // so re-runs produce the same .ets bytes.
+            let mut sorted = called_builders.clone();
+            sorted.sort_by_key(|b| b.func_id);
+            let prepends: Vec<Stmt> = sorted
+                .iter()
+                .map(|b| {
+                    Stmt::Expr(Expr::NativeMethodCall {
+                        module: "perry/arkts".to_string(),
+                        class_name: None,
+                        object: None,
+                        method: "setContentView".to_string(),
+                        args: vec![
+                            Expr::String(b.target_synth.clone()),
+                            Expr::String(b.view_id.clone()),
+                        ],
+                    })
+                })
+                .collect();
+            let mut new_body = prepends;
+            new_body.extend(std::mem::take(body));
+            *body = new_body;
+        }
+        // Recurse into nested closures regardless.
+        rewrite_view_builder_calls_in_stmts_with_lookup(body, lookup);
+        return;
+    }
+    match e {
+        Expr::Call { callee, args, .. } => {
+            rewrite_view_builder_calls_in_expr(callee, lookup);
+            for a in args.iter_mut() {
+                rewrite_view_builder_calls_in_expr(a, lookup);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                rewrite_view_builder_calls_in_expr(o, lookup);
+            }
+            for a in args.iter_mut() {
+                rewrite_view_builder_calls_in_expr(a, lookup);
+            }
+        }
+        Expr::PropertyGet { object, .. } => {
+            rewrite_view_builder_calls_in_expr(object, lookup);
+        }
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            rewrite_view_builder_calls_in_expr(condition, lookup);
+            rewrite_view_builder_calls_in_expr(then_expr, lookup);
+            rewrite_view_builder_calls_in_expr(else_expr, lookup);
+        }
+        Expr::Binary { left, right, .. } | Expr::Logical { left, right, .. } => {
+            rewrite_view_builder_calls_in_expr(left, lookup);
+            rewrite_view_builder_calls_in_expr(right, lookup);
+        }
+        Expr::Unary { operand, .. } => {
+            rewrite_view_builder_calls_in_expr(operand, lookup);
+        }
+        Expr::Array(items) => {
+            for i in items.iter_mut() {
+                rewrite_view_builder_calls_in_expr(i, lookup);
+            }
+        }
+        Expr::Object(props) => {
+            for (_, v) in props.iter_mut() {
+                rewrite_view_builder_calls_in_expr(v, lookup);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args.iter_mut() {
+                rewrite_view_builder_calls_in_expr(a, lookup);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn scan_closure_body_for_view_builder_calls<'a>(
+    stmts: &[Stmt],
+    lookup: &HashMap<perry_types::FuncId, &'a ViewBuilder>,
+    out: &mut Vec<&'a ViewBuilder>,
+    seen: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    for stmt in stmts {
+        scan_closure_body_for_view_builder_calls_in_stmt(stmt, lookup, out, seen);
+    }
+}
+
+fn scan_closure_body_for_view_builder_calls_in_stmt<'a>(
+    stmt: &Stmt,
+    lookup: &HashMap<perry_types::FuncId, &'a ViewBuilder>,
+    out: &mut Vec<&'a ViewBuilder>,
+    seen: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    match stmt {
+        Stmt::Expr(e)
+        | Stmt::Return(Some(e)) => {
+            scan_closure_body_for_view_builder_calls_in_expr(e, lookup, out, seen);
+        }
+        Stmt::Let { init: Some(e), .. } => {
+            scan_closure_body_for_view_builder_calls_in_expr(e, lookup, out, seen);
+        }
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            scan_closure_body_for_view_builder_calls_in_expr(condition, lookup, out, seen);
+            scan_closure_body_for_view_builder_calls(then_branch, lookup, out, seen);
+            if let Some(eb) = else_branch {
+                scan_closure_body_for_view_builder_calls(eb, lookup, out, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn scan_closure_body_for_view_builder_calls_in_expr<'a>(
+    e: &Expr,
+    lookup: &HashMap<perry_types::FuncId, &'a ViewBuilder>,
+    out: &mut Vec<&'a ViewBuilder>,
+    seen: &mut std::collections::HashSet<perry_types::FuncId>,
+) {
+    // Don't recurse into nested closures — their setContentView prepend
+    // happens at their own level via `rewrite_view_builder_calls_in_expr`.
+    if matches!(e, Expr::Closure { .. }) {
+        return;
+    }
+    if let Expr::Call { callee, .. } = e {
+        if let Expr::FuncRef(id) = callee.as_ref() {
+            if let Some(b) = lookup.get(id) {
+                if seen.insert(*id) {
+                    out.push(*b);
+                }
+            }
+        }
+    }
+    match e {
+        Expr::Call { callee, args, .. } => {
+            scan_closure_body_for_view_builder_calls_in_expr(callee, lookup, out, seen);
+            for a in args {
+                scan_closure_body_for_view_builder_calls_in_expr(a, lookup, out, seen);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                scan_closure_body_for_view_builder_calls_in_expr(o, lookup, out, seen);
+            }
+            for a in args {
+                scan_closure_body_for_view_builder_calls_in_expr(a, lookup, out, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_widget_set_hidden_call(e: &Expr) -> Option<(LocalId, &Expr)> {
+    match e {
+        Expr::NativeMethodCall {
+            module,
+            method,
+            args,
+            object: None,
+            ..
+        } if module == "perry/ui" && method == "widgetSetHidden" && args.len() == 2 => {
+            if let Expr::LocalGet(id) = &args[0] {
+                return Some((*id, &args[1]));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Phase 2 v3.5 — rewrite every `widgetSetHidden(LocalGet(target), value)`
+/// call in `stmts` to a NAPI bridge call when target has a binding. The
+/// bridge call is shaped as `Expr::NativeMethodCall { module: "perry/arkts",
+/// method: "setVisibility", args: [String(synth_id), value] }`. The codegen
+/// dispatcher (`crates/perry-codegen/src/lower_call/native.rs`) recognizes
+/// this shape and lowers to the runtime FFI `perry_arkts_set_visibility`,
+/// which pushes the (id, hidden) tuple to a NAPI drain queue.
+fn rewrite_set_hidden_calls_in_stmts(
+    stmts: &mut Vec<Stmt>,
+    bindings: &HashMap<LocalId, VisibilityBinding>,
+) {
+    for stmt in stmts.iter_mut() {
+        rewrite_set_hidden_in_stmt(stmt, bindings);
+    }
+}
+
+fn rewrite_set_hidden_in_stmt(stmt: &mut Stmt, bindings: &HashMap<LocalId, VisibilityBinding>) {
+    match stmt {
+        Stmt::Expr(e) => rewrite_set_hidden_in_expr(e, bindings),
+        Stmt::Let { init: Some(e), .. } => rewrite_set_hidden_in_expr(e, bindings),
+        Stmt::Return(Some(e)) => rewrite_set_hidden_in_expr(e, bindings),
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_set_hidden_in_expr(condition, bindings);
+            rewrite_set_hidden_calls_in_stmts(then_branch, bindings);
+            if let Some(eb) = else_branch {
+                rewrite_set_hidden_calls_in_stmts(eb, bindings);
+            }
+        }
+        Stmt::While {
+            condition, body, ..
+        }
+        | Stmt::DoWhile {
+            body, condition, ..
+        } => {
+            rewrite_set_hidden_in_expr(condition, bindings);
+            rewrite_set_hidden_calls_in_stmts(body, bindings);
+        }
+        Stmt::For {
+            init,
+            condition,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                rewrite_set_hidden_in_stmt(i.as_mut(), bindings);
+            }
+            if let Some(c) = condition {
+                rewrite_set_hidden_in_expr(c, bindings);
+            }
+            if let Some(u) = update {
+                rewrite_set_hidden_in_expr(u, bindings);
+            }
+            rewrite_set_hidden_calls_in_stmts(body, bindings);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_set_hidden_in_expr(e: &mut Expr, bindings: &HashMap<LocalId, VisibilityBinding>) {
+    // Detect the rewrite target FIRST (most specific shape), before
+    // recursing into children — otherwise children of the call to
+    // rewrite would be visited as if they were in a regular call.
+    if let Expr::NativeMethodCall {
+        module,
+        method,
+        args,
+        object: None,
+        ..
+    } = e
+    {
+        if module == "perry/ui" && method == "widgetSetHidden" && args.len() == 2 {
+            if let Expr::LocalGet(target_id) = &args[0] {
+                if let Some(binding) = bindings.get(target_id) {
+                    // Coerce literal numbers/integers to bool so the runtime
+                    // side gets a proper boolean. Non-literal values pass
+                    // through and get coerced runtime-side via the same
+                    // js_jsvalue_to_string-style helper as setText.
+                    let hidden_arg = match &args[1] {
+                        Expr::Bool(b) => Expr::Bool(*b),
+                        Expr::Number(n) => Expr::Bool(*n != 0.0),
+                        Expr::Integer(n) => Expr::Bool(*n != 0),
+                        other => other.clone(),
+                    };
+                    *e = Expr::NativeMethodCall {
+                        module: "perry/arkts".to_string(),
+                        class_name: None,
+                        object: None,
+                        method: "setVisibility".to_string(),
+                        args: vec![Expr::String(binding.synth_id.clone()), hidden_arg],
+                    };
+                    return;
+                }
+            }
+        }
+    }
+    // Recurse into all sub-expressions so closures, nested calls, etc.
+    // get their setHidden calls rewritten too.
+    match e {
+        Expr::Closure { body, .. } => {
+            rewrite_set_hidden_calls_in_stmts(body, bindings);
+        }
+        Expr::Call { callee, args, .. } => {
+            rewrite_set_hidden_in_expr(callee, bindings);
+            for a in args.iter_mut() {
+                rewrite_set_hidden_in_expr(a, bindings);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                rewrite_set_hidden_in_expr(o, bindings);
+            }
+            for a in args.iter_mut() {
+                rewrite_set_hidden_in_expr(a, bindings);
+            }
+        }
+        Expr::PropertyGet { object, .. } => {
+            rewrite_set_hidden_in_expr(object, bindings);
+        }
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            rewrite_set_hidden_in_expr(condition, bindings);
+            rewrite_set_hidden_in_expr(then_expr, bindings);
+            rewrite_set_hidden_in_expr(else_expr, bindings);
+        }
+        Expr::Binary { left, right, .. } | Expr::Logical { left, right, .. } => {
+            rewrite_set_hidden_in_expr(left, bindings);
+            rewrite_set_hidden_in_expr(right, bindings);
+        }
+        Expr::Unary { operand, .. } => {
+            rewrite_set_hidden_in_expr(operand, bindings);
+        }
+        Expr::Array(items) => {
+            for i in items.iter_mut() {
+                rewrite_set_hidden_in_expr(i, bindings);
+            }
+        }
+        Expr::Object(props) => {
+            for (_, v) in props.iter_mut() {
+                rewrite_set_hidden_in_expr(v, bindings);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args.iter_mut() {
+                rewrite_set_hidden_in_expr(a, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Variant that ONLY recurses into closures inside module.init, leaving
+/// the top-level Stmts alone. Used when we want closure-body widgetSetHidden
+/// calls rewritten (so taps push to drain) but module-init top-level calls
+/// preserved (their initial value is captured statically by
+/// `collect_visibility_bindings` Pass 2).
+fn rewrite_set_hidden_in_closures_in_stmts(
+    stmts: &mut Vec<Stmt>,
+    bindings: &HashMap<LocalId, VisibilityBinding>,
+) {
+    for stmt in stmts.iter_mut() {
+        rewrite_set_hidden_in_closures_in_stmt(stmt, bindings);
+    }
+}
+
+fn rewrite_set_hidden_in_closures_in_stmt(
+    stmt: &mut Stmt,
+    bindings: &HashMap<LocalId, VisibilityBinding>,
+) {
+    match stmt {
+        Stmt::Expr(e) | Stmt::Return(Some(e)) => {
+            rewrite_set_hidden_in_closures_in_expr(e, bindings);
+        }
+        Stmt::Let { init: Some(e), .. } => {
+            rewrite_set_hidden_in_closures_in_expr(e, bindings);
+        }
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_set_hidden_in_closures_in_expr(condition, bindings);
+            rewrite_set_hidden_in_closures_in_stmts(then_branch, bindings);
+            if let Some(eb) = else_branch {
+                rewrite_set_hidden_in_closures_in_stmts(eb, bindings);
+            }
+        }
+        Stmt::While {
+            condition, body, ..
+        }
+        | Stmt::DoWhile {
+            body, condition, ..
+        } => {
+            rewrite_set_hidden_in_closures_in_expr(condition, bindings);
+            rewrite_set_hidden_in_closures_in_stmts(body, bindings);
+        }
+        Stmt::For {
+            init,
+            condition,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(i) = init {
+                rewrite_set_hidden_in_closures_in_stmt(i.as_mut(), bindings);
+            }
+            if let Some(c) = condition {
+                rewrite_set_hidden_in_closures_in_expr(c, bindings);
+            }
+            if let Some(u) = update {
+                rewrite_set_hidden_in_closures_in_expr(u, bindings);
+            }
+            rewrite_set_hidden_in_closures_in_stmts(body, bindings);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_set_hidden_in_closures_in_expr(
+    e: &mut Expr,
+    bindings: &HashMap<LocalId, VisibilityBinding>,
+) {
+    // When we hit a closure, its body IS the call site — recurse there
+    // with the full rewriter (which treats every level as a target).
+    if let Expr::Closure { body, .. } = e {
+        rewrite_set_hidden_calls_in_stmts(body, bindings);
+        return;
+    }
+    // Otherwise descend into sub-exprs without rewriting top-level
+    // widgetSetHidden calls.
+    match e {
+        Expr::Call { callee, args, .. } => {
+            rewrite_set_hidden_in_closures_in_expr(callee, bindings);
+            for a in args.iter_mut() {
+                rewrite_set_hidden_in_closures_in_expr(a, bindings);
+            }
+        }
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(o) = object {
+                rewrite_set_hidden_in_closures_in_expr(o, bindings);
+            }
+            for a in args.iter_mut() {
+                rewrite_set_hidden_in_closures_in_expr(a, bindings);
+            }
+        }
+        Expr::PropertyGet { object, .. } => {
+            rewrite_set_hidden_in_closures_in_expr(object, bindings);
+        }
+        Expr::Conditional {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            rewrite_set_hidden_in_closures_in_expr(condition, bindings);
+            rewrite_set_hidden_in_closures_in_expr(then_expr, bindings);
+            rewrite_set_hidden_in_closures_in_expr(else_expr, bindings);
+        }
+        Expr::Binary { left, right, .. } | Expr::Logical { left, right, .. } => {
+            rewrite_set_hidden_in_closures_in_expr(left, bindings);
+            rewrite_set_hidden_in_closures_in_expr(right, bindings);
+        }
+        Expr::Unary { operand, .. } => {
+            rewrite_set_hidden_in_closures_in_expr(operand, bindings);
+        }
+        Expr::Array(items) => {
+            for i in items.iter_mut() {
+                rewrite_set_hidden_in_closures_in_expr(i, bindings);
+            }
+        }
+        Expr::Object(props) => {
+            for (_, v) in props.iter_mut() {
+                rewrite_set_hidden_in_closures_in_expr(v, bindings);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args.iter_mut() {
+                rewrite_set_hidden_in_closures_in_expr(a, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Issue #408 — pre-walk for `widgetAddChild` / `scrollviewSetChild` /
 /// `setPadding` / `setCornerRadius` / `widgetSet*` etc. mutator calls.
 /// Walks every top-level statement (and into if/else branches) recording
@@ -1345,6 +2896,17 @@ fn collect_mutations_in_expr(
             );
         }
         "widgetSetHidden" => {
+            // Phase 2 v3.5 — if pre-seeded with a VisibilityBinding for this
+            // target, the widget is bound to a `@State hidden_<id>` field
+            // and the modifier comes via the binding's `Mutation::VisibilityBinding`
+            // entry. Skip the static modifier emit so we don't double-bind.
+            let has_binding = out
+                .get(&target_id)
+                .map(|v| v.iter().any(|e| matches!(e.mutation, Mutation::VisibilityBinding(_))))
+                .unwrap_or(false);
+            if has_binding {
+                return;
+            }
             // Truthy second arg → Hidden, falsy → Visible.
             let hide = match args.get(1) {
                 Some(Expr::Bool(true)) => true,
@@ -2836,6 +4398,19 @@ fn emit_modifier_mutations(muts: &[MutationEntry]) -> String {
                 let safe = sanitize_for_block_comment(c);
                 out.push_str(&format!(" /* {} */", safe));
             }
+            // Phase 2 v3.5 — leaf-mutator binding for `widgetSetHidden`.
+            // Emits `.visibility(this.hidden_<id> ? Visibility.Hidden :
+            // Visibility.Visible)` so ArkUI re-renders the widget when
+            // ArkTS pumps the runtime drain queue and flips the
+            // `@State hidden_<id>` field. Conditional bindings are not
+            // expected (the binding is a single emit per widget), so we
+            // ignore the condition here.
+            Mutation::VisibilityBinding(synth_id) => {
+                out.push_str(&format!(
+                    ".visibility(this.hidden_{id} ? Visibility.Hidden : Visibility.Visible)",
+                    id = synth_id
+                ));
+            }
             // Structural mutations are handled by the per-widget emitters.
             Mutation::AddChild(_) | Mutation::ClearChildren | Mutation::SetScrollChild(_) => {}
         }
@@ -3713,10 +5288,11 @@ fn emit_button(args: &[Expr], callbacks: &mut Vec<Expr>) -> String {
     )
 }
 
-/// Three-pass drain after a closure body returns. Used by Button.onClick
+/// Multi-pass drain after a closure body returns. Used by Button.onClick
 /// (Phase 2 v2) and Toggle/TextField/Slider.onChange (v2.5):
 ///   1. drainToast loop → promptAction.showToast({message})
 ///   2. drainTextUpdate loop → this.applyTextUpdate(id, value)
+///   3. drainVisibilityUpdate loop → this.applyVisibilityUpdate(id, hidden)  [v3.5]
 /// `invokeCallback` itself is emitted by the caller because it varies
 /// (callN with N-arg widgets, plus ArkUI's per-widget onChange shape).
 fn drain_loop_body() -> String {
@@ -3729,6 +5305,16 @@ fn drain_loop_body() -> String {
      while (__u !== undefined) { \
      this.applyTextUpdate(__u.id, __u.value); \
      __u = perryEntry.drainTextUpdate(); \
+     }\n    \
+     let __v = perryEntry.drainVisibilityUpdate();\n    \
+     while (__v !== undefined) { \
+     this.applyVisibilityUpdate(__v.id, __v.hidden); \
+     __v = perryEntry.drainVisibilityUpdate(); \
+     }\n    \
+     let __c = perryEntry.drainContentViewUpdate();\n    \
+     while (__c !== undefined) { \
+     this.applyContentViewUpdate(__c.id, __c.view); \
+     __c = perryEntry.drainContentViewUpdate(); \
      }\n  "
         .to_string()
 }
@@ -4875,6 +6461,8 @@ fn wrap_index_page(
     text_slots: &[TextSlot],
     lazy_sources: &[LazyDataSource],
     uses_media: bool,
+    visibility_bindings: &HashMap<LocalId, VisibilityBinding>,
+    view_builders: &[ViewBuilder],
 ) -> String {
     let indented = widget_body
         .lines()
@@ -4950,6 +6538,88 @@ class PerryListDataSource implements IDataSource {\n\
         arms = switch_arms
     );
 
+    // Phase 2 v3.5 — `@State hidden_<id>: boolean = <initial>` declarations
+    // and applyVisibilityUpdate switch method. Iteration order is the
+    // BTreeSet ordering from `collect_visibility_bindings` so the emitted
+    // bytes are stable across re-runs.
+    let mut sorted_visibility: Vec<(&LocalId, &VisibilityBinding)> =
+        visibility_bindings.iter().collect();
+    sorted_visibility.sort_by_key(|(id, _)| **id);
+    let visibility_decls: String = sorted_visibility
+        .iter()
+        .map(|(_, binding)| {
+            format!(
+                "    @State hidden_{}: boolean = {};\n",
+                binding.synth_id, binding.initial_hidden
+            )
+        })
+        .collect();
+    let visibility_arms: String = sorted_visibility
+        .iter()
+        .map(|(_, binding)| {
+            format!(
+                "            case {}: this.hidden_{} = hidden; break;\n",
+                arkts_string_lit(&binding.synth_id),
+                binding.synth_id
+            )
+        })
+        .collect();
+    let apply_visibility_method = format!(
+        "    applyVisibilityUpdate(id: string, hidden: boolean): void {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20switch (id) {{\n\
+         {arms}\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20default: break;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20}}\n",
+        arms = visibility_arms
+    );
+
+    // Phase 2 v3.6 — `@State contentView_<target_synth>: string = 'default'`
+    // declarations. One per UNIQUE target_synth (multiple view-builders
+    // for the same target share the same @State). 'default' as the empty
+    // initial value matches the `if (this.contentView_X === 'Y')`
+    // condition: at startup, no view is active, so the lifted branches
+    // don't render — the unconditional default content from module init
+    // shows.
+    let mut content_view_targets: std::collections::BTreeMap<String, ()> = std::collections::BTreeMap::new();
+    for b in view_builders {
+        content_view_targets.insert(b.target_synth.clone(), ());
+    }
+    let content_view_decls: String = content_view_targets
+        .keys()
+        .map(|target_synth| {
+            format!(
+                "    @State contentView_{}: string = 'default';\n",
+                target_synth
+            )
+        })
+        .collect();
+    // applyContentViewUpdate switch: matches by target_synth and
+    // assigns view_id to the corresponding @State field. Always emit
+    // the method even with zero builders so the auto-emitted onClick
+    // body's call resolves at ArkTS compile time.
+    let mut sorted_targets: Vec<&String> = content_view_targets.keys().collect();
+    sorted_targets.sort();
+    let content_view_arms: String = sorted_targets
+        .iter()
+        .map(|target_synth| {
+            format!(
+                "            case {}: this.contentView_{} = view; break;\n",
+                arkts_string_lit(target_synth),
+                target_synth
+            )
+        })
+        .collect();
+    let apply_content_view_method = format!(
+        "    applyContentViewUpdate(id: string, view: string): void {{\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20switch (id) {{\n\
+         {arms}\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20default: break;\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}}\n\
+         \x20\x20\x20\x20}}\n",
+        arms = content_view_arms
+    );
+
     // Issue #369 — perry/media drain glue. Emitted only when the harvest
     // walker saw any `perry/media` NativeMethodCall in the module. The
     // pump runs on the ArkTS UI thread (setInterval is bound to the
@@ -4978,9 +6648,13 @@ class PerryListDataSource implements IDataSource {\n\
          @Component\n\
          struct Index {{\n\
          {states}\
+         {visibility_decls}\
+         {content_view_decls}\
          {lazy_decls}\
          {media_decls}\
          {apply}\
+         {apply_visibility}\
+         {apply_content_view}\
          {media_methods}\
          \x20\x20\x20\x20build() {{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20Column() {{\n\
@@ -4993,9 +6667,13 @@ class PerryListDataSource implements IDataSource {\n\
          \x20\x20\x20\x20}}\n\
          }}\n",
         states = state_decls,
+        visibility_decls = visibility_decls,
+        content_view_decls = content_view_decls,
         lazy_class = lazy_class,
         lazy_decls = lazy_decls,
         apply = apply_method,
+        apply_visibility = apply_visibility_method,
+        apply_content_view = apply_content_view_method,
         body = indented,
         media_imports = media_imports,
         media_decls = media_decls,
@@ -6985,6 +8663,113 @@ mod tests {
             "missing hidden modifier:\n{}",
             r.ets_source
         );
+    }
+
+    /// Phase 2 v3.5 — `widgetSetHidden` from a Button onClick closure
+    /// triggers a `@State hidden_<id>` binding + `.visibility(...)` bound
+    /// modifier. Mango's "+ New Connection" tap pattern.
+    #[test]
+    fn phase2_v35_widget_set_hidden_in_closure_emits_state_binding() {
+        let mut m = empty_module();
+        let target_id: LocalId = 100;
+        // const formContainer = VStack(0, []);
+        m.init.push(let_widget(
+            target_id,
+            "formContainer",
+            nmc("VStack", vec![Expr::Number(0.0), Expr::Array(vec![])]),
+        ));
+        // widgetSetHidden(formContainer, 1);  // module-init initial = hidden
+        m.init.push(mutator_stmt(
+            "widgetSetHidden",
+            vec![Expr::LocalGet(target_id), Expr::Number(1.0)],
+        ));
+        // App({body: VStack(0, [Button("Open", () => widgetSetHidden(formContainer, 0)),
+        //                       formContainer])})
+        let body_id: LocalId = 101;
+        let onclick = Expr::Closure {
+            func_id: 0,
+            params: vec![],
+            return_type: perry_types::Type::Any,
+            body: vec![mutator_stmt(
+                "widgetSetHidden",
+                vec![Expr::LocalGet(target_id), Expr::Number(0.0)],
+            )],
+            captures: vec![],
+            mutable_captures: vec![],
+            captures_this: false,
+            enclosing_class: None,
+            is_async: false,
+        };
+        m.init.push(let_widget(
+            body_id,
+            "rootBody",
+            nmc(
+                "VStack",
+                vec![
+                    Expr::Number(0.0),
+                    Expr::Array(vec![
+                        nmc("Button", vec![Expr::String("Open".to_string()), onclick]),
+                        Expr::LocalGet(target_id),
+                    ]),
+                ],
+            ),
+        ));
+        m.init.push(app_with_body(Expr::LocalGet(body_id)));
+        let r = emit_index_ets(&mut m).unwrap().unwrap();
+        // @State decl emitted with module-init initial value (hidden=true).
+        assert!(
+            r.ets_source.contains("@State hidden_vis_0: boolean = true;"),
+            "missing @State hidden_vis_0 decl:\n{}",
+            r.ets_source
+        );
+        // applyVisibilityUpdate switch arm.
+        assert!(
+            r.ets_source
+                .contains("case 'vis_0': this.hidden_vis_0 = hidden; break;"),
+            "missing applyVisibilityUpdate arm for vis_0:\n{}",
+            r.ets_source
+        );
+        // Bound modifier on the widget itself.
+        assert!(
+            r.ets_source
+                .contains(".visibility(this.hidden_vis_0 ? Visibility.Hidden : Visibility.Visible)"),
+            "missing bound .visibility modifier:\n{}",
+            r.ets_source
+        );
+        // No static .visibility(Visibility.Hidden) — that path is replaced
+        // by the binding when binding is in effect.
+        assert!(
+            !r.ets_source.contains(".visibility(Visibility.Hidden)"),
+            "static visibility modifier should be replaced by binding:\n{}",
+            r.ets_source
+        );
+        // Drain pump for the visibility queue lives in the onClick body.
+        assert!(
+            r.ets_source.contains("perryEntry.drainVisibilityUpdate"),
+            "missing drainVisibilityUpdate in onClick:\n{}",
+            r.ets_source
+        );
+        // Closure-time call rewritten to setVisibility.
+        // (Indirectly verified by its absence as a static `widgetSetHidden`
+        // call inside the closure body in the harvested HIR — the rewrite
+        // happened in-place. We check the registered closure has had its
+        // body modified by inspecting the harvest result's callbacks.)
+        assert_eq!(r.callbacks.len(), 1, "expected one harvested closure");
+        let cb = &r.callbacks[0];
+        if let Expr::Closure { body, .. } = cb {
+            // The rewritten closure body should contain a setVisibility
+            // NativeMethodCall on perry/arkts (not the original
+            // widgetSetHidden on perry/ui).
+            let stmt0 = &body[0];
+            if let Stmt::Expr(Expr::NativeMethodCall { module, method, .. }) = stmt0 {
+                assert_eq!(module, "perry/arkts", "module not rewritten:\n{:?}", stmt0);
+                assert_eq!(method, "setVisibility", "method not rewritten:\n{:?}", stmt0);
+            } else {
+                panic!("closure body[0] not a NativeMethodCall: {:?}", stmt0);
+            }
+        } else {
+            panic!("callback[0] not a Closure: {:?}", cb);
+        }
     }
 
     #[test]

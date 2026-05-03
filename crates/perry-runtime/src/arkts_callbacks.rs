@@ -231,6 +231,8 @@ pub fn arkts_callbacks_root_scanner(mark: &mut dyn FnMut(f64)) {
 
 static PENDING_TOASTS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static PENDING_TEXT_UPDATES: Mutex<VecDeque<(String, String)>> = Mutex::new(VecDeque::new());
+static PENDING_VISIBILITY_UPDATES: Mutex<VecDeque<(String, bool)>> = Mutex::new(VecDeque::new());
+static PENDING_CONTENT_VIEW_UPDATES: Mutex<VecDeque<(String, String)>> = Mutex::new(VecDeque::new());
 
 /// Decode a NaN-boxed JS value to a Rust String via the StringHeader
 /// payload-after-header layout. Used by both showToast and setText for
@@ -296,6 +298,80 @@ pub(crate) fn pop_text_update() -> Option<(String, String)> {
         arkts_log(&format!(
             "drain_text_update emitting id={:?} val={:?}",
             id, val
+        ));
+    }
+    popped
+}
+
+/// Phase 2 v3.5: queue a (id, hidden) visibility update for the next
+/// drain pass. The auto-emitted .ets onClick consumes these via
+/// `drainVisibilityUpdate()` and assigns to the matching
+/// `@State hidden_<id>: boolean`.
+///
+/// `id_handle` is a NaN-boxed JS string (the synth-id assigned by the
+/// harvest, e.g. `"vis_0"`). `hidden_d` is a NaN-boxed JS boolean: TAG_TRUE
+/// (=hidden) or TAG_FALSE (=visible). The codegen-arkts rewrite emits
+/// `setVisibility(synth_id, true|false)` so the boolean tags arrive at
+/// this entry verbatim. Non-boolean / non-truthy values fall back to the
+/// `js_is_truthy` runtime helper for the same coerce-to-bool semantics
+/// as `if (value)`.
+#[no_mangle]
+pub extern "C" fn perry_arkts_set_visibility(id_handle: f64, hidden_d: f64) {
+    let id = decode_jsvalue_string(id_handle);
+    let hidden = crate::value::js_is_truthy(hidden_d) != 0;
+    arkts_log(&format!(
+        "set_visibility queued id={:?} hidden={}",
+        id, hidden
+    ));
+    if let Ok(mut q) = PENDING_VISIBILITY_UPDATES.lock() {
+        q.push_back((id, hidden));
+    }
+}
+
+/// Pop the oldest (id, hidden) visibility update from the queue. Returns
+/// `Some((id, hidden))` if any, `None` if empty. Direct Rust-string +
+/// bool pop — no Perry-runtime object roundtrip — so the NAPI handler in
+/// `ohos_napi.rs` builds a JS object from raw values.
+pub(crate) fn pop_visibility_update() -> Option<(String, bool)> {
+    let popped = PENDING_VISIBILITY_UPDATES.lock().ok()?.pop_front();
+    if let Some((id, hidden)) = &popped {
+        arkts_log(&format!(
+            "drain_visibility_update emitting id={:?} hidden={}",
+            id, hidden
+        ));
+    }
+    popped
+}
+
+/// Phase 2 v3.6: queue a (target_synth, view_id) content-view update for
+/// the next drain pass. The auto-emitted .ets onClick consumes these via
+/// `drainContentViewUpdate()` and assigns to the matching
+/// `@State contentView_<target_synth>: string` so the lifted view-builder
+/// branch in `build()` switches to that view's content.
+///
+/// Both args are NaN-boxed JS strings; coerced to Rust Strings via
+/// `js_jsvalue_to_string`.
+#[no_mangle]
+pub extern "C" fn perry_arkts_set_content_view(target_handle: f64, view_handle: f64) {
+    let target = decode_jsvalue_string(target_handle);
+    let view = decode_jsvalue_string(view_handle);
+    arkts_log(&format!(
+        "set_content_view queued target={:?} view={:?}",
+        target, view
+    ));
+    if let Ok(mut q) = PENDING_CONTENT_VIEW_UPDATES.lock() {
+        q.push_back((target, view));
+    }
+}
+
+/// Pop the oldest (target_synth, view_id) content-view update from the
+/// queue. Returns `Some((target, view))` if any, `None` if empty.
+pub(crate) fn pop_content_view_update() -> Option<(String, String)> {
+    let popped = PENDING_CONTENT_VIEW_UPDATES.lock().ok()?.pop_front();
+    if let Some((id, view)) = &popped {
+        arkts_log(&format!(
+            "drain_content_view_update emitting id={:?} view={:?}",
+            id, view
         ));
     }
     popped

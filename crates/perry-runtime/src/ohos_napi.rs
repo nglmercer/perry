@@ -113,6 +113,11 @@ extern "C" {
         bufsize: usize,
         result: *mut usize,
     ) -> NapiStatus;
+    pub fn napi_get_boolean(
+        env: *mut NapiEnv,
+        value: bool,
+        result: *mut *mut NapiValue,
+    ) -> NapiStatus;
 }
 
 // Perry's compiled entry. The TypeScript compiler always emits `main`
@@ -236,6 +241,66 @@ unsafe extern "C" fn drain_text_update(
     let _ = napi_create_object(env, &mut obj);
     let _ = napi_set_named_property(env, obj, b"id\0".as_ptr() as *const c_char, id_napi);
     let _ = napi_set_named_property(env, obj, b"value\0".as_ptr() as *const c_char, val_napi);
+    obj
+}
+
+// Phase 2 v3.5: drain handler for the visibility-update queue.
+// `crates/perry-codegen-arkts/src/lib.rs::wrap_index_page` emits a drain
+// loop in every onClick body; this handler is what `drainVisibilityUpdate`
+// in the .ets file resolves to. Returns `{id: string, hidden: boolean}`
+// or `undefined` when the queue is empty.
+unsafe extern "C" fn drain_visibility_update(
+    env: *mut NapiEnv,
+    _info: *mut NapiCallbackInfo,
+) -> *mut NapiValue {
+    let Some((id, hidden)) = crate::arkts_callbacks::pop_visibility_update() else {
+        let mut undef: *mut NapiValue = ptr::null_mut();
+        let _ = napi_get_undefined(env, &mut undef);
+        return undef;
+    };
+    let mut id_napi: *mut NapiValue = ptr::null_mut();
+    let _ = napi_create_string_utf8(env, id.as_ptr() as *const c_char, id.len(), &mut id_napi);
+    let mut hidden_napi: *mut NapiValue = ptr::null_mut();
+    let _ = napi_get_boolean(env, hidden, &mut hidden_napi);
+    let mut obj: *mut NapiValue = ptr::null_mut();
+    let _ = napi_create_object(env, &mut obj);
+    let _ = napi_set_named_property(env, obj, b"id\0".as_ptr() as *const c_char, id_napi);
+    let _ = napi_set_named_property(
+        env,
+        obj,
+        b"hidden\0".as_ptr() as *const c_char,
+        hidden_napi,
+    );
+    obj
+}
+
+// Phase 2 v3.6: drain handler for the content-view-update queue.
+// `crates/perry-codegen-arkts/src/lib.rs::wrap_index_page` emits a drain
+// loop in every onClick body; this handler is what `drainContentViewUpdate`
+// in the .ets file resolves to. Returns `{id: string, view: string}`
+// (target_synth + view_id) or `undefined` when the queue is empty.
+unsafe extern "C" fn drain_content_view_update(
+    env: *mut NapiEnv,
+    _info: *mut NapiCallbackInfo,
+) -> *mut NapiValue {
+    let Some((id, view)) = crate::arkts_callbacks::pop_content_view_update() else {
+        let mut undef: *mut NapiValue = ptr::null_mut();
+        let _ = napi_get_undefined(env, &mut undef);
+        return undef;
+    };
+    let mut id_napi: *mut NapiValue = ptr::null_mut();
+    let _ = napi_create_string_utf8(env, id.as_ptr() as *const c_char, id.len(), &mut id_napi);
+    let mut view_napi: *mut NapiValue = ptr::null_mut();
+    let _ = napi_create_string_utf8(
+        env,
+        view.as_ptr() as *const c_char,
+        view.len(),
+        &mut view_napi,
+    );
+    let mut obj: *mut NapiValue = ptr::null_mut();
+    let _ = napi_create_object(env, &mut obj);
+    let _ = napi_set_named_property(env, obj, b"id\0".as_ptr() as *const c_char, id_napi);
+    let _ = napi_set_named_property(env, obj, b"view\0".as_ptr() as *const c_char, view_napi);
     obj
 }
 
@@ -609,6 +674,34 @@ unsafe extern "C" fn napi_init(env: *mut NapiEnv, exports: *mut NapiValue) -> *m
         &mut dtu_fn,
     );
     let _ = napi_set_named_property(env, exports, dtu_name.as_ptr() as *const c_char, dtu_fn);
+
+    // drainVisibilityUpdate(): pop one queued (id, hidden) visibility
+    // update. Phase 2 v3.5 — leaf-mutator binding for `widgetSetHidden`.
+    let dvu_name = b"drainVisibilityUpdate\0";
+    let mut dvu_fn: *mut NapiValue = ptr::null_mut();
+    let _ = napi_create_function(
+        env,
+        dvu_name.as_ptr() as *const c_char,
+        21,
+        drain_visibility_update,
+        ptr::null_mut(),
+        &mut dvu_fn,
+    );
+    let _ = napi_set_named_property(env, exports, dvu_name.as_ptr() as *const c_char, dvu_fn);
+
+    // drainContentViewUpdate(): pop one queued (target_synth, view_id)
+    // content-view update. Phase 2 v3.6 — view-builder lifting.
+    let dcv_name = b"drainContentViewUpdate\0";
+    let mut dcv_fn: *mut NapiValue = ptr::null_mut();
+    let _ = napi_create_function(
+        env,
+        dcv_name.as_ptr() as *const c_char,
+        22,
+        drain_content_view_update,
+        ptr::null_mut(),
+        &mut dcv_fn,
+    );
+    let _ = napi_set_named_property(env, exports, dcv_name.as_ptr() as *const c_char, dcv_fn);
 
     // invokeCallback1(idx, value): dispatch a registered closure with
     // one value arg (Phase 2 v2.5 — Toggle/TextField/Slider onChange).
