@@ -1010,12 +1010,38 @@ pub unsafe extern "C" fn js_json_parse(text_ptr: *const StringHeader) -> JSValue
     // unaudited code path on the lazy side). `PERRY_JSON_TAPE=1`
     // forces tape for every parse including small ones (useful for
     // testing). Any other value is treated as "auto" (the default).
+    // Lazy parse is a win on workloads that touch only a subset of
+    // a parsed top-level array — the tape build cost is ~one-shot
+    // O(n) but each unread element saves the full subtree
+    // materialization. For workloads that iterate the whole array
+    // (the canonical "filter all records, stringify the result"
+    // shape — `benchmarks/honest_bench/workloads/1_json_pipeline`
+    // for example), lazy is strictly slower than direct: tape walk
+    // + sparse-cache management on every access plus a forced
+    // materialize at the end is more work than the direct parser's
+    // single tree build. The cumulative walk-steps trigger in
+    // `lazy_get` only catches *random* access, not sequential.
+    //
+    // The auto-mode size window: lazy fires above 1 KB (small
+    // parses don't pay the tape build) and below 16 MB (large
+    // blobs are dominated by the iterate-all idiom in practice —
+    // 108 MB honest_bench full fixture, server log dumps, dataset
+    // ETL — and the direct parser's tree-build is faster end-to-
+    // end than tape + materialize). The upper bound was tuned
+    // against the honest_bench small (21 KB → lazy, 7-10 ms) and
+    // full (108 MB → direct, ~3.3 s) fixtures; intermediate sizes
+    // need re-evaluation when their workload shape is known.
+    //
+    // Escape hatch via PERRY_JSON_TAPE=1 (force lazy regardless
+    // of size, useful for testing) / =0 (force direct, useful as
+    // a correctness fallback).
     const LAZY_MIN_BLOB_BYTES: usize = 1024;
+    const LAZY_MAX_BLOB_BYTES: usize = 16 * 1024 * 1024;
     let tape_mode = tape_mode_from_env();
     let use_tape = match tape_mode {
         TapeMode::ForceOn => true,
         TapeMode::ForceOff => false,
-        TapeMode::Auto => len >= LAZY_MIN_BLOB_BYTES,
+        TapeMode::Auto => len >= LAZY_MIN_BLOB_BYTES && len <= LAZY_MAX_BLOB_BYTES,
     };
     if use_tape {
         if let Some(result) = try_parse_via_tape(text_ptr, bytes) {
