@@ -740,13 +740,39 @@ pub fn gc_unsuppress() {
     GC_FLAGS.with(|f| f.set(f.get() & !GC_FLAG_SUPPRESSED));
 }
 
-/// Rebaseline the malloc-count trigger to the current live set so that
-/// objects just created during a GC-suppressed window (e.g. JSON.parse)
-/// don't immediately trip a collection on the next allocation.
+/// Rebaseline the malloc-count AND arena-bytes triggers to the current
+/// live set so that objects just created during a GC-suppressed window
+/// (e.g. JSON.parse) don't immediately trip a collection on the next
+/// allocation.
+///
+/// Pre-fix: only the malloc-count trigger was bumped. JSON.parse on the
+/// 108 MB honest_bench fixture lifts arena_total to ~108 MB, the bytes
+/// trigger is still at its initial 128 MB threshold, and the iterate+
+/// rebuild pass that immediately follows trips bytes-based GC after
+/// only ~20 MB of new allocations. The 4 mark/sweep cycles each walk
+/// the entire 400 MB live heap (the records tree dominates) and add
+/// ~800 ms of overhead to the workload. Bumping the bytes trigger by
+/// the per-program step (initially 128 MB, grows up to 1 GB on
+/// mostly-garbage sweep evidence) defers the first GC until the
+/// post-parse working set itself doubles — for json_pipeline_full
+/// that means iterate+rebuild completes inside one GC cycle instead
+/// of four.
 pub fn gc_bump_malloc_trigger() {
     let current = MALLOC_STATE.with(|s| s.borrow().objects.len());
     let step = GC_MALLOC_COUNT_STEP.with(|c| c.get());
     GC_NEXT_MALLOC_TRIGGER.with(|c| c.set(current + step));
+
+    use crate::arena::arena_total_bytes;
+    let bytes_now = arena_total_bytes();
+    let bytes_step = GC_STEP_BYTES.with(|c| c.get());
+    let bytes_trigger = bytes_now.saturating_add(bytes_step);
+    // Only raise — never lower — so this can't accidentally trip a
+    // pending collection that the existing trigger had already armed.
+    GC_NEXT_TRIGGER_BYTES.with(|c| {
+        if bytes_trigger > c.get() {
+            c.set(bytes_trigger);
+        }
+    });
 }
 
 /// Check if GC should run. Called only when a new arena block is allocated.
