@@ -481,7 +481,24 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
                 ctx.func.entry_allocas_push_store(I32, "0", &i32_slot);
                 ctx.i32_counter_slots.insert(*id, i32_slot);
             }
-            if let Some(init_expr) = init {
+            // Issue #50 follow-up: when this local is a row alias of a
+            // flat-const 2D int array, `try_lower_flat_const_index_get` will
+            // intercept every `LocalGet(this).at(j)` access at lowering time
+            // and emit a direct GEP into the `[N x i32]` global — the slot
+            // value is never read. Skip lowering the init expression
+            // (`let krow = KERNEL[ky+2]` would otherwise emit a generic
+            // IndexGet with the v0.5.357 lazy/forwarded cond_br guard,
+            // serializing the inner conv loop through `js_array_get_f64`
+            // and blocking SIMD on `image_convolution`'s 5×5 blur kernel).
+            // Park TAG_UNDEFINED in the slot so any pathological non-alias
+            // read (`console.log(krow)`) gets `undefined` rather than
+            // garbage; DCE removes the dummy store when no such reader
+            // exists.
+            if init.is_some() && ctx.array_row_aliases.contains_key(id) {
+                let undef =
+                    crate::nanbox::double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED));
+                ctx.block().store(DOUBLE, &undef, &slot);
+            } else if let Some(init_expr) = init {
                 let v = lower_expr(ctx, init_expr)?;
                 ctx.block().store(DOUBLE, &v, &slot);
                 // Gen-GC Phase A sub-phase 3b: if this local has a
