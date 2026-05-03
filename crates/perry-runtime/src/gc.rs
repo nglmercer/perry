@@ -2597,6 +2597,16 @@ fn sweep_with_age_bump(do_age_bump: bool) -> u64 {
         0
     };
 
+    // Hoist the OVERFLOW_FIELDS empty check out of the per-dead-object
+    // loop. perf-comprehensive's sweep walks ~1.6 M dead arena headers
+    // per cycle and most workloads never write past the 8 inline object
+    // slots, so OVERFLOW_FIELDS stays empty for the whole run. The
+    // hoisted bool turns 1.6 M `clear_overflow_for_ptr` calls (each one
+    // a TLS-load + RefCell borrow + HashMap remove on a missing key)
+    // into a single bool test per object. ~1.4 % leaf samples → 0 on
+    // the empty-map path, ~80 ms saved on perf-comprehensive.
+    let overflow_active = !crate::object::overflow_fields_is_empty();
+
     crate::arena::arena_walk_objects_with_block_index(|header_ptr, block_idx| {
         let header = header_ptr as *mut GcHeader;
         unsafe {
@@ -2651,7 +2661,7 @@ fn sweep_with_age_bump(do_age_bump: bool) -> u64 {
                 let user_ptr = (header as *mut u8).add(GC_HEADER_SIZE);
                 freed_bytes += total_size as u64;
 
-                if (*header).obj_type == GC_TYPE_OBJECT {
+                if overflow_active && (*header).obj_type == GC_TYPE_OBJECT {
                     crate::object::clear_overflow_for_ptr(user_ptr as usize);
                 }
 

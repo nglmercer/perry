@@ -618,6 +618,24 @@ pub fn clear_overflow_for_ptr(obj_ptr: usize) {
     });
 }
 
+/// Cheap check used by the GC sweep to short-circuit per-object
+/// `clear_overflow_for_ptr` calls. Most workloads never exceed the 8
+/// inline slots and OVERFLOW_FIELDS stays empty for the entire run; on
+/// those, paying a TLS access + RefCell borrow + HashMap remove on
+/// every dead arena object is pure waste (~1.4 % leaf samples on
+/// perf-comprehensive's sweep walk over ~1.6 M dead headers per cycle).
+/// When this returns true, the sweep skips both `clear_overflow_for_ptr`
+/// AND the `OVERFLOW_LAST` cache invalidation: with no entries in the
+/// HashMap, the cached `Vec` pointer is either already null (initial
+/// state) or was nulled by the most recent `clear_overflow_for_ptr` /
+/// `overflow_set` cycle that emptied the map. Either way it can't
+/// alias a freed pointer because no allocation can have produced a
+/// matching obj_ptr without first writing to OVERFLOW_FIELDS.
+#[inline]
+pub fn overflow_fields_is_empty() -> bool {
+    OVERFLOW_FIELDS.with(|m| m.borrow().is_empty())
+}
+
 /// Global class registry mapping class_id -> parent_class_id for inheritance chain lookups
 static CLASS_REGISTRY: RwLock<Option<HashMap<u32, u32>>> = RwLock::new(None);
 
