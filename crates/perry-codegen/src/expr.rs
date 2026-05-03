@@ -3377,6 +3377,139 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // go to whichever storage we read from.
             let v = lower_expr(ctx, value)?;
             let arr_box = lower_expr(ctx, &Expr::LocalGet(*array_id))?;
+
+            // Fast path: local-bound, non-captured, non-boxed array.
+            // This is the canonical hot shape — `out.push(...)` over a
+            // local array variable. The runtime's `js_array_push_f64`
+            // does `clean_arr_ptr_mut` (heap-range check + forwarding
+            // chain walk + length/capacity sanity check + lazy detect)
+            // before every store; for an array that's known to be a
+            // plain heap pointer, that's wasted work on the *millions*
+            // of pushes a JSON-pipeline-style workload performs.
+            //
+            // Inline shape (mirrors `lower_index_set_fast`):
+            //
+            //   if (gc_flags & FORWARDED): call js_array_push_f64 (slow)
+            //   else:
+            //     length   = load i32, arr+0
+            //     capacity = load i32, arr+4
+            //     if (length < capacity):
+            //       store double value, arr+8+length*8
+            //       store i32 (length+1), arr+0
+            //       done
+            //     else:
+            //       call js_array_push_f64 (grow path)
+            //
+            // The fast inline branch needs no slot write-back — the
+            // array pointer doesn't change unless we grow. The slow
+            // branches both update the slot via the existing
+            // boxed/captured/local fall-through below.
+            if !ctx.boxed_vars.contains(array_id)
+                && !ctx.closure_captures.contains_key(array_id)
+                && ctx.locals.contains_key(array_id)
+            {
+                let slot = ctx.locals.get(array_id).cloned().unwrap();
+                let blk = ctx.block();
+                let arr_handle = unbox_to_i64(blk, &arr_box);
+
+                // Issue #233: forwarded arrays must follow the
+                // forwarding chain. Route through the runtime which
+                // calls clean_arr_ptr_mut and writes into the live
+                // head — the inline path's offset-0 length read would
+                // otherwise pick up the lower 32 bits of the
+                // forwarding pointer (garbage).
+                let gc_flags_addr = blk.sub(I64, &arr_handle, "7");
+                let gc_flags_ptr = blk.inttoptr(I64, &gc_flags_addr);
+                let gc_flags = blk.load(I8, &gc_flags_ptr);
+                let fwd_bits = blk.and(I8, &gc_flags, "128");
+                let is_fwd = blk.icmp_ne(I8, &fwd_bits, "0");
+
+                let fwd_idx = ctx.new_block("apush.fwd");
+                let nofwd_idx = ctx.new_block("apush.nofwd");
+                let inbounds_idx = ctx.new_block("apush.inbounds");
+                let realloc_idx = ctx.new_block("apush.realloc");
+                let merge_idx = ctx.new_block("apush.merge");
+
+                let fwd_label = ctx.block_label(fwd_idx);
+                let nofwd_label = ctx.block_label(nofwd_idx);
+                let inbounds_label = ctx.block_label(inbounds_idx);
+                let realloc_label = ctx.block_label(realloc_idx);
+                let merge_label = ctx.block_label(merge_idx);
+
+                ctx.block().cond_br(&is_fwd, &fwd_label, &nofwd_label);
+
+                // FORWARDED branch: route through runtime.
+                ctx.current_block = fwd_idx;
+                {
+                    let blk = ctx.block();
+                    let new_handle = blk.call(
+                        I64,
+                        "js_array_push_f64",
+                        &[(I64, &arr_handle), (DOUBLE, &v)],
+                    );
+                    let new_box = nanbox_pointer_inline(blk, &new_handle);
+                    blk.store(DOUBLE, &new_box, &slot);
+                    blk.br(&merge_label);
+                }
+
+                // No forwarding — read length & capacity, branch on
+                // capacity. inline_store on length < capacity, slow
+                // call on full.
+                ctx.current_block = nofwd_idx;
+                {
+                    let blk = ctx.block();
+                    let length = blk.safe_load_i32_from_ptr(&arr_handle);
+                    let cap_addr = blk.add(I64, &arr_handle, "4");
+                    let cap_ptr = blk.inttoptr(I64, &cap_addr);
+                    let capacity = blk.load(I32, &cap_ptr);
+                    let has_room = blk.icmp_ult(I32, &length, &capacity);
+                    blk.cond_br(&has_room, &inbounds_label, &realloc_label);
+                }
+
+                // Inline store: arr+8+length*8 = value, length++.
+                ctx.current_block = inbounds_idx;
+                {
+                    let blk = ctx.block();
+                    let length = blk.safe_load_i32_from_ptr(&arr_handle);
+                    let length_i64 = blk.zext(I32, &length, I64);
+                    let byte_offset = blk.shl(I64, &length_i64, "3");
+                    let with_header = blk.add(I64, &byte_offset, "8");
+                    let element_addr = blk.add(I64, &arr_handle, &with_header);
+                    let element_ptr = blk.inttoptr(I64, &element_addr);
+                    blk.store(DOUBLE, &v, &element_ptr);
+                    let new_length = blk.add(I32, &length, "1");
+                    let arr_ptr = blk.inttoptr(I64, &arr_handle);
+                    blk.store(I32, &new_length, &arr_ptr);
+                    blk.br(&merge_label);
+                }
+
+                // Realloc: capacity exhausted. Runtime allocates a
+                // bigger backing block and installs the forwarding
+                // pointer; writeback the new head to the local slot.
+                ctx.current_block = realloc_idx;
+                {
+                    let blk = ctx.block();
+                    let new_handle = blk.call(
+                        I64,
+                        "js_array_push_f64",
+                        &[(I64, &arr_handle), (DOUBLE, &v)],
+                    );
+                    let new_box = nanbox_pointer_inline(blk, &new_handle);
+                    blk.store(DOUBLE, &new_box, &slot);
+                    blk.br(&merge_label);
+                }
+
+                ctx.current_block = merge_idx;
+                // Existing arr_box value (pre-push) is still valid for
+                // ArrayPush's return value semantics: returns the
+                // pushed value cast back to double — but `out.push(...)`
+                // statements never read this, and the HIR uses Stmt::Expr
+                // which discards. Match the slow path's return shape
+                // anyway by re-loading the slot (covers the realloc
+                // case where the box changed).
+                return Ok(arr_box);
+            }
+
             let blk = ctx.block();
             let arr_handle = unbox_to_i64(blk, &arr_box);
             let new_handle = blk.call(
