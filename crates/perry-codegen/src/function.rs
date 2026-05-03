@@ -118,14 +118,21 @@ impl LlFunction {
     /// the function body, regardless of which codegen path emitted
     /// the ret. Frame balance is preserved automatically.
     ///
-    /// Passing `slot_count = 0` is legal — the frame just holds
-    /// a header and zero data slots. Useful for sub-phase 2 where
-    /// no pointer-typed locals are materialized yet; the goal is
-    /// just to prove push/pop wiring works without touching every
-    /// slot-store site.
+    /// Passing `slot_count = 0` is a no-op: the frame would only carry
+    /// a (prev_top, slot_count) header with no GC-root slots — that is
+    /// pure overhead, an extra TLS-touching call per function entry +
+    /// per ret. Today every leaf function with no pointer-typed locals
+    /// (clampIdx, clampU8, imul32, …) hits this case, and when the
+    /// function is `alwaysinline` the push/pop pair gets duplicated
+    /// into every caller's hot loop. Skip the frame entirely; the
+    /// to_ir() rewrite pass keys off `shadow_frame_slot.is_some()`,
+    /// so no matching pop is emitted either.
     pub fn enable_shadow_frame(&mut self, slot_count: u32) {
         use crate::types::I64;
         if self.shadow_frame_slot.is_some() {
+            return;
+        }
+        if slot_count == 0 {
             return;
         }
         let handle_slot = self.alloca_entry(I64);
