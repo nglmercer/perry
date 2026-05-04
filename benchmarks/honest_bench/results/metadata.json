@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-04T01:00:55.651043+00:00",
+  "generated_at": "2026-05-04T01:35:09.676695+00:00",
   "host": {
     "os_version": "26.4",
     "kernel": "Darwin MacBookPro.fritz.box 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:30:44 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6000 arm64",
@@ -16,7 +16,7 @@
     "perry": "perry 0.5.494"
   },
   "harness": {
-    "warmup": 2,
-    "measured": 5
+    "warmup": 5,
+    "measured": 15
   }
 }
