@@ -199,14 +199,21 @@ pub(super) fn collect_modules(
     } else {
         Some(&ctx.cross_module_class_field_types)
     };
+    // Issue #444: this module is the user-supplied entry iff its canonical
+    // path matches the one stashed by `compile.rs::run_with_parse_cache`
+    // before the first `collect_modules` invocation. Bundle-extension
+    // entries don't update `entry_canonical`, so their `import.meta.main`
+    // correctly resolves to false.
+    let is_entry_module = ctx.entry_canonical.as_ref() == Some(&canonical);
     let (mut hir_module, new_next_class_id) =
-        perry_hir::lower_module_with_class_id_types_and_seed(
+        perry_hir::lower_module_with_class_id_types_seed_and_entry(
             ast_module,
             &module_name,
             &source_file_path,
             *next_class_id,
             resolved_types,
             imported_class_fields,
+            is_entry_module,
         )?;
     *next_class_id = new_next_class_id; // Update the global class_id counter
 

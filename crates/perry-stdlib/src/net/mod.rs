@@ -141,6 +141,13 @@ fn scan_net_roots(mark: &mut dyn FnMut(f64)) {
 
 struct SocketState {
     cmd_tx: mpsc::UnboundedSender<SocketCommand>,
+    /// `Some` only between `js_net_socket_alloc` and the first
+    /// `js_net_socket_method_connect` — held here so the deferred connect
+    /// path (issue #422: `new net.Socket()` then `sock.connect(port, host)`)
+    /// can move it into the spawned tokio task at connect time. Stays
+    /// `None` for the eager factory paths (`createConnection` / `tls.connect`)
+    /// where the rx flows straight into the task.
+    pending_rx: Option<mpsc::UnboundedReceiver<SocketCommand>>,
     is_open: bool,
 }
 
@@ -301,6 +308,107 @@ pub unsafe extern "C" fn js_net_socket_connect(port: f64, host_ptr: i64) -> i64 
     spawn_socket_task(host, port, /* direct_tls: */ None)
 }
 
+// ─── FFI: new net.Socket() (alloc-only, deferred connect) ────────────────────
+
+/// `new net.Socket()` — allocates an unconnected socket handle. The TCP
+/// connection is deferred until `js_net_socket_method_connect` is called
+/// (`sock.connect(port, host)`).
+///
+/// Pre-issue-#422 the only path into the net module was the eager
+/// `net.createConnection(port, host)` factory, which both allocates the
+/// handle AND kicks off the connect in one shot. Real-world TS code
+/// (including pure-TS Postgres / MySQL / MQTT drivers) commonly takes
+/// the `new net.Socket()` + later `.connect(...)` shape, where listener
+/// registration sits between the two — that pattern needs a separate
+/// allocator.
+///
+/// Signature matches NATIVE_MODULE_TABLE entry
+/// `{ module: "net", method: "Socket", args: &[], ret: NR_PTR }`.
+#[no_mangle]
+pub unsafe extern "C" fn js_net_socket_alloc() -> i64 {
+    ensure_gc_scanner_registered();
+    let id = next_id();
+    let (tx, rx) = mpsc::unbounded_channel::<SocketCommand>();
+    NET_SOCKETS.lock().unwrap().insert(
+        id,
+        SocketState {
+            cmd_tx: tx,
+            pending_rx: Some(rx),
+            is_open: false,
+        },
+    );
+    NET_LISTENERS.lock().unwrap().insert(id, HashMap::new());
+    id
+}
+
+// ─── FFI: socket.connect(port, host) (instance method on existing handle) ─────
+
+/// `socket.connect(port, host)` — initiates a TCP connection on a socket
+/// previously allocated by `new net.Socket()`. Spawns the same tokio task
+/// shape as `js_net_socket_connect`, but pulls its receiver out of the
+/// `SocketState::pending_rx` slot rather than allocating a fresh channel,
+/// so any listener already registered (`sock.on('data', cb)` etc.) sees
+/// the same handle id once the connect completes.
+///
+/// If `pending_rx` is already empty (already connected, or unknown handle)
+/// this pushes an `'error'` event rather than silently dropping — matches
+/// Node's behavior where calling `.connect()` twice on the same socket
+/// emits `Error: already connected`.
+///
+/// Signature matches NATIVE_MODULE_TABLE entry
+/// `{ has_receiver: true, method: "connect", class_filter: Some("Socket"),
+///    args: &[NA_F64, NA_STR], ret: NR_VOID }`.
+#[no_mangle]
+pub unsafe extern "C" fn js_net_socket_method_connect(handle: i64, port: f64, host_ptr: i64) {
+    let host = match string_from_header_i64(host_ptr) {
+        Some(h) => h,
+        None => {
+            push_event(PendingNetEvent::Error(
+                handle,
+                "socket.connect: invalid host string".to_string(),
+            ));
+            return;
+        }
+    };
+    let port = port as u16;
+
+    // Move the deferred-connect rx out of the SocketState. After this
+    // take, subsequent .connect() calls land in the `None` arm below.
+    let mut rx = {
+        let mut guard = NET_SOCKETS.lock().unwrap();
+        match guard.get_mut(&handle).and_then(|s| s.pending_rx.take()) {
+            Some(rx) => rx,
+            None => {
+                push_event(PendingNetEvent::Error(
+                    handle,
+                    "socket already connected (or unknown handle)".to_string(),
+                ));
+                return;
+            }
+        }
+    };
+
+    spawn(async move {
+        let addr = format!("{}:{}", host, port);
+        let tcp = match TcpStream::connect(&addr).await {
+            Ok(s) => s,
+            Err(e) => {
+                push_event(PendingNetEvent::Error(handle, format!("{}", e)));
+                push_event(PendingNetEvent::Close(handle));
+                mark_closed(handle);
+                return;
+            }
+        };
+
+        if let Some(s) = NET_SOCKETS.lock().unwrap().get_mut(&handle) {
+            s.is_open = true;
+        }
+        push_event(PendingNetEvent::Connect(handle));
+
+        run_socket_task(handle, Transport::Plain(tcp), &mut rx).await;
+    });
+}
+
 // ─── FFI: tls.connect(host, port, servername) ────────────────────────────────
 
 /// `tls.connect(host, port, servername)` — opens a plain TCP socket and
@@ -346,6 +454,7 @@ fn spawn_socket_task(host: String, port: u16, direct_tls: Option<(String, bool)>
         id,
         SocketState {
             cmd_tx: tx,
+            pending_rx: None,
             is_open: false,
         },
     );

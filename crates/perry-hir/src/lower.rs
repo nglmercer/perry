@@ -243,6 +243,11 @@ pub struct LoweringContext {
     /// here so the `Expr::New { class_name }` lowering can append
     /// `LocalGet(id)` for each captured id at every construction site.
     pub(crate) class_captures: Vec<(String, Vec<LocalId>)>,
+    /// Issue #444: true when this module is the user-supplied entry file.
+    /// Drives `import.meta.main` — Node 24+ / Bun semantics where the entry
+    /// module reports `true` and every imported module reports `false`. Set
+    /// by `lower_module_with_class_id_types_seed_and_entry`; default false.
+    pub(crate) is_entry_module: bool,
 }
 
 impl LoweringContext {
@@ -320,6 +325,7 @@ impl LoweringContext {
             next_anon_shape_id: 0,
             class_method_return_types: Vec::new(),
             class_captures: Vec::new(),
+            is_entry_module: false,
         }
     }
 
@@ -1770,8 +1776,33 @@ pub fn lower_module_with_class_id_types_and_seed(
     resolved_types: Option<std::collections::HashMap<u32, Type>>,
     imported_class_fields: Option<&std::collections::HashMap<String, Vec<(String, Type)>>>,
 ) -> Result<(Module, ClassId)> {
+    lower_module_with_class_id_types_seed_and_entry(
+        ast_module,
+        name,
+        source_file_path,
+        start_class_id,
+        resolved_types,
+        imported_class_fields,
+        false,
+    )
+}
+
+/// Issue #444: variant that takes `is_entry_module` so `import.meta.main`
+/// resolves to `true` only inside the user-supplied entry TypeScript file
+/// (matching Node 24+ / Bun semantics). All other lowering callers go
+/// through the wrapper above with `is_entry_module=false`.
+pub fn lower_module_with_class_id_types_seed_and_entry(
+    ast_module: &ast::Module,
+    name: &str,
+    source_file_path: &str,
+    start_class_id: ClassId,
+    resolved_types: Option<std::collections::HashMap<u32, Type>>,
+    imported_class_fields: Option<&std::collections::HashMap<String, Vec<(String, Type)>>>,
+    is_entry_module: bool,
+) -> Result<(Module, ClassId)> {
     let mut ctx = LoweringContext::with_class_id_start(source_file_path, start_class_id);
     ctx.resolved_types = resolved_types;
+    ctx.is_entry_module = is_entry_module;
     if let Some(seed) = imported_class_fields {
         ctx.seed_imported_class_fields(seed);
     }
@@ -4989,6 +5020,12 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                                     // tls.connect returns the same Socket class — reuses
                                     // all the write/end/destroy/on/upgradeToTLS dispatch.
                                     ("tls", "connect") => Some("Socket"),
+                                    // Issue #422: `new net.Socket()` lowers to a
+                                    // receiver-less `Expr::NativeMethodCall` whose
+                                    // method is the constructor name "Socket"; this
+                                    // arm registers the binding so `sock.connect/...`
+                                    // dispatches via the class-filtered entries.
+                                    ("net", "Socket") => Some("Socket"),
                                     _ => None,
                                 };
                                 if let Some(cn) = class_name {

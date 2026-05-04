@@ -388,6 +388,16 @@ unsafe fn dispatch_net_socket(handle: i64, method: &str, args: &[f64]) -> f64 {
             crate::net::js_net_socket_on(handle, event_ptr, cb_ptr);
             f64::from_bits(0x7FFC_0000_0000_0001)
         }
+        // Issue #422: `sock.connect(port, host)` for the deferred-connect
+        // shape (`new net.Socket()` then `.connect(...)`). The first arg
+        // is the port (raw f64); the second is a string handle (NaN-boxed
+        // STRING_TAG'd f64) that we strip back to the StringHeader pointer.
+        "connect" if args.len() >= 2 => {
+            let port = args[0];
+            let host_ptr = unbox_to_i64(args[1]);
+            crate::net::js_net_socket_method_connect(handle, port, host_ptr);
+            f64::from_bits(0x7FFC_0000_0000_0001)
+        }
         "upgradeToTLS" if !args.is_empty() => {
             // upgradeToTLS(servername, verify) → Promise. Default verify=1
             // when omitted, mirroring the safer default in the static table.

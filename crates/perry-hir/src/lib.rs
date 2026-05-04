@@ -26,6 +26,6 @@ pub use js_transform::{
 };
 pub use lower::{
     lower_module, lower_module_with_class_id, lower_module_with_class_id_and_types,
-    lower_module_with_class_id_types_and_seed,
+    lower_module_with_class_id_types_and_seed, lower_module_with_class_id_types_seed_and_entry,
 };
 pub use monomorph::monomorphize_module;

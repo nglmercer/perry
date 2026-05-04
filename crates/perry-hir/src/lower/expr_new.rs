@@ -20,6 +20,45 @@ use crate::lower_types::extract_ts_type_with_ctx;
 use super::{lower_expr, LoweringContext};
 
 pub(super) fn lower_new(ctx: &mut LoweringContext, new_expr: &ast::NewExpr) -> Result<Expr> {
+    // Issue #422: `new net.Socket()` over a `net` module alias. The
+    // generic Member-callee path below would lower this to
+    // `Expr::NewDynamic`, whose codegen fallback returns an empty
+    // ObjectHeader placeholder — every subsequent `sock.connect/.on/.write`
+    // would silently no-op. Reroute to a receiver-less `NativeMethodCall`
+    // whose method name is the class name; the dispatch table in
+    // `lower_call.rs::NATIVE_MODULE_TABLE` has a `("net", "Socket")` row
+    // pointing at `js_net_socket_alloc`, and the let-stmt machinery in
+    // `lower.rs` registers the result as a `("net", "Socket")` native
+    // instance so subsequent method calls dispatch correctly.
+    if let ast::Expr::Member(member) = new_expr.callee.as_ref() {
+        if let (ast::Expr::Ident(obj_ident), ast::MemberProp::Ident(prop_ident)) =
+            (member.obj.as_ref(), &member.prop)
+        {
+            let obj_name = obj_ident.sym.as_ref();
+            let is_net_module =
+                obj_name == "net" || ctx.lookup_builtin_module_alias(obj_name) == Some("net");
+            if is_net_module && prop_ident.sym.as_ref() == "Socket" {
+                let args = new_expr
+                    .args
+                    .as_ref()
+                    .map(|args| {
+                        args.iter()
+                            .map(|a| lower_expr(ctx, &a.expr))
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                return Ok(Expr::NativeMethodCall {
+                    module: "net".to_string(),
+                    class_name: None,
+                    object: None,
+                    method: "Socket".to_string(),
+                    args,
+                });
+            }
+        }
+    }
+
     // Issue #237: pre-register the controller param of every
     // `start` / `pull` / `cancel` / `transform` / `flush` callback
     // passed to `new ReadableStream({...})` /

@@ -330,6 +330,13 @@ pub struct CompilationContext {
     /// #303 + `docs/src/platforms/windows-7.md`. Ignored on non-Windows
     /// targets.
     pub min_windows_version: String,
+    /// Issue #444: canonical path of the user-supplied entry TypeScript
+    /// file. `collect_modules` compares each module's canonical path
+    /// against this to set `is_entry_module` on the lowering context,
+    /// driving `import.meta.main`. `None` until the first `collect_modules`
+    /// call canonicalizes the entry; bundle-extension entries don't update
+    /// it, so their `import.meta.main` correctly resolves to false.
+    pub entry_canonical: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for CompilationContext {
@@ -370,6 +377,7 @@ impl CompilationContext {
             module_source_hashes: HashMap::new(),
             cross_module_class_field_types: HashMap::new(),
             min_windows_version: "10".to_string(),
+            entry_canonical: None,
         }
     }
 }
@@ -824,6 +832,17 @@ pub fn run_with_parse_cache(
     let mut visited = HashSet::new();
     let mut next_class_id: perry_hir::ClassId = 1; // Start at 1, 0 is reserved for "no parent"
     let skip_transforms = matches!(args.target.as_deref(), Some("web") | Some("wasm"));
+
+    // Issue #444: canonicalize the user's entry path once so collect_modules
+    // can compare every module's canonical path against it and set
+    // `is_entry_module=true` only on the actual entry (driving
+    // `import.meta.main`). Failures fall through silently — collect_modules
+    // canonicalizes again and would surface any IO error there.
+    if ctx.entry_canonical.is_none() {
+        if let Ok(c) = args.input.canonicalize() {
+            ctx.entry_canonical = Some(c);
+        }
+    }
 
     collect_modules(
         &args.input,

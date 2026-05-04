@@ -31,8 +31,12 @@ thread_local! {
     pub(crate) static GTK_APP: RefCell<Option<Application>> = RefCell::new(None);
     /// Reference to the main ApplicationWindow (public for screenshot capture).
     pub(crate) static APP_WINDOW: RefCell<Option<ApplicationWindow>> = RefCell::new(None);
-    /// Timer callbacks (interval_ms, callback f64)
+    /// Timer callbacks queued before the app activates (interval_ms, callback f64).
+    /// After activation, set_timer schedules directly via install_timer().
     static TIMER_CALLBACKS: RefCell<Vec<(f64, f64)>> = RefCell::new(Vec::new());
+    /// True once connect_activate has fired — set_timer can then call glib::timeout_add_local
+    /// directly instead of buffering.
+    static APP_ACTIVATED: RefCell<bool> = RefCell::new(false);
     /// App lifecycle callbacks
     static ON_ACTIVATE_CALLBACK: RefCell<Option<f64>> = RefCell::new(None);
     static ON_TERMINATE_CALLBACK: RefCell<Option<f64>> = RefCell::new(None);
@@ -273,32 +277,13 @@ pub fn app_run(_app_handle: i64) {
             }
         });
 
-        // Install timers
+        // Mark the app as activated so set_timer can schedule directly from here on,
+        // then install any timers that were queued before activate fired.
+        APP_ACTIVATED.with(|a| *a.borrow_mut() = true);
         TIMER_CALLBACKS.with(|tc| {
-            for (interval_ms, callback) in tc.borrow().iter() {
-                let cb = *callback;
-                let ms = *interval_ms as u64;
-                glib::timeout_add_local(std::time::Duration::from_millis(ms), move || {
-                    // Drain resolved promises, then run microtasks (.then callbacks)
-                    unsafe {
-                        js_run_stdlib_pump();
-                        js_promise_run_microtasks();
-                    }
-                    let ptr = unsafe { js_nanbox_get_pointer(cb) } as *const u8;
-                    unsafe {
-                        js_closure_call0(ptr);
-                    }
-                    #[cfg(feature = "geisterhand")]
-                    {
-                        extern "C" {
-                            fn perry_geisterhand_pump();
-                        }
-                        unsafe {
-                            perry_geisterhand_pump();
-                        }
-                    }
-                    glib::ControlFlow::Continue
-                });
+            let queued: Vec<(f64, f64)> = tc.borrow_mut().drain(..).collect();
+            for (interval_ms, callback) in queued {
+                install_timer(interval_ms, callback);
             }
         });
 
@@ -577,11 +562,45 @@ pub fn add_keyboard_shortcut(key_ptr: *const u8, modifiers: f64, callback: f64) 
     });
 }
 
-/// Set a repeating timer. interval_ms = milliseconds between ticks.
-pub fn set_timer(interval_ms: f64, callback: f64) {
-    TIMER_CALLBACKS.with(|tc| {
-        tc.borrow_mut().push((interval_ms, callback));
+/// Install a recurring glib timeout that drains the stdlib pump + microtasks, invokes
+/// the JS callback, and (with `geisterhand`) ticks the geisterhand pump. Must run on
+/// the GTK main thread after the GLib MainContext is active.
+fn install_timer(interval_ms: f64, callback: f64) {
+    let ms = interval_ms as u64;
+    glib::timeout_add_local(std::time::Duration::from_millis(ms), move || {
+        unsafe {
+            js_run_stdlib_pump();
+            js_promise_run_microtasks();
+        }
+        let ptr = unsafe { js_nanbox_get_pointer(callback) } as *const u8;
+        unsafe {
+            js_closure_call0(ptr);
+        }
+        #[cfg(feature = "geisterhand")]
+        {
+            extern "C" {
+                fn perry_geisterhand_pump();
+            }
+            unsafe {
+                perry_geisterhand_pump();
+            }
+        }
+        glib::ControlFlow::Continue
     });
+}
+
+/// Set a repeating timer. interval_ms = milliseconds between ticks.
+/// Queues the timer until `connect_activate` fires; after that, schedules immediately
+/// so callers from button handlers or other timer callbacks (#429) actually run.
+pub fn set_timer(interval_ms: f64, callback: f64) {
+    let activated = APP_ACTIVATED.with(|a| *a.borrow());
+    if activated {
+        install_timer(interval_ms, callback);
+    } else {
+        TIMER_CALLBACKS.with(|tc| {
+            tc.borrow_mut().push((interval_ms, callback));
+        });
+    }
 }
 
 /// Register an on_activate callback (called when the app becomes active).

@@ -18,6 +18,33 @@ use crate::ir::Expr;
 use super::{lower_expr, LoweringContext};
 
 pub(super) fn lower_member(ctx: &mut LoweringContext, member: &ast::MemberExpr) -> Result<Expr> {
+    // Issue #444: `import.meta.<prop>` folds directly to a literal at
+    // lowering time. Routing through the bare-`import.meta` Object
+    // synthesis hits a long-standing module-level NaN-boxing bug where
+    // string fields read back as 0 — producing `url: 0` / `main: NaN`
+    // for the user. Folding here sidesteps it entirely.
+    //
+    // Surface aligned with Node 20+ spec (`url` / `dirname` / `filename`
+    // / `main`). Bun-only aliases (`dir` / `path` / `file`) intentionally
+    // omitted — adding them would silently break code moving Perry → Node.
+    if let ast::Expr::MetaProp(mp) = member.obj.as_ref() {
+        if matches!(mp.kind, ast::MetaPropKind::ImportMeta) {
+            if let ast::MemberProp::Ident(prop_ident) = &member.prop {
+                let (url, dirname, filename) = super::expr_misc::import_meta_paths(ctx);
+                return Ok(match prop_ident.sym.as_ref() {
+                    "url" => Expr::String(url),
+                    "main" => Expr::Bool(ctx.is_entry_module),
+                    "dirname" => Expr::String(dirname),
+                    "filename" => Expr::String(filename),
+                    // Unknown property — undefined matches the spec'd
+                    // "missing property on a frozen object" behavior of
+                    // import.meta in Node / Bun.
+                    _ => Expr::Undefined,
+                });
+            }
+        }
+    }
+
     // process.std{in,out,err}.{isTTY,columns,rows} — direct extern-call
     // shapes recognized BEFORE the regular process.X arm below, since the
     // double-Member shape (Member(Member(process, stream), prop)) doesn't
