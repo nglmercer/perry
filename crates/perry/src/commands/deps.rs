@@ -259,6 +259,46 @@ fn is_perry_builtin(name: &str) -> bool {
     name.starts_with("perry/")
 }
 
+/// Node.js built-ins that Perry compiles and runs successfully — either
+/// via a `perry-stdlib` module (`events`, `http`, `crypto`, `readline`,
+/// `streams`, `net`, `worker_threads`, `zlib`) or via direct codegen
+/// support in the compiler (`fs`, `path`, `os`, `util`, `process`,
+/// `buffer`, `console`, `perf_hooks`, `timers`, `url`, `querystring`,
+/// `assert`, `stream`, `tls`, `https`, `tty`, etc.).
+///
+/// Issue #419: pre-fix, `check --check-deps` flagged every Node built-in
+/// as `U006: cannot be used in native compilation` regardless of
+/// whether `perry compile` would in fact build and run the program.
+/// MedusaJS-class real codebases reported 8+ false positives. Verified
+/// with a synthetic `import * as m from "<builtin>"; console.log(typeof m)`
+/// per builtin: every name in the Node `is_node_builtin` list compiles
+/// to a runnable binary on current `perry`.
+///
+/// Names that are *known stubs* (cluster, child_process, dgram, dns,
+/// domain, repl, punycode, string_decoder, sys, v8, vm, constants,
+/// module) compile but expose limited functionality at runtime —
+/// they're included in this allowlist so the static `--check-deps`
+/// signal doesn't false-positive on them either, matching the
+/// "compiles ⇒ no U006" contract from the issue. Their runtime stubs
+/// are still tracked separately (via per-module gap-tests).
+fn is_supported_node_builtin(name: &str) -> bool {
+    let base = name.split('/').next().unwrap_or(name);
+    let base = base.strip_prefix("node:").unwrap_or(base);
+    matches!(
+        base,
+        // Real implementations
+        "crypto" | "events" | "http" | "https" | "net" | "readline"
+        | "stream" | "streams" | "worker_threads" | "zlib"
+        | "fs" | "path" | "os" | "util" | "process" | "buffer"
+        | "console" | "perf_hooks" | "timers" | "url" | "querystring"
+        | "tls" | "tty" | "assert"
+        // Stubs (compile + import but functionality limited)
+        | "cluster" | "child_process" | "dgram" | "dns" | "domain"
+        | "repl" | "punycode" | "string_decoder" | "sys" | "v8" | "vm"
+        | "constants" | "module"
+    )
+}
+
 /// Check a package for compatibility issues
 pub fn check_package_compatibility(
     package_name: &str,
@@ -475,7 +515,10 @@ pub fn check_node_builtin_imports(
     let mut diagnostics = Diagnostics::new();
 
     for import in all_imports {
-        if is_node_builtin(import) && !is_perry_builtin(import) {
+        if is_node_builtin(import)
+            && !is_perry_builtin(import)
+            && !is_supported_node_builtin(import)
+        {
             let files = import_locations
                 .get(import)
                 .map(|f| {
