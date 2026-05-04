@@ -173,9 +173,9 @@ export function notificationCancel(id: string): void;
  */
 export function notificationOnTap(cb: (id: string, action?: string) => void): void;
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Audio input
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 
 /** Start audio capture. Returns 1 on success, 0 on failure. */
 export function audioStart(): number;
@@ -191,3 +191,12 @@ export function audioGetPeak(): number;
 
 /** Get waveform data with the given number of samples. */
 export function audioGetWaveform(sampleCount: number): number;
+
+/** Set the output filename for audio recording. */
+export function audioSetOutputFilename(filename: string): void;
+
+/** Start audio recording. */
+export function audioStartRecording(): void;
+
+/** Stop audio recording and save to file. */
+export function audioStopRecording(): void;

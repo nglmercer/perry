@@ -338,3 +338,8 @@ pub fn get_device_model() -> i64 {
         unsafe { js_string_from_bytes(model.as_ptr(), model.len() as i32) }
     }
 }
+
+// Stubs for recording functions (to be implemented later)
+pub fn set_output_filename(_filename: &str) {}
+pub fn start_recording() {}
+pub fn stop_recording() {}

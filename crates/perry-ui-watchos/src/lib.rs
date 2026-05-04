@@ -961,6 +961,12 @@ pub extern "C" fn perry_system_get_device_model() -> i64 {
     0
 }
 #[no_mangle]
+pub extern "C" fn perry_system_audio_set_output_filename(_filename_ptr: i64) {}
+#[no_mangle]
+pub extern "C" fn perry_system_audio_start_recording() {}
+#[no_mangle]
+pub extern "C" fn perry_system_audio_stop_recording() {}
+#[no_mangle]
 pub extern "C" fn perry_system_is_dark_mode() -> i64 {
     0
 }

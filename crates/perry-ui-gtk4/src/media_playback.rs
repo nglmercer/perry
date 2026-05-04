@@ -120,13 +120,29 @@ pub fn create_player(url_ptr: *const u8) -> i64 {
     }
     ensure_gst_init();
 
+    let uri = if url.contains("://") {
+        url.to_string()
+    } else {
+        let path = if url.starts_with('/') {
+            url.to_string()
+        } else {
+            std::env::current_dir()
+                .map(|p| p.join(url).to_string_lossy().to_string())
+                .unwrap_or_else(|_| url.to_string())
+        };
+        format!("file://{}", path)
+    };
+
     let pipeline = match gstreamer::ElementFactory::make("playbin")
         .name("perry-media-playbin")
-        .property("uri", url)
+        .property("uri", uri.as_str())
         .build()
     {
         Ok(p) => p,
-        Err(_) => return 0,
+        Err(e) => {
+            eprintln!("[media] Failed to create playbin: {:?}", e);
+            return 0;
+        }
     };
 
     // Drive to PAUSED so the demuxer + decoder pick up duration metadata

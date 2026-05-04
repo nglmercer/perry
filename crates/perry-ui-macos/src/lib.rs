@@ -1650,6 +1650,36 @@ pub extern "C" fn perry_system_get_device_model() -> i64 {
     audio::get_device_model()
 }
 
+/// Set output filename for audio recording.
+#[no_mangle]
+pub extern "C" fn perry_system_audio_set_output_filename(filename_ptr: i64) {
+    fn str_from_header(ptr: *const u8) -> &'static str {
+        if ptr.is_null() {
+            return "";
+        }
+        unsafe {
+            let header = ptr as *const crate::string_header::StringHeader;
+            let len = (*header).byte_len as usize;
+            let data = ptr.add(std::mem::size_of::<crate::string_header::StringHeader>());
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len))
+        }
+    }
+    let filename = str_from_header(filename_ptr as *const u8);
+    audio::set_output_filename(filename);
+}
+
+/// Start audio recording.
+#[no_mangle]
+pub extern "C" fn perry_system_audio_start_recording() {
+    audio::start_recording();
+}
+
+/// Stop audio recording and save to file.
+#[no_mangle]
+pub extern "C" fn perry_system_audio_stop_recording() {
+    audio::stop_recording();
+}
+
 /// Get the icon for a file/application at the given path. Returns a widget handle (NSImageView).
 #[no_mangle]
 pub extern "C" fn perry_system_get_app_icon(path_ptr: i64) -> i64 {

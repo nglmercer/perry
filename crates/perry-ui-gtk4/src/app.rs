@@ -582,6 +582,20 @@ pub fn set_timer(interval_ms: f64, callback: f64) {
     TIMER_CALLBACKS.with(|tc| {
         tc.borrow_mut().push((interval_ms, callback));
     });
+
+    let ms = interval_ms as u64;
+    let cb = callback;
+    glib::timeout_add_local(std::time::Duration::from_millis(ms), move || {
+        unsafe {
+            js_run_stdlib_pump();
+            js_promise_run_microtasks();
+        }
+        let ptr = unsafe { js_nanbox_get_pointer(cb) } as *const u8;
+        unsafe {
+            js_closure_call0(ptr);
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 /// Register an on_activate callback (called when the app becomes active).

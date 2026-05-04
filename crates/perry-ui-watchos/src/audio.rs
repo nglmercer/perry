@@ -185,3 +185,8 @@ unsafe fn process_audio_buffer(buffer: *mut AnyObject, sample_rate: f64) {
     CURRENT_DB.store(smoothed.to_bits(), Ordering::Relaxed);
     CURRENT_PEAK.store((peak as f64).to_bits(), Ordering::Relaxed);
 }
+
+// Stubs for recording functions (to be implemented later)
+pub fn set_output_filename(_filename: &str) {}
+pub fn start_recording() {}
+pub fn stop_recording() {}
