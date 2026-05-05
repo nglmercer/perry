@@ -184,6 +184,16 @@ jobs:
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
+      # Closes #396 / #397 / #398: tvOS, visionOS, and watchOS are Rust Tier-3
+      # targets — no prebuilt std, so we install nightly + rust-src and use
+      # `-Zbuild-std=core,std,panic_abort` below to compile the standard library
+      # from source for each (device, sim) triple. Stable stays the default
+      # toolchain; we only invoke nightly explicitly via `cargo +nightly` for
+      # the Tier-3 cross-builds.
+      - name: Install Rust nightly + rust-src for Tier-3 Apple targets (macOS)
+        if: runner.os == 'macOS'
+        run: rustup toolchain install nightly --component rust-src --profile minimal
+
       - name: Install GTK4 development libraries (Linux glibc)
         if: runner.os == 'Linux' && !endsWith(matrix.target, '-musl')
         # libgstreamer1.0-dev added in v0.5.456 — perry-ui-gtk4 pulls in
@@ -232,6 +242,39 @@ jobs:
             cargo build --release --target "$triple" -p perry-ui-ios
           done
 
+      # Closes #396 / #397 / #398: cross-compile runtime + stdlib + UI for the
+      # Tier-3 Apple platforms (tvOS, visionOS, watchOS). Both device and
+      # simulator triples per platform; nightly + `-Zbuild-std=...` builds std
+      # from source. Note watchOS device uses the unusual `arm64_32` triple
+      # (32-bit pointers, 64-bit registers) — the only non-`aarch64-*` device
+      # triple in this set, so we keep the device/sim pairs explicit instead
+      # of deriving them. Library filenames are disambiguated in the staging
+      # step (device → `_<plat>.a`, sim → `_<plat>_sim.a`); library_search.rs's
+      # `apple_class_lib_name` already maps each `--target` to the correct
+      # variant (covered by the `handles_other_class_suffixes` unit test).
+      - name: Build tvOS/visionOS/watchOS cross-compile libraries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          # Format: "<platform>:<device-triple>:<sim-triple>"
+          for entry in \
+            "tvos:aarch64-apple-tvos:aarch64-apple-tvos-sim" \
+            "visionos:aarch64-apple-visionos:aarch64-apple-visionos-sim" \
+            "watchos:arm64_32-apple-watchos:aarch64-apple-watchos-sim"; do
+            plat="${entry%%:*}"
+            rest="${entry#*:}"
+            dev="${rest%%:*}"
+            sim="${rest#*:}"
+            for triple in "$dev" "$sim"; do
+              echo "::group::$plat $triple"
+              cargo +nightly build --release \
+                -Z build-std=core,std,panic_abort \
+                --target "$triple" \
+                -p perry-runtime -p perry-stdlib "-p" "perry-ui-${plat}"
+              echo "::endgroup::"
+            done
+          done
+
       - name: Build UI library (Linux glibc)
         if: runner.os == 'Linux' && !endsWith(matrix.target, '-musl')
         run: cargo build --release --target ${{ matrix.target }} -p perry-ui-gtk4
@@ -277,6 +320,38 @@ jobs:
             if [ -f "$sim_dir/libperry_ui_ios.a" ]; then
               cp "$sim_dir/libperry_ui_ios.a" "staging/libperry_ui_ios_sim.a"
             fi
+            # Closes #396 / #397 / #398: same pattern as iOS for the Tier-3
+            # Apple platforms. Device triple varies (watchOS = arm64_32) so
+            # we drive the staging copy from the explicit triple list above.
+            for entry in \
+              "tvos:aarch64-apple-tvos:aarch64-apple-tvos-sim" \
+              "visionos:aarch64-apple-visionos:aarch64-apple-visionos-sim" \
+              "watchos:arm64_32-apple-watchos:aarch64-apple-watchos-sim"; do
+              plat="${entry%%:*}"
+              rest="${entry#*:}"
+              dev_triple="${rest%%:*}"
+              sim_triple="${rest#*:}"
+              dev_dir="target/${dev_triple}/release"
+              sim_dir="target/${sim_triple}/release"
+              if [ -f "$dev_dir/libperry_runtime.a" ]; then
+                cp "$dev_dir/libperry_runtime.a" "staging/libperry_runtime_${plat}.a"
+              fi
+              if [ -f "$dev_dir/libperry_stdlib.a" ]; then
+                cp "$dev_dir/libperry_stdlib.a" "staging/libperry_stdlib_${plat}.a"
+              fi
+              if [ -f "$dev_dir/libperry_ui_${plat}.a" ]; then
+                cp "$dev_dir/libperry_ui_${plat}.a" "staging/libperry_ui_${plat}.a"
+              fi
+              if [ -f "$sim_dir/libperry_runtime.a" ]; then
+                cp "$sim_dir/libperry_runtime.a" "staging/libperry_runtime_${plat}_sim.a"
+              fi
+              if [ -f "$sim_dir/libperry_stdlib.a" ]; then
+                cp "$sim_dir/libperry_stdlib.a" "staging/libperry_stdlib_${plat}_sim.a"
+              fi
+              if [ -f "$sim_dir/libperry_ui_${plat}.a" ]; then
+                cp "$sim_dir/libperry_ui_${plat}.a" "staging/libperry_ui_${plat}_sim.a"
+              fi
+            done
           fi
           cd staging
           tar czf ../${{ matrix.artifact }}.tar.gz *

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Perry is a native TypeScript compiler written in Rust that compiles TypeScript source code directly to native executables. It uses SWC for TypeScript parsing and LLVM for code generation.
 
-**Current Version:** 0.5.511
+**Current Version:** 0.5.512
 
 
 ## TypeScript Parity Status
@@ -153,6 +153,7 @@ First-resolved directory cached in `compile_package_dirs`; subsequent imports re
 
 Keep entries to 1-2 lines max. Full details in CHANGELOG.md.
 
+- **v0.5.512** — Closes #396 + #397 + #398: macOS Homebrew bottle now bundles tvOS / visionOS / watchOS cross-libs (device + simulator) alongside the existing iOS pair. `release-packages.yml` installs nightly + rust-src on the macOS legs and runs `cargo +nightly build -Z build-std=core,std,panic_abort` against `aarch64-apple-{tvos,visionos}` / `arm64_32-apple-watchos` plus their `-sim` triples; staging copies device libs as `libperry_{runtime,stdlib,ui_<plat>}.a` and sim variants with a `_sim` suffix. No code changes — `library_search.rs::apple_class_lib_name` already maps every `--target` to the right variant (covered by `handles_other_class_suffixes`).
 - **v0.5.511** — release-CI gate fix (round 2): add `test_edge_closures` to the `compile-smoke` job's inline `SKIP_TESTS` list in `.github/workflows/test.yml`. The compile-smoke job has its own skip mechanism separate from `parity`'s `known_failures.json`; adding to one without the other left the smoke gate failing on #456 (LLVM `@perry_global_*` collision).
 - **v0.5.510** — release-CI gate fixes: `cargo fmt --all` to clear pre-existing rustfmt drift in `unroll.rs` / `inline.rs` / `expr.rs` / etc. (lint job was failing on v0.5.502+); add #456 (test_edge_closures LLVM global name collision) + #457 (test_gap_generators genWithReturn drift) to `test-parity/known_failures.json` so the parity gate passes. Both pre-existing — issues filed for follow-up. Unblocks v0.5.509 release publish (which had been gated on Tests).
 - **v0.5.509** — Closes #447 + un-skip 6 async tests in `run_parity_tests.sh::SKIP_TESTS`. The v0.5.508 ABI fix on `js_object_set_field` transitively fixed #447's deeper "body doesn't execute" bug — the async-to-generator iter object was hit by the same DOUBLE/u64 register-class mismatch. `test_async` / `test_async2…5` / `test_async_chain` all now match node byte-for-byte; `test_gap_async_advanced` prints all 28 expected lines including "ALL ASYNC ADVANCED TESTS PASSED".
