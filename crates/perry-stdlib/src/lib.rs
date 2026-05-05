@@ -36,6 +36,10 @@ pub mod lodash;
 pub mod lru_cache;
 pub mod moment;
 pub mod readline;
+// slugify is feature-gated as of v0.5.536 so the well-known bindings
+// flip can route `import 'slugify'` to perry-ext-slugify cleanly.
+// Default-on through `default = ["full"]`.
+#[cfg(feature = "bundled-slugify")]
 pub mod slugify;
 pub mod worker_threads;
 
@@ -53,6 +57,7 @@ pub use lodash::*;
 pub use lru_cache::*;
 pub use moment::*;
 pub use readline::*;
+#[cfg(feature = "bundled-slugify")]
 pub use slugify::*;
 pub use worker_threads::*;
 

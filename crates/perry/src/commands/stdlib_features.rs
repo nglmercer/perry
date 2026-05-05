@@ -86,8 +86,11 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         "uuid" => &["bundled-uuid"],
         "nanoid" => &["bundled-nanoid"],
 
-        // Slugify is in the always-on stdlib core (no optional dep).
-        "slugify" => &[],
+        // Slugify gained the `bundled-slugify` feature in v0.5.536 so
+        // the well-known flip can swap it out for perry-ext-slugify.
+        // Default-on via `default = ["full"]` keeps existing
+        // `import 'slugify'` calls byte-identical.
+        "slugify" => &["bundled-slugify"],
         // dotenv was always-on through v0.5.532; gated behind
         // `bundled-dotenv` from v0.5.533 onwards so the well-known
         // bindings flip (#466 Phase 4 step 2) can swap perry-stdlib's

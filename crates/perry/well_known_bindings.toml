@@ -46,3 +46,8 @@ tracking = "#466"
 crate = "perry-ext-uuid"
 lib = "perry_ext_uuid"
 tracking = "#466"
+
+[bindings.slugify]
+crate = "perry-ext-slugify"
+lib = "perry_ext_slugify"
+tracking = "#466"
