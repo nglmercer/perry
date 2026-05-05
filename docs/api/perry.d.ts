@@ -1,7 +1,7 @@
 // Auto-generated from Perry's API manifest (#465). Do not edit by hand.
 // Source: perry-api-manifest::API_MANIFEST
-// Perry version: 0.5.529
-// Coverage: 378 entries across 43 modules
+// Perry version: 0.5.560
+// Coverage: 397 entries across 45 modules
 
 declare module "argon2" {
   /** stdlib */
@@ -118,6 +118,11 @@ declare module "ioredis" {
   export class Redis { [key: string]: any; }
   /** stdlib */
   export function createClient(...args: any[]): any;
+}
+
+declare module "iroh" {
+  /** stdlib */
+  export function bind(...args: any[]): any;
 }
 
 declare module "jsonwebtoken" {
@@ -402,6 +407,11 @@ declare module "slugify" {
 declare module "tls" {
   /** stdlib */
   export function connect(...args: any[]): any;
+}
+
+declare module "tursodb" {
+  /** stdlib */
+  export function open(...args: any[]): any;
 }
 
 declare module "url" {

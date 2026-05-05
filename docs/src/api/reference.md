@@ -2,9 +2,9 @@
 
 This page is auto-generated from Perry's compile-time API manifest (`perry-api-manifest::API_MANIFEST`). It is the source of truth for what `perry compile` accepts; references to symbols not listed here produce `R005 UnimplementedApi` (issue #463). Stubs (#464) are flagged ⚠ — they link cleanly but no-op at runtime on the chosen target.
 
-**Generated for Perry v0.5.529.**
+**Generated for Perry v0.5.560.**
 
-Total: 378 entries across 43 modules.
+Total: 397 entries across 45 modules.
 
 ## Modules
 
@@ -25,6 +25,7 @@ Total: 378 entries across 43 modules.
 - [`exponential-backoff`](#exponential-backoff)
 - [`fastify`](#fastify)
 - [`ioredis`](#ioredis)
+- [`iroh`](#iroh)
 - [`jsonwebtoken`](#jsonwebtoken)
 - [`lodash`](#lodash)
 - [`lru-cache`](#lru-cache)
@@ -45,6 +46,7 @@ Total: 378 entries across 43 modules.
 - [`sharp`](#sharp)
 - [`slugify`](#slugify)
 - [`tls`](#tls)
+- [`tursodb`](#tursodb)
 - [`url`](#url)
 - [`uuid`](#uuid)
 - [`validator`](#validator)
@@ -303,6 +305,22 @@ Total: 378 entries across 43 modules.
 - `incr` — instance
 - `quit` — instance
 - `set` — instance
+
+## `iroh`
+
+### Methods
+
+- `acceptBi` — instance
+- `acceptOne` — instance
+- `bind` — module
+- `close` — instance
+- `connClose` — instance
+- `connect` — instance
+- `nodeId` — instance
+- `openBi` — instance
+- `streamFinish` — instance
+- `streamReadToEnd` — instance
+- `streamWrite` — instance
 
 ## `jsonwebtoken`
 
@@ -610,6 +628,19 @@ Total: 378 entries across 43 modules.
 ### Methods
 
 - `connect` — module
+
+## `tursodb`
+
+### Methods
+
+- `close` — instance
+- `exec` — instance
+- `execBatch` — instance
+- `isAutocommit` — instance
+- `lastInsertRowid` — instance
+- `open` — module
+- `queryAll` — instance
+- `queryOne` — instance
 
 ## `url`
 
