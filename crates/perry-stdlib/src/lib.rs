@@ -28,6 +28,10 @@ pub mod perry_ffi_async;
 
 // Core modules - always available
 pub mod async_local_storage;
+// commander — feature-gated as of v0.5.555 so the well-known flip
+// can route `import { Command } from 'commander'` to
+// perry-ext-commander without duplicate `_js_commander_*` symbols.
+#[cfg(feature = "bundled-commander")]
 pub mod commander;
 pub mod common;
 // dayjs / date-fns — feature-gated as of v0.5.548 so the well-known
@@ -74,6 +78,7 @@ pub mod worker_threads;
 
 // Re-export core
 pub use async_local_storage::*;
+#[cfg(feature = "bundled-commander")]
 pub use commander::*;
 pub use common::*;
 #[cfg(feature = "bundled-dayjs")]

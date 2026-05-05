@@ -151,3 +151,8 @@ tracking = "#466"
 crate = "perry-ext-ratelimit"
 lib = "perry_ext_ratelimit"
 tracking = "#466"
+
+[bindings.commander]
+crate = "perry-ext-commander"
+lib = "perry_ext_commander"
+tracking = "#466"
