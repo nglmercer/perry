@@ -91,3 +91,8 @@ tracking = "#466"
 crate = "perry-ext-exponential-backoff"
 lib = "perry_ext_exponential_backoff"
 tracking = "#466"
+
+[bindings.tursodb]
+crate = "perry-ext-tursodb"
+lib = "perry_ext_tursodb"
+tracking = "#424"

@@ -1,0 +1,14 @@
+[package]
+name = "perry-ext-tursodb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native bindings for the npm `tursodb` / `@libsql/client` packages — uses only `perry-ffi`. Closes #424. Tursodb is a pure-Rust SQLite-compatible engine with extras (MVCC, encryption, …); this wrapper exposes it to TypeScript with the same Promise-based surface as `better-sqlite3`'s async equivalents."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+perry-ffi.workspace = true
+turso = "0.2"
+tokio = { workspace = true }

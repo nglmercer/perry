@@ -49,6 +49,7 @@ pub const NATIVE_MODULES: &[&str] = &[
     "ethers",
     "mongodb",
     "better-sqlite3",
+    "tursodb",
     "node-cron",
     "nodemailer",
     "http",
@@ -261,6 +262,15 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("better-sqlite3", "all", true, None),
     method("better-sqlite3", "exec", true, None),
     method("better-sqlite3", "close", true, None),
+    // tursodb (#424). MVP surface — open / exec / execBatch /
+    // close / lastInsertRowid / isAutocommit. prepare / run /
+    // get / all are followups.
+    method("tursodb", "open", false, None),
+    method("tursodb", "exec", true, None),
+    method("tursodb", "execBatch", true, None),
+    method("tursodb", "close", true, None),
+    method("tursodb", "lastInsertRowid", true, None),
+    method("tursodb", "isAutocommit", true, None),
     method("ws", "Server", false, None),
     method("ws", "WebSocket", false, None),
     method("ws", "on", true, None),
