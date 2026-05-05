@@ -203,7 +203,52 @@ fn scan_expr_for_max_local(expr: &Expr, max_id: &mut LocalId) {
                 scan_expr_for_max_local(a, max_id);
             }
         }
+        Expr::CallSpread { callee, args, .. } => {
+            scan_expr_for_max_local(callee, max_id);
+            for a in args {
+                let inner = match a {
+                    CallArg::Expr(e) | CallArg::Spread(e) => e,
+                };
+                scan_expr_for_max_local(inner, max_id);
+            }
+        }
         Expr::New { args, .. } => {
+            for a in args {
+                scan_expr_for_max_local(a, max_id);
+            }
+        }
+        Expr::NewDynamic { callee, args } => {
+            scan_expr_for_max_local(callee, max_id);
+            for a in args {
+                scan_expr_for_max_local(a, max_id);
+            }
+        }
+        // Issue #393: NativeMethodCall args carry the route handler
+        // closures emitted by `app.post('/route', async (req, reply) => { ... })`
+        // and the WS callback closures from `wss.on('listening', () => ...)`.
+        // Without this arm those closures' params are invisible to the scanner,
+        // and the async-to-generator step closures the next pass synthesizes
+        // collide with their LocalIds — manifesting as `js_box_set: invalid box
+        // pointer` warnings + a SIGSEGV at hub-scale (perry-hub).
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(obj) = object {
+                scan_expr_for_max_local(obj, max_id);
+            }
+            for a in args {
+                scan_expr_for_max_local(a, max_id);
+            }
+        }
+        Expr::StaticMethodCall { args, .. } => {
+            for a in args {
+                scan_expr_for_max_local(a, max_id);
+            }
+        }
+        Expr::SuperCall(args) => {
+            for a in args {
+                scan_expr_for_max_local(a, max_id);
+            }
+        }
+        Expr::SuperMethodCall { args, .. } => {
             for a in args {
                 scan_expr_for_max_local(a, max_id);
             }
@@ -406,7 +451,54 @@ fn scan_expr_for_max_func(expr: &Expr, max_id: &mut FuncId) {
                 scan_expr_for_max_func(a, max_id);
             }
         }
+        Expr::CallSpread { callee, args, .. } => {
+            scan_expr_for_max_func(callee, max_id);
+            for a in args {
+                let inner = match a {
+                    CallArg::Expr(e) | CallArg::Spread(e) => e,
+                };
+                scan_expr_for_max_func(inner, max_id);
+            }
+        }
         Expr::New { args, .. } => {
+            for a in args {
+                scan_expr_for_max_func(a, max_id);
+            }
+        }
+        Expr::NewDynamic { callee, args } => {
+            scan_expr_for_max_func(callee, max_id);
+            for a in args {
+                scan_expr_for_max_func(a, max_id);
+            }
+        }
+        // Issue #393: see the matching arm in `scan_expr_for_max_local`.
+        // Same gap on the FuncId side — async route handlers passed to
+        // `app.post('/r', async (req, reply) => { ... })` register here as
+        // `NativeMethodCall { args: [..., Closure { func_id, .. }] }`. Without
+        // this arm `transform_generators`'s `next_func_id` starts below those
+        // closures' ids and the synthesized async-step closures collide with
+        // them at codegen, leaving the alloc site emitting `i32 1` capture
+        // slots while the body reads capture[16] off the end of the
+        // allocation.
+        Expr::NativeMethodCall { object, args, .. } => {
+            if let Some(obj) = object {
+                scan_expr_for_max_func(obj, max_id);
+            }
+            for a in args {
+                scan_expr_for_max_func(a, max_id);
+            }
+        }
+        Expr::StaticMethodCall { args, .. } => {
+            for a in args {
+                scan_expr_for_max_func(a, max_id);
+            }
+        }
+        Expr::SuperCall(args) => {
+            for a in args {
+                scan_expr_for_max_func(a, max_id);
+            }
+        }
+        Expr::SuperMethodCall { args, .. } => {
             for a in args {
                 scan_expr_for_max_func(a, max_id);
             }
