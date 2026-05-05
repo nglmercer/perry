@@ -20,6 +20,7 @@
 # npm Packages
 
 - [Porting Packages (experimental)](packages/porting.md)
+- [Writing Native Bindings (perry-ffi)](native-libraries/abi.md)
 
 # Multi-Threading
 
