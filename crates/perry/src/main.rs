@@ -34,6 +34,14 @@ struct Cli {
     /// Disable colored output
     #[arg(long, global = true)]
     no_color: bool,
+
+    /// Emit the structured manifest of supported stdlib APIs as JSON
+    /// and exit. The same source-of-truth that the unimplemented-API
+    /// check (#463) consults. Documentation generators (#465) and
+    /// editor `.d.ts` emit feed off this output. No subcommand is
+    /// required — `perry --print-api-manifest` works on its own.
+    #[arg(long, global = true)]
+    print_api_manifest: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -189,6 +197,20 @@ fn main_inner() -> Result<()> {
 
     // Determine if colors should be used
     let use_color = !cli.no_color && !cli.quiet && std::io::stdout().is_terminal();
+
+    // `--print-api-manifest` short-circuits before any subcommand
+    // dispatch — emits the structured manifest as JSON and exits 0.
+    // Drives docs / .d.ts generation (#465) and lets editor tooling
+    // discover the supported surface without reading Rust source.
+    if cli.print_api_manifest {
+        let entries: Vec<_> = perry_api_manifest::iter_entries().collect();
+        let payload = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "entries": entries,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
 
     // Handle no command case
     if cli.command.is_none() {

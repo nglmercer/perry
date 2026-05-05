@@ -7742,6 +7742,17 @@ fn find_outer_writes_expr(
     }
 }
 
+/// Iterate the dispatch table, projected to manifest-relevant fields.
+/// Used by `perry-codegen`'s public `iter_native_method_signatures()`
+/// — see `lib.rs`. Stable order = declaration order in
+/// `NATIVE_MODULE_TABLE`.
+pub(crate) fn iter_native_module_table(
+) -> impl Iterator<Item = (&'static str, bool, &'static str, Option<&'static str>)> {
+    NATIVE_MODULE_TABLE
+        .iter()
+        .map(|sig| (sig.module, sig.has_receiver, sig.method, sig.class_filter))
+}
+
 /// Look up a native module method in the static dispatch table.
 /// Entries with `class_filter: Some("Pool")` only match when
 /// `class_name == Some("Pool")`; entries with `class_filter: None`

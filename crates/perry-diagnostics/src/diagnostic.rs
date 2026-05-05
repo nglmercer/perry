@@ -100,6 +100,13 @@ pub enum DiagnosticCode {
     /// Reference to a no-op stub symbol — code links and runs but
     /// the call silently does nothing on the chosen target (#464).
     NoOpStub,
+    /// Reference to a stdlib symbol Perry doesn't implement (#463).
+    /// Distinct from `NoOpStub`: stubs link to real but no-op code on
+    /// some targets; this fires when the symbol isn't backed by any
+    /// implementation at all (e.g. `crypto.subtle.encrypt`). Manifest
+    /// lookup happens at HIR lowering time, so the user sees the error
+    /// before the binary is built — no more silent wrong output.
+    UnimplementedApi,
 
     // Internal errors (I001-I099)
     /// Internal compiler error
@@ -148,6 +155,7 @@ impl DiagnosticCode {
             Self::UndefinedFunction => "R002",
             Self::UnresolvedImport => "R003",
             Self::NoOpStub => "R004",
+            Self::UnimplementedApi => "R005",
 
             // Internal errors
             Self::InternalError => "I001",
@@ -174,6 +182,7 @@ impl DiagnosticCode {
             | Self::UndefinedVariable
             | Self::UndefinedFunction
             | Self::UnresolvedImport
+            | Self::UnimplementedApi
             | Self::InternalError => Severity::Error,
 
             // Warnings

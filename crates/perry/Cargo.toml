@@ -24,6 +24,7 @@ perry-codegen-arkts.workspace = true
 perry-codegen-glance.workspace = true
 perry-codegen-wear-tiles.workspace = true
 perry-codegen-wasm.workspace = true
+perry-api-manifest = { workspace = true, features = ["serde"] }
 
 clap.workspace = true
 anyhow.workspace = true
