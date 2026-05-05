@@ -4273,7 +4273,11 @@ fn lower_module_decl(
                         }
 
                         // Check if the variable is a closure or other exportable object
-                        // by looking through init statements
+                        // by looking through init statements. For #460: also catch let
+                        // bindings whose init is a function-reference value
+                        // (`const _await = core.deferredAwait`) — without this branch
+                        // the renamed export `_await as await` produces no backing
+                        // global / getter at all and `_perry_fn_<mod>__await` link-fails.
                         for stmt in &module.init {
                             if let Stmt::Let {
                                 name,
@@ -4290,9 +4294,25 @@ fn lower_module_decl(
                                             | Expr::Call { .. }
                                             | Expr::New { .. }
                                             | Expr::JsNew { .. }
+                                            | Expr::LocalGet(_)
+                                            | Expr::FuncRef(_)
+                                            | Expr::ExternFuncRef { .. }
+                                            | Expr::PropertyGet { .. }
                                     );
                                     if is_exportable {
                                         module.exported_objects.push(exported.clone());
+                                        // Ensure the LOCAL name also surfaces as
+                                        // exported — that's what gates the global
+                                        // emission in codegen (`exported_var_names`
+                                        // is built from `exported_objects`).
+                                        // Without the local entry, `_await`'s id
+                                        // is never registered in `module_globals`,
+                                        // so even the local-name getter is missing
+                                        // and call sites that resolve through the
+                                        // local name fall through to undefined.
+                                        if !module.exported_objects.contains(&local) {
+                                            module.exported_objects.push(local.clone());
+                                        }
                                     }
                                     break;
                                 }

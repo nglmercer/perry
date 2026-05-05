@@ -1083,13 +1083,51 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                     .functions
                     .iter()
                     .any(|f| f.is_exported && f.name == *name);
-                if is_exported && !is_also_function {
+                // Also skip the value-getter when this name is already an
+                // exported function alias (e.g. `export const async = _async`
+                // or `export { _void as void }`). For those the #460 forwarding
+                // wrapper below emits a `perry_fn_<modprefix>__<name>`
+                // definition that actually calls the underlying function;
+                // emitting a getter here on top would be a redef and is
+                // semantically wrong (it'd return the closure value instead
+                // of invoking it).
+                let is_function_alias = hir
+                    .exported_functions
+                    .iter()
+                    .any(|(exp, _)| exp == name);
+                if is_exported && !is_also_function && !is_function_alias {
                     let fn_name = format!("perry_fn_{}__{}", module_prefix, sanitize(name),);
                     let getter = llmod.define_function(&fn_name, DOUBLE, vec![]);
                     let _ = getter.create_block("entry");
                     let blk = getter.block_mut(0).unwrap();
                     let val = blk.load(DOUBLE, &format!("@{}", global_name));
                     blk.ret(DOUBLE, &val);
+
+                    // #460: also emit a duplicate getter under any renamed
+                    // export targeting this local. `export { _await as await }`
+                    // means consumers compute the callee symbol from the
+                    // exported name `await` — without an alias getter the
+                    // link fails on `_perry_fn_<mod>__<keyword>`. The wrapper
+                    // returns the same global value the local-name getter
+                    // returns; callers that invoke it as a function get the
+                    // closure handle (matching status quo for non-renamed
+                    // `export const f = aFunctionRef` exports).
+                    for export in &hir.exports {
+                        if let perry_hir::Export::Named { local, exported } = export {
+                            if local == name && exported != name {
+                                let alias_fn =
+                                    format!("perry_fn_{}__{}", module_prefix, sanitize(exported));
+                                if alias_fn == fn_name {
+                                    continue;
+                                }
+                                let g = llmod.define_function(&alias_fn, DOUBLE, vec![]);
+                                let _ = g.create_block("entry");
+                                let b = g.block_mut(0).unwrap();
+                                let v = b.load(DOUBLE, &format!("@{}", global_name));
+                                b.ret(DOUBLE, &v);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1553,6 +1591,51 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             &cross_module,
         )
         .with_context(|| format!("lowering function '{}'", f.name))?;
+    }
+
+    // Closes #460: emit forwarding wrappers for `export { local as exported }`
+    // renames where the exported name differs from the function's local HIR
+    // name. Without these, cross-module callers compute the callee symbol
+    // from the *exported* name (`perry_fn_<src>__<exported>`) and link-fail
+    // because the body was emitted under the *local* name. Bites contextual-
+    // keyword renames the worst — Effect's `void_ as void`, `_async as async`,
+    // `_await as await`, etc. all left link-undefined `_perry_fn_..._<keyword>`.
+    {
+        use std::collections::HashSet;
+        let mut emitted_aliases: HashSet<String> = HashSet::new();
+        let func_by_id: HashMap<u32, &perry_hir::Function> =
+            hir.functions.iter().map(|f| (f.id, f)).collect();
+        for (exported_name, func_id) in &hir.exported_functions {
+            let Some(f) = func_by_id.get(func_id) else {
+                continue;
+            };
+            if &f.name == exported_name {
+                continue;
+            }
+            let alias_sym = format!("perry_fn_{}__{}", module_prefix, sanitize(exported_name));
+            let target_sym = match func_names.get(func_id) {
+                Some(s) => s.clone(),
+                None => continue,
+            };
+            if alias_sym == target_sym {
+                continue;
+            }
+            if !emitted_aliases.insert(alias_sym.clone()) {
+                continue;
+            }
+            let param_count = f.params.len();
+            let wrap_params: Vec<(LlvmType, String)> = (0..param_count)
+                .map(|i| (DOUBLE, format!("%a{}", i)))
+                .collect();
+            let wf = llmod.define_function(&alias_sym, DOUBLE, wrap_params);
+            let _ = wf.create_block("entry");
+            let blk = wf.block_mut(0).unwrap();
+            let arg_names: Vec<String> = (0..param_count).map(|i| format!("%a{}", i)).collect();
+            let call_args: Vec<(LlvmType, &str)> =
+                arg_names.iter().map(|s| (DOUBLE, s.as_str())).collect();
+            let result = blk.call(DOUBLE, &target_sym, &call_args);
+            blk.ret(DOUBLE, &result);
+        }
     }
 
     // Lower each closure body as a top-level LLVM function.
