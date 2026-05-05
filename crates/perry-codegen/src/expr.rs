@@ -6281,6 +6281,54 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 .filter(|a| matches!(a, CallArg::Expr(_)))
                 .count();
 
+            // console.log(...arr) / .info / .warn / .error / .debug — bundle
+            // every regular arg + every spread source into a single array,
+            // then dispatch to js_console_{log,warn,error}_spread. Without
+            // this, the generic closure-spread path below treats `console.log`
+            // as a closure value and js_closure_call_apply_with_spread fails
+            // to dispatch (issue #407). Mirrors the multi-arg console.* path
+            // in the Expr::Call codegen at lower_call.rs.
+            if let Expr::PropertyGet { object, property } = callee.as_ref() {
+                if matches!(object.as_ref(), Expr::GlobalGet(_))
+                    && matches!(
+                        property.as_str(),
+                        "log" | "info" | "warn" | "error" | "debug"
+                    )
+                {
+                    let mut acc_handle =
+                        ctx.block().call(I64, "js_array_alloc", &[(I32, "0")]);
+                    for a in args {
+                        match a {
+                            CallArg::Expr(e) => {
+                                let v = lower_expr(ctx, e)?;
+                                acc_handle = ctx.block().call(
+                                    I64,
+                                    "js_array_push_f64",
+                                    &[(I64, &acc_handle), (DOUBLE, &v)],
+                                );
+                            }
+                            CallArg::Spread(e) => {
+                                let part_box = lower_expr(ctx, e)?;
+                                let blk = ctx.block();
+                                let part_handle = unbox_to_i64(blk, &part_box);
+                                acc_handle = ctx.block().call(
+                                    I64,
+                                    "js_array_concat",
+                                    &[(I64, &acc_handle), (I64, &part_handle)],
+                                );
+                            }
+                        }
+                    }
+                    let runtime_fn = match property.as_str() {
+                        "warn" => "js_console_warn_spread",
+                        "error" => "js_console_error_spread",
+                        _ => "js_console_log_spread",
+                    };
+                    ctx.block().call_void(runtime_fn, &[(I64, &acc_handle)]);
+                    return Ok(double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED)));
+                }
+            }
+
             if let Expr::FuncRef(fid) = callee.as_ref() {
                 if spread_count == 1 && regular_count == 0 {
                     if let (Some(fname), Some(sig)) = (
