@@ -168,9 +168,9 @@ pub mod sqlite;
 #[cfg(feature = "database-sqlite")]
 pub use sqlite::*;
 
-#[cfg(feature = "database-redis")]
+#[cfg(feature = "bundled-ioredis")]
 pub mod ioredis;
-#[cfg(feature = "database-redis")]
+#[cfg(feature = "bundled-ioredis")]
 pub use ioredis::*;
 
 #[cfg(feature = "database-mongodb")]

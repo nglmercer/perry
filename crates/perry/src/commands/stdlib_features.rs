@@ -54,7 +54,10 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         "iroh" => &[],
         // Redis is detected via the ioredis class name in collect_modules,
         // but if it shows up as an explicit import we still need the feature.
-        "ioredis" | "redis" => &["database-redis"],
+        // `database-redis` umbrella retained for backwards-compat;
+        // per-binding gate is `bundled-ioredis` (v0.5.565) so the
+        // well-known flip can route to perry-ext-ioredis.
+        "ioredis" | "redis" => &["bundled-ioredis"],
         "mongodb" => &["database-mongodb"],
 
         // ── Crypto ────────────────────────────────────────────────────

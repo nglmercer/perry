@@ -87,7 +87,10 @@ database = ["database-postgres", "database-mysql", "database-sqlite", "database-
 database-postgres = ["dep:sqlx", "async-runtime"]
 database-mysql = ["dep:sqlx", "async-runtime"]
 database-sqlite = ["dep:rusqlite"]
-database-redis = ["dep:redis", "async-runtime"]
+# `database-redis` umbrella retained for backwards-compat;
+# v0.5.565's well-known flip toggles `bundled-ioredis` instead.
+database-redis = ["bundled-ioredis"]
+bundled-ioredis = ["dep:redis", "async-runtime"]
 database-mongodb = ["dep:mongodb", "dep:bson", "dep:futures-util", "async-runtime"]
 
 # Crypto (sha256, md5, bcrypt, jwt, etc.)

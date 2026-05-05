@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Perry is a native TypeScript compiler written in Rust that compiles TypeScript source code directly to native executables. It uses SWC for TypeScript parsing and LLVM for code generation.
 
-**Current Version:** 0.5.564
+**Current Version:** 0.5.565
 
 
 ## TypeScript Parity Status
@@ -152,6 +152,8 @@ First-resolved directory cached in `compile_package_dirs`; subsequent imports re
 ## Recent Changes
 
 One-liners only — full detail in CHANGELOG.md.
+
+- **v0.5.565** — Refs #466 (Phase 5 step 25 — port ioredis): new `crates/perry-ext-ioredis/` ports the npm `ioredis` Redis client. 18 `js_ioredis_*` exports — full surface (`new` constructor sync; `connect` / `set` / `setex` / `get` / `del` / `exists` / `incr` / `decr` / `expire` / `ping` / `hget` / `hset` / `hgetall` / `hdel` / `hlen` / `quit` async via `spawn_blocking + JsPromise + tokio::Handle::current().block_on`; `disconnect` sync). Lazy connection: `MultiplexedConnection` cached per handle in a global `HashMap` (matches perry-stdlib's existing copy). Env-var-driven URL construction (`REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_TLS`) preserved verbatim. Internal `dispatch<F, Fut, T>(handle, op_label, op)` helper takes ownership of the connection-acquisition + 10s timeout + result-mapping boilerplate, so each command function is two lines: read the args, call dispatch with a closure that runs the redis op. The new `ToJsValue` trait converts Redis return types (`()`, `i64`, `Option<String>`, `String`, `bool`) into `JsValue` for promise resolution — `()` → `"OK"` string per ioredis semantics, `Option<String>` → `JsValue::NULL` on None. `hgetall` returns a dynamically-keyed object built via `build_object_shape(&keys)` + `js_object_alloc_with_shape` + `js_object_set_field` (replaces perry-stdlib's `js_object_alloc(0, n)` no-shape pattern; observable behavior is identical since user code accesses fields through dynamic property lookup). perry-stdlib's `database-redis` umbrella retained for backwards-compat but flipped to `["bundled-ioredis"]`; new `bundled-ioredis = ["dep:redis", "async-runtime"]` per-binding gate is what the well-known flip toggles. `optimized_libs::build_optimized_libs` re-asserts `async-runtime` when stripping `bundled-ioredis` (joins the existing async-wrapper allowlist) so perry-stdlib's `perry_ffi_async.rs` shim still compiles. Brings the in-tree wrapper port count to 25.
 
 - **v0.5.564** — Refs #466 (Phase 5 step 24 — port cron + clear external-fetch blocker): two related landings.
 
