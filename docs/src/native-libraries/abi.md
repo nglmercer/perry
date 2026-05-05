@@ -12,8 +12,34 @@ GC) are free to change underneath as long as this surface holds.
 ## Versioning
 
 `perry-ffi` ships its own semver, currently tracking Perry's minor:
-`perry-ffi = "0.5"` for Perry `0.5.x`. Wrappers depend on the
-crate from crates.io (`cargo add perry-ffi`).
+`perry-ffi = "0.5"` for Perry `0.5.x`.
+
+**v0.5.x consumption (current)**: until the v0.6.0 type-source-of-truth
+refactor lands, `perry-ffi` re-exports a handful of types from
+`perry-runtime` (`StringHeader`, `ArrayHeader`, `ObjectHeader`,
+`BigIntHeader`, `BufferHeader`, `ClosureHeader`, `Promise`). That
+makes it un-publishable to crates.io as-is — `perry-runtime` is a
+private dep and not something we want on crates.io. Wrappers
+depend on `perry-ffi` via the git URL while we're in the v0.5.x
+cycle:
+
+```toml
+[dependencies]
+perry-ffi = { git = "https://github.com/PerryTS/perry", branch = "main" }
+```
+
+`PerryTS/tursodb-bindings` and `PerryTS/iroh-bindings` ship this
+shape and `cargo build` against the live `main` branch.
+
+**v0.6.0 plan (deferred)**: invert the type ownership so `perry-ffi`
+becomes the source of truth — it defines `#[repr(C)]` versions of
+the ABI types itself, exposes opaque pointers for `Promise` /
+`ClosureHeader` (which have private state), and `perry-runtime`
+imports the types from `perry-ffi`. At that point `perry-ffi` has
+zero `perry-runtime` deps and can publish to crates.io as
+`perry-ffi = "0.6"` — wrappers switch to `cargo add perry-ffi`.
+Tracked under [#466 Phase 1] as a v0.6.0 followup; the v0.5.x
+git-URL approach is supported and tested end-to-end in the meantime.
 
 A wrapper's `package.json` declares the ABI it was built against:
 
