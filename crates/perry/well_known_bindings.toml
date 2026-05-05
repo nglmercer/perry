@@ -156,3 +156,8 @@ tracking = "#466"
 crate = "perry-ext-commander"
 lib = "perry_ext_commander"
 tracking = "#466"
+
+[bindings.ethers]
+crate = "perry-ext-ethers"
+lib = "perry_ext_ethers"
+tracking = "#466"

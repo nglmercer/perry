@@ -64,6 +64,12 @@ pub use jsvalue::{
 mod closure;
 pub use closure::{JsClosure, RawClosureHeader};
 
+mod bigint;
+pub use bigint::{alloc_bigint_from_str, read_bigint_limbs, BigIntHeader, BIGINT_LIMBS};
+
+mod buffer;
+pub use buffer::{alloc_buffer, read_buffer_bytes, BufferHeader};
+
 use perry_runtime::js_string_from_bytes;
 pub use perry_runtime::StringHeader;
 

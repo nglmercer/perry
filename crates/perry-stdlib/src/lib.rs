@@ -185,9 +185,13 @@ pub mod crypto;
 pub use crypto::*;
 
 // === Ethers (blockchain utilities) ===
-#[cfg(feature = "crypto")]
+// Feature-gated as of v0.5.556 so the well-known flip can route
+// `import { parseUnits } from 'ethers'` to perry-ext-ethers.
+// Default-on through `crypto` (which is on by default) so
+// existing programs keep their byte-identical behavior.
+#[cfg(feature = "bundled-ethers")]
 pub mod ethers;
-#[cfg(feature = "crypto")]
+#[cfg(feature = "bundled-ethers")]
 pub use ethers::*;
 
 // bcrypt + argon2 split out from the broad `crypto` feature in

@@ -99,10 +99,14 @@ database-mongodb = ["dep:mongodb", "dep:bson", "dep:futures-util", "async-runtim
 # bindings so the well-known flip (#466 Phase 4 step 2) can route them
 # to perry-ext-bcrypt / perry-ext-argon2 without taking the rest of
 # the crypto surface offline.
-crypto = ["dep:sha2", "dep:sha1", "dep:md-5", "dep:hex", "dep:hmac", "dep:aes", "dep:cbc", "dep:scrypt", "dep:pbkdf2", "dep:base64", "dep:x25519-dalek", "dep:ed25519-dalek", "dep:aes-gcm", "dep:hkdf", "async-runtime", "ids", "bundled-bcrypt", "bundled-argon2", "bundled-jsonwebtoken"]
+crypto = ["dep:sha2", "dep:sha1", "dep:md-5", "dep:hex", "dep:hmac", "dep:aes", "dep:cbc", "dep:scrypt", "dep:pbkdf2", "dep:base64", "dep:x25519-dalek", "dep:ed25519-dalek", "dep:aes-gcm", "dep:hkdf", "async-runtime", "ids", "bundled-bcrypt", "bundled-argon2", "bundled-jsonwebtoken", "bundled-ethers"]
 bundled-bcrypt = ["dep:bcrypt", "async-runtime"]
 bundled-argon2 = ["dep:argon2", "async-runtime"]
 bundled-jsonwebtoken = ["dep:jsonwebtoken"]
+# ethers blockchain utilities — pure Rust, no extra deps. Default-on
+# through `crypto` umbrella; the well-known flip strips this and
+# routes to perry-ext-ethers when `import 'ethers'` is detected.
+bundled-ethers = []
 
 # Compression (zlib)
 compression = ["dep:flate2"]
