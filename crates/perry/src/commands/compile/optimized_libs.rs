@@ -154,6 +154,9 @@ pub(super) fn build_optimized_libs(
                         | "bundled-pg"
                         | "bundled-mysql2"
                         | "bundled-mongodb"
+                        | "bundled-ws"
+                        | "bundled-net"
+                        | "http-client"
                 )
             }) {
                 features.insert("async-runtime");

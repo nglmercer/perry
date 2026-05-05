@@ -76,16 +76,24 @@ http-server = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:bytes",
 # share the reqwest dep so splitting saves no binary size.
 http-client = ["dep:reqwest", "async-runtime"]
 
-# WebSocket
-websocket = ["dep:tokio-tungstenite", "dep:futures-util", "async-runtime"]
+# WebSocket — `websocket` umbrella retained for backwards-compat;
+# v0.5.571's well-known flip toggles `bundled-ws` instead so
+# `import 'ws'` can route to perry-ext-ws without duplicate
+# `_js_ws_*` symbols at link time.
+websocket = ["bundled-ws"]
+bundled-ws = ["dep:tokio-tungstenite", "dep:futures-util", "async-runtime"]
 
 # Raw TCP sockets (`net.Socket` — Postgres wire driver, custom protocols).
-net = ["async-runtime"]
+# `net` umbrella retained for backwards-compat; v0.5.571's
+# well-known flip toggles `bundled-net` instead so `import 'net'`
+# can route to perry-ext-net.
+net = ["bundled-net"]
+bundled-net = ["async-runtime"]
 
 # TLS — direct `tls.connect()` and `socket.upgradeToTLS()` (Postgres SSLRequest flow).
 # Uses rustls (not native-tls) to avoid OpenSSL on every platform and keep Android
 # cross-compile unblocked; matches reqwest/tokio-tungstenite/mongodb feature flags.
-tls = ["net", "dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs"]
+tls = ["bundled-net", "dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs"]
 
 # Databases
 database = ["database-postgres", "database-mysql", "database-sqlite", "database-redis", "database-mongodb"]

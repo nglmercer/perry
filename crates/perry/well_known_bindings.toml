@@ -218,3 +218,23 @@ tracking = "#466"
 crate = "perry-ext-fetch"
 lib = "perry_ext_fetch"
 tracking = "#466"
+
+[bindings.ws]
+crate = "perry-ext-ws"
+lib = "perry_ext_ws"
+tracking = "#466"
+
+[bindings.net]
+crate = "perry-ext-net"
+lib = "perry_ext_net"
+tracking = "#466"
+
+[bindings.http]
+crate = "perry-ext-http"
+lib = "perry_ext_http"
+tracking = "#466"
+
+[bindings.https]
+crate = "perry-ext-http"
+lib = "perry_ext_http"
+tracking = "#466"

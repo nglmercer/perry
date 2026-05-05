@@ -40,6 +40,9 @@ members = [
     "crates/perry-ext-mysql2",
     "crates/perry-ext-fetch",
     "crates/perry-ext-mongodb",
+    "crates/perry-ext-ws",
+    "crates/perry-ext-net",
+    "crates/perry-ext-http",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -107,6 +110,9 @@ default-members = [
     "crates/perry-ext-mysql2",
     "crates/perry-ext-fetch",
     "crates/perry-ext-mongodb",
+    "crates/perry-ext-ws",
+    "crates/perry-ext-net",
+    "crates/perry-ext-http",
     "crates/perry-jsruntime",
     "crates/perry-stdlib",
     "crates/perry-diagnostics",
@@ -177,7 +183,7 @@ opt-level = "s"       # Optimize for size in stdlib
 opt-level = 3
 
 [workspace.package]
-version = "0.5.568"
+version = "0.5.571"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/PerryTS/perry"
@@ -272,6 +278,9 @@ perry-ext-pg = { path = "crates/perry-ext-pg" }
 perry-ext-mysql2 = { path = "crates/perry-ext-mysql2" }
 perry-ext-fetch = { path = "crates/perry-ext-fetch" }
 perry-ext-mongodb = { path = "crates/perry-ext-mongodb" }
+perry-ext-ws = { path = "crates/perry-ext-ws" }
+perry-ext-net = { path = "crates/perry-ext-net" }
+perry-ext-http = { path = "crates/perry-ext-http" }
 perry-stdlib = { path = "crates/perry-stdlib" }
 perry-diagnostics = { path = "crates/perry-diagnostics" }
 perry-jsruntime = { path = "crates/perry-jsruntime" }

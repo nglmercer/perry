@@ -22,10 +22,19 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         "fastify" => &["http-server"],
 
         // ── HTTP client (reqwest) ─────────────────────────────────────
-        "axios" | "node-fetch" => &["http-client"],
+        // `http` / `https` join the `http-client` umbrella since they
+        // bottom out in reqwest just like axios + node-fetch. The
+        // well-known flip swaps perry-stdlib's http.rs for
+        // perry-ext-http (v0.5.571). Programs that import `streams`
+        // should NOT also use the well-known flip — streams stays in
+        // perry-stdlib until its own port lands.
+        "axios" | "node-fetch" | "http" | "https" => &["http-client"],
 
         // ── WebSocket ─────────────────────────────────────────────────
-        "ws" => &["websocket"],
+        // `websocket` umbrella retained for backwards-compat;
+        // per-binding gate is `bundled-ws` (v0.5.571) so the
+        // well-known flip can route to perry-ext-ws.
+        "ws" => &["bundled-ws"],
 
         // ── Raw TCP sockets (net.Socket) ──────────────────────────────
         // `upgradeToTLS` is a method on net.Socket, so any program using
@@ -33,7 +42,9 @@ pub fn module_to_features(module: &str) -> &'static [&'static str] {
         // fails at link time with `_js_net_socket_upgrade_tls` undefined.
         // The binary-size cost is small; programs that explicitly want
         // zero TLS bytes can still opt in via the lower-level feature flags.
-        "net" => &["net", "tls"],
+        // Per-binding gate is `bundled-net` (v0.5.571) so the well-known
+        // flip can route to perry-ext-net.
+        "net" => &["bundled-net", "tls"],
 
         // ── TLS (tls.connect, socket.upgradeToTLS) ───────────────────
         "tls" => &["tls"],
