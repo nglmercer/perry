@@ -276,11 +276,22 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("tursodb", "close", true, None),
     method("tursodb", "lastInsertRowid", true, None),
     method("tursodb", "isAutocommit", true, None),
-    // iroh (#425). MVP surface — bind / nodeId / close. Full
-    // peer connection / stream API is a followup.
+    // iroh (#425). bind / nodeId / close shipped in v0.5.544; the
+    // peer connection + stream surface (connect / acceptOne /
+    // openBi / acceptBi / streamWrite / streamFinish /
+    // streamReadToEnd / connClose) shipped in v0.5.554. ALPN is
+    // hardcoded to `b"perry-iroh/0"` for v0.
     method("iroh", "bind", false, None),
     method("iroh", "nodeId", true, None),
     method("iroh", "close", true, None),
+    method("iroh", "connect", true, None),
+    method("iroh", "acceptOne", true, None),
+    method("iroh", "openBi", true, None),
+    method("iroh", "acceptBi", true, None),
+    method("iroh", "streamWrite", true, None),
+    method("iroh", "streamFinish", true, None),
+    method("iroh", "streamReadToEnd", true, None),
+    method("iroh", "connClose", true, None),
     method("ws", "Server", false, None),
     method("ws", "WebSocket", false, None),
     method("ws", "on", true, None),
