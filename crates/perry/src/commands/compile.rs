@@ -4025,6 +4025,7 @@ pub fn run_with_parse_cache(
         &compiled_features,
         &runtime_lib,
         &stdlib_lib,
+        &optimized_libs.well_known_libs,
         &jsruntime_lib,
         &exe_path,
         format,

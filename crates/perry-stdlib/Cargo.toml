@@ -13,10 +13,18 @@ crate-type = ["rlib", "staticlib"]
 default = ["full"]
 
 # Full stdlib - everything included
-full = ["http-server", "http-client", "database", "crypto", "compression", "email", "websocket", "image", "scheduler", "ids", "html-parser", "rate-limit", "validation", "net", "tls"]
+full = ["http-server", "http-client", "database", "crypto", "compression", "email", "websocket", "image", "scheduler", "ids", "html-parser", "rate-limit", "validation", "net", "tls", "bundled-dotenv"]
 
 # Minimal core - just what's needed for basic programs
 core = []
+
+# In-tree implementation of the npm `dotenv` package (#466 Phase 4
+# step 2). Default-on; turned off by the compiler when the
+# well-known bindings table (`well_known_bindings.toml`) routes
+# `import 'dotenv'` to `perry-ext-dotenv` so the link line doesn't
+# end up with two copies of `_js_dotenv_*` symbols. Programs that
+# don't import dotenv pay nothing for this either way.
+bundled-dotenv = []
 
 # HTTP server (hyper-based native framework)
 # Note: dashmap is now always-on (used by core handle registry), no longer listed here.

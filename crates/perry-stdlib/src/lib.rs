@@ -23,6 +23,12 @@ pub mod commander;
 pub mod common;
 pub mod dayjs;
 pub mod decimal;
+// dotenv is feature-gated as of v0.5.533 so the well-known bindings
+// table (#466 Phase 4) can route `import 'dotenv'` to perry-ext-dotenv
+// without duplicate _js_dotenv_* symbols at link time. Default-on
+// preserves byte-identical behavior for programs that don't opt into
+// the well-known path.
+#[cfg(feature = "bundled-dotenv")]
 pub mod dotenv;
 pub mod events;
 pub mod exponential_backoff;
@@ -39,6 +45,7 @@ pub use commander::*;
 pub use common::*;
 pub use dayjs::*;
 pub use decimal::*;
+#[cfg(feature = "bundled-dotenv")]
 pub use dotenv::*;
 pub use events::*;
 pub use exponential_backoff::*;
