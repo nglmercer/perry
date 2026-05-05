@@ -59,9 +59,10 @@ pub fn lookup_well_known(package: &str) -> Option<&'static WellKnownBinding> {
     registry().get(normalized)
 }
 
-/// Iterate every entry — used by `perry doctor` (eventually) and by
-/// any tooling that wants to enumerate the bundled surface.
-#[allow(dead_code)] // hooked up in #466 Phase 3's `perry native list`
+/// Walk every binding declared in `well_known_bindings.toml`, in
+/// BTreeMap (alphabetical) order. Used by `perry native list`
+/// (#466 Phase 3) and any other tooling that needs to enumerate
+/// the bundled surface.
 pub fn iter_well_known() -> impl Iterator<Item = &'static WellKnownBinding> {
     registry().values()
 }

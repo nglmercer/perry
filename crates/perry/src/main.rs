@@ -140,6 +140,14 @@ enum Commands {
     /// `perry updater sign`   — sign a binary for a v2 manifest entry.
     /// `perry updater verify` — sanity-check a v2 signature locally.
     Updater(commands::updater::UpdaterArgs),
+
+    /// Native-bindings package tooling (#466 Phase 3).
+    ///
+    /// `perry native init <name>`  — scaffold a new wrapper package.
+    /// `perry native validate`     — diff the manifest vs. the
+    ///                                 staticlib's exported symbols.
+    /// `perry native list`         — list bundled well-known bindings.
+    Native(commands::native::NativeArgs),
 }
 
 /// Check if the first non-flag argument looks like a TypeScript file
@@ -172,6 +180,7 @@ fn is_legacy_invocation(args: &[String]) -> bool {
                 | "types"
                 | "cache"
                 | "updater"
+                | "native"
                 | "help"
         ) {
             return false;
@@ -315,6 +324,7 @@ fn main_inner() -> Result<()> {
         Commands::Types(args) => commands::types::run(args, cli.format, use_color),
         Commands::Cache(args) => commands::cache::run(args, cli.format),
         Commands::Updater(args) => commands::updater::run(args),
+        Commands::Native(args) => commands::native::run(args, cli.format, use_color),
     };
 
     // Send telemetry for non-compile commands (compile is handled above for target/status)
