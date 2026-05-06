@@ -2,13 +2,13 @@ name: Regression Check
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   release:
     types: [published]
   workflow_dispatch:
   schedule:
-    # Nightly at 03:00 UTC catches drift between releases
+    # Nightly at 03:00 UTC catches drift between releases — this is the
+    # main-branch signal now that direct pushes don't trigger benchmarks.
     - cron: '0 3 * * *'
 
 # Don't cancel in-progress benchmark runs — we want complete samples
@@ -20,7 +20,7 @@ env:
   CARGO_TERM_COLOR: always
   MACOSX_DEPLOYMENT_TARGET: "13.0"
   # Release gate: hard-fail on any regression
-  # PR / main push: just warn, don't block (noisy CI runners produce false positives)
+  # Nightly / workflow_dispatch: just warn, don't block (noisy CI runners produce false positives)
   IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' }}
 
 jobs:

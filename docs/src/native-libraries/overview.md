@@ -201,10 +201,15 @@ crates/
                             commander, … (~27 today). All depend on
                             perry-ffi only.
 
-External repos (Layer 3, third-party):
+External native bindings (Layer 3, third-party — Rust + perry-ffi):
   PerryTS/tursodb-bindings    → bun add @perryts/tursodb
   PerryTS/iroh-bindings       → bun add @perryts/iroh
   <anyone>/whatever-bindings  → user publishes themselves
+
+External pure-TypeScript drivers (compiled via compilePackages):
+  PerryTS/postgres            → bun add @perryts/postgres
+  PerryTS/mysql               → bun add @perryts/mysql
+  PerryTS/mongodb             → bun add @perryts/mongodb
 ```
 
 The split between **well-known** in-tree wrappers and **external** is
@@ -214,11 +219,42 @@ The well-known set is the ~30 packages every JS dev expects to import
 without an `npm install` step (`dotenv`, `axios`, `mysql2`, …).
 External wrappers are everything else.
 
-The two existing external wrappers (`tursodb`, `iroh`) cover
+The two existing external native wrappers (`tursodb`, `iroh`) cover
 functionality that doesn't have an in-tree perry-stdlib equivalent —
 they're net-new bindings that originated as third-party packages.
 That validates the contract: perry-ffi is sufficient to write a real
 wrapper without forking Perry.
+
+## Three paths to a database driver (postgres / mysql / mongodb)
+
+Perry currently ships two parallel database-driver families. Picking
+one is a packaging trade-off, not a feature trade-off:
+
+| Path | Install | Resolver layer | What it is |
+|---|---|---|---|
+| **Well-known native binding** | nothing (bundled) | (c) | `import 'mysql2'` / `import 'pg'` / `import 'mongodb'` route to in-tree `perry-ext-mysql2` / `perry-ext-pg` / `perry-ext-mongodb`. Rust wrappers around `sqlx` / `mongodb` crates. Versioned in lockstep with Perry. |
+| **`@perryts/{postgres,mysql,mongodb}`** | `bun add @perryts/postgres` | (a) | Pure-TypeScript wire-protocol drivers — no Rust, no native dep. Use Perry's [`compilePackages`](../packages/porting.md) to compile the TS to native via LLVM. Also run unmodified on Node.js / Bun. Independent semver. |
+| **External native binding** | `bun add @perryts/tursodb` | (a) | Third-party Rust crate using `perry-ffi`, manifest at `package.json::perry.nativeLibrary`. Today: `@perryts/tursodb`, `@perryts/iroh`. |
+
+Resolution precedence (per layer (a) → (b) → (c) above): an installed
+`@perryts/mysql` does **not** override `import 'mysql2'` because the
+package names are different. If you `bun add @perryts/mysql` and also
+`import 'mysql2'` in the same program, both drivers ship in the
+binary — they're independent. To opt out of the well-known `mysql2`
+shim, just don't import `mysql2`.
+
+**When to pick which:**
+
+- **Well-known native (`mysql2` / `pg` / `mongodb`)** — zero install
+  step, fastest path to "it works"; you accept that the driver's
+  feature set tracks Perry's release cadence.
+- **`@perryts/postgres` / `@perryts/mysql` / `@perryts/mongodb`** —
+  you want to read / fork / patch the driver in plain TypeScript;
+  you want the same code running on Node.js or Bun for fallback;
+  you need a feature ahead of Perry's next release.
+- **External native binding** — you're wrapping a Rust crate that
+  doesn't have a JS-only equivalent (Tursodb's embedded SQLite-
+  compatible engine, Iroh's QUIC transport).
 
 ## Concrete how-tos
 

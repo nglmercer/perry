@@ -85,28 +85,6 @@ Perry's broader benchmark suite covers workloads outside the polyglot set — cl
 
 Perry compiles to native machine code via LLVM — no JIT warmup, no interpreter overhead. Key optimizations that apply in both modes: **scalar replacement** of non-escaping objects (escape analysis eliminates heap allocation entirely — object fields become registers), inline bump allocator for objects that do escape, i32 loop counters for bounded array access, integer-modulo fast path (`fptosi → srem → sitofp` instead of `fmod`), elimination of redundant `js_number_coerce` calls on numeric function returns, and i64 specialization for pure numeric recursive functions.
 
-### LLVM backend progress
-
-Perry switched from Cranelift to LLVM as its sole code generation backend in v0.5.0. The initial cutover regressed badly because the new backend routed most operations through runtime helpers instead of inlining them. Subsequent optimization work recovered and surpassed the original numbers:
-
-| Benchmark | Cranelift | LLVM v0.5.0 | LLVM now (v0.5.173) |
-|-----------|----------:|------------:|--------------------:|
-| method_calls | 16ms | 1,084ms | **1ms** |
-| object_create | 5ms | 318ms | **3ms** |
-| matrix_multiply | 61ms | 184ms | **24ms** |
-| nested_loops | 32ms | 57ms | **9ms** |
-| array_read | 4ms | 26ms | **5ms** |
-| mandelbrot | 71ms | 47ms | **23ms** |
-| string_concat | 7ms | 0–1ms | **0ms** |
-| prime_sieve | 11ms | 11ms | **5ms** |
-| fibonacci(40) | 505ms | 1,156ms | **320ms** |
-
-The Cranelift column is from the pre-v0.5.0 era. LLVM v0.5.0 was the initial cutover. The current column reflects state through v0.5.173 (with fast-math on by default — those numbers are unchanged in v0.5.585 default mode for non-FP-foldable kernels like `method_calls`/`object_create`/`matrix_multiply`/`nested_loops`/`fibonacci`; FP-reduction kernels were dropped from this table to avoid mixing modes). What recovered the numbers: scalar replacement of non-escaping objects, inline bump allocators, i32 loop counters, integer-mod fast paths, loop-invariant length hoisting, redundant number-coerce elimination.
-
-### A note on compile times
-
-Cranelift is often praised for fast compilation, and it is — but the difference is smaller than you'd expect. Perry previously used Cranelift and switched to LLVM in v0.5.0. Compile times increased by only ~20-50ms (8-19%), because the bulk of Perry's compile time is SWC parsing, HIR lowering, and linking — not the codegen backend. On a typical file LLVM adds about 25ms over Cranelift while producing code that runs up to 24x faster. A worthwhile trade.
-
 Run benchmarks yourself: `cd benchmarks/suite && ./run_benchmarks.sh` (requires node, cargo; optional: bun, shermes).
 
 ## Binary Size
