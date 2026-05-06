@@ -217,6 +217,93 @@ unsafe fn dispatch_rest_bundled(
     }
 }
 
+/// Dispatch a closure call where the caller supplied fewer args than the
+/// closure declared. Pad the missing slots with `undefined` and call the
+/// body's actual declared signature so the body's `LocalGet(N)` reads
+/// correctly initialised slots instead of stale registers.
+///
+/// `func_ptr` is already validated and known non-BOUND, non-rest.
+/// `declared_arity` is what `CLOSURE_ARITY_REGISTRY` recorded for this body
+/// at module init time. Callers reach here only when `args.len() < declared_arity`.
+///
+/// Refs #420: drizzle's `pgTable` is `(name, columns, extraConfig) => …`
+/// (3 params); user calls it as `pgTable("users", cols)` (2 args). Without
+/// this padding, the body's `extraConfig` slot reads garbage and downstream
+/// `if (extraConfig)` evaluated truthy on bit patterns that should have been
+/// `undefined`. Symptom: `pgTable("users", {})` returned a malformed table
+/// object, breaking every downstream property read.
+#[inline(never)]
+unsafe fn dispatch_with_arity(
+    closure: *const ClosureHeader,
+    func_ptr: *const u8,
+    args: &[f64],
+    declared_arity: u32,
+) -> f64 {
+    let undef = f64::from_bits(crate::value::TAG_UNDEFINED);
+    let k = declared_arity as usize;
+    let provided = args.len();
+    macro_rules! a {
+        ($i:expr) => {
+            if $i < provided { args[$i] } else { undef }
+        };
+    }
+    match k {
+        0 => {
+            let f: extern "C" fn(*const ClosureHeader) -> f64 = std::mem::transmute(func_ptr);
+            f(closure)
+        }
+        1 => {
+            let f: extern "C" fn(*const ClosureHeader, f64) -> f64 = std::mem::transmute(func_ptr);
+            f(closure, a!(0))
+        }
+        2 => {
+            let f: extern "C" fn(*const ClosureHeader, f64, f64) -> f64 =
+                std::mem::transmute(func_ptr);
+            f(closure, a!(0), a!(1))
+        }
+        3 => {
+            let f: extern "C" fn(*const ClosureHeader, f64, f64, f64) -> f64 =
+                std::mem::transmute(func_ptr);
+            f(closure, a!(0), a!(1), a!(2))
+        }
+        4 => {
+            let f: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64) -> f64 =
+                std::mem::transmute(func_ptr);
+            f(closure, a!(0), a!(1), a!(2), a!(3))
+        }
+        5 => {
+            let f: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64, f64) -> f64 =
+                std::mem::transmute(func_ptr);
+            f(closure, a!(0), a!(1), a!(2), a!(3), a!(4))
+        }
+        6 => {
+            let f: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64, f64, f64) -> f64 =
+                std::mem::transmute(func_ptr);
+            f(closure, a!(0), a!(1), a!(2), a!(3), a!(4), a!(5))
+        }
+        7 => {
+            let f: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64, f64, f64, f64) -> f64 =
+                std::mem::transmute(func_ptr);
+            f(closure, a!(0), a!(1), a!(2), a!(3), a!(4), a!(5), a!(6))
+        }
+        8 => {
+            let f: extern "C" fn(
+                *const ClosureHeader,
+                f64,
+                f64,
+                f64,
+                f64,
+                f64,
+                f64,
+                f64,
+                f64,
+            ) -> f64 = std::mem::transmute(func_ptr);
+            f(closure, a!(0), a!(1), a!(2), a!(3), a!(4), a!(5), a!(6), a!(7))
+        }
+        _ => f64::from_bits(crate::value::TAG_UNDEFINED),
+    }
+}
+
 /// Sentinel func_ptr value indicating this closure is a "bound method" on a native module.
 /// When js_closure_callN detects this, it extracts captures and dispatches via js_native_call_method.
 /// Captures layout: [0] = namespace_obj (f64), [1] = method_name_ptr (i64), [2] = method_name_len (i64)
@@ -508,6 +595,11 @@ pub extern "C" fn js_closure_call0(closure: *const ClosureHeader) -> f64 {
     if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
         return unsafe { dispatch_rest_bundled(closure, func_ptr, &[], fixed_arity) };
     }
+    if let Some(declared) = lookup_closure_arity(func_ptr) {
+        if declared > 0 {
+            return unsafe { dispatch_with_arity(closure, func_ptr, &[], declared) };
+        }
+    }
     let func: extern "C" fn(*const ClosureHeader) -> f64 = unsafe { std::mem::transmute(func_ptr) };
     func(closure)
 }
@@ -524,6 +616,11 @@ pub extern "C" fn js_closure_call1(closure: *const ClosureHeader, arg0: f64) -> 
     }
     if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
         return unsafe { dispatch_rest_bundled(closure, func_ptr, &[arg0], fixed_arity) };
+    }
+    if let Some(declared) = lookup_closure_arity(func_ptr) {
+        if declared > 1 {
+            return unsafe { dispatch_with_arity(closure, func_ptr, &[arg0], declared) };
+        }
     }
     let func: extern "C" fn(*const ClosureHeader, f64) -> f64 =
         unsafe { std::mem::transmute(func_ptr) };
@@ -542,6 +639,11 @@ pub extern "C" fn js_closure_call2(closure: *const ClosureHeader, arg0: f64, arg
     }
     if let Some(fixed_arity) = lookup_closure_rest(func_ptr) {
         return unsafe { dispatch_rest_bundled(closure, func_ptr, &[arg0, arg1], fixed_arity) };
+    }
+    if let Some(declared) = lookup_closure_arity(func_ptr) {
+        if declared > 2 {
+            return unsafe { dispatch_with_arity(closure, func_ptr, &[arg0, arg1], declared) };
+        }
     }
     let func: extern "C" fn(*const ClosureHeader, f64, f64) -> f64 =
         unsafe { std::mem::transmute(func_ptr) };
@@ -568,6 +670,11 @@ pub extern "C" fn js_closure_call3(
             dispatch_rest_bundled(closure, func_ptr, &[arg0, arg1, arg2], fixed_arity)
         };
     }
+    if let Some(declared) = lookup_closure_arity(func_ptr) {
+        if declared > 3 {
+            return unsafe { dispatch_with_arity(closure, func_ptr, &[arg0, arg1, arg2], declared) };
+        }
+    }
     let func: extern "C" fn(*const ClosureHeader, f64, f64, f64) -> f64 =
         unsafe { std::mem::transmute(func_ptr) };
     func(closure, arg0, arg1, arg2)
@@ -593,6 +700,13 @@ pub extern "C" fn js_closure_call4(
         return unsafe {
             dispatch_rest_bundled(closure, func_ptr, &[arg0, arg1, arg2, arg3], fixed_arity)
         };
+    }
+    if let Some(declared) = lookup_closure_arity(func_ptr) {
+        if declared > 4 {
+            return unsafe {
+                dispatch_with_arity(closure, func_ptr, &[arg0, arg1, arg2, arg3], declared)
+            };
+        }
     }
     let func: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64) -> f64 =
         unsafe { std::mem::transmute(func_ptr) };
@@ -626,6 +740,18 @@ pub extern "C" fn js_closure_call5(
             )
         };
     }
+    if let Some(declared) = lookup_closure_arity(func_ptr) {
+        if declared > 5 {
+            return unsafe {
+                dispatch_with_arity(
+                    closure,
+                    func_ptr,
+                    &[arg0, arg1, arg2, arg3, arg4],
+                    declared,
+                )
+            };
+        }
+    }
     let func: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64, f64) -> f64 =
         unsafe { std::mem::transmute(func_ptr) };
     func(closure, arg0, arg1, arg2, arg3, arg4)
@@ -658,6 +784,18 @@ pub extern "C" fn js_closure_call6(
                 fixed_arity,
             )
         };
+    }
+    if let Some(declared) = lookup_closure_arity(func_ptr) {
+        if declared > 6 {
+            return unsafe {
+                dispatch_with_arity(
+                    closure,
+                    func_ptr,
+                    &[arg0, arg1, arg2, arg3, arg4, arg5],
+                    declared,
+                )
+            };
+        }
     }
     let func: extern "C" fn(*const ClosureHeader, f64, f64, f64, f64, f64, f64) -> f64 =
         unsafe { std::mem::transmute(func_ptr) };

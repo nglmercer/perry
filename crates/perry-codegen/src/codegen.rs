@@ -472,6 +472,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 .enumerate()
                 .map(|(i, name)| perry_hir::ClassField {
                     name: name.clone(),
+                    key_expr: None,
                     // Use the real declared type when the source-side
                     // populated `field_types`; fall back to `Any` otherwise.
                     // Real types let `receiver_class_name`'s `PropertyGet`
@@ -655,7 +656,17 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // first (walking from deepest ancestor down) so the slot
         // order matches `class_field_global_index`'s assumption.
         let mut packed_keys = String::new();
-        let mut total_field_count = c.fields.len() as u32;
+        // Skip computed-key fields (`[Symbol.for("k")] = …`): their key is an
+        // expression evaluated at runtime, not a stable string, so they don't
+        // get an inline slot. Including their synthetic `__computed_field_*`
+        // names in the packed keys would surface them as enumerable own
+        // properties via Object.keys() and inflate the inline-slot count.
+        // Their values are stored via `apply_field_initializers_recursive`'s
+        // IndexSet path → js_object_set_field / js_object_set_symbol_property.
+        let count_keyable = |fields: &[perry_hir::ClassField]| -> u32 {
+            fields.iter().filter(|f| f.key_expr.is_none()).count() as u32
+        };
+        let mut total_field_count = count_keyable(&c.fields);
         let mut parent_chain: Vec<String> = Vec::new();
         // Resolver that finds a parent's `(fields_vec, next_extends)` either
         // in the local HIR or, failing that, in the imported_class_stubs
@@ -680,7 +691,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         while let Some(parent_name) = p {
             if let Some((parent_fields, parent_extends)) = lookup_class_chain_link(&parent_name) {
                 parent_chain.push(parent_name.clone());
-                total_field_count += parent_fields.len() as u32;
+                total_field_count += count_keyable(&parent_fields);
                 p = parent_extends;
             } else {
                 break;
@@ -690,12 +701,18 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         for parent_name in parent_chain.iter().rev() {
             if let Some((parent_fields, _)) = lookup_class_chain_link(parent_name) {
                 for f in &parent_fields {
+                    if f.key_expr.is_some() {
+                        continue;
+                    }
                     packed_keys.push_str(&f.name);
                     packed_keys.push('\0');
                 }
             }
         }
         for f in &c.fields {
+            if f.key_expr.is_some() {
+                continue;
+            }
             packed_keys.push_str(&f.name);
             packed_keys.push('\0');
         }

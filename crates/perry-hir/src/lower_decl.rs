@@ -907,10 +907,18 @@ pub(crate) fn lower_class_decl(
                 }
             }
             ast::ClassMember::ClassProp(prop) => {
-                // Skip computed/Symbol property keys
-                match &prop.key {
-                    ast::PropName::Ident(_) | ast::PropName::Str(_) => {}
-                    _ => continue,
+                // Computed-key fields (`[Symbol.for("k")] = init`) flow through
+                // here too — `lower_class_prop` captures the key expression in
+                // `ClassField.key_expr` for runtime evaluation in the constructor
+                // preamble. Static computed-key fields are skipped for now since
+                // the static-init path doesn't yet honor `key_expr`.
+                if prop.is_static {
+                    if !matches!(
+                        &prop.key,
+                        ast::PropName::Ident(_) | ast::PropName::Str(_)
+                    ) {
+                        continue;
+                    }
                 }
                 let field = lower_class_prop(ctx, prop)?;
                 if prop.is_static {
@@ -1021,6 +1029,7 @@ pub(crate) fn lower_class_decl(
                         if !param_name.is_empty() && !declared_field_names.contains(&param_name) {
                             fields.push(ClassField {
                                 name: param_name,
+                                key_expr: None,
                                 ty: param_type,
                                 init: None,
                                 is_private: false,
@@ -1076,6 +1085,7 @@ pub(crate) fn lower_class_decl(
                                             {
                                                 fields.push(ClassField {
                                                     name: fname,
+                                                    key_expr: None,
                                                     ty: Type::Any,
                                                     init: None,
                                                     is_private: false,
@@ -1247,6 +1257,7 @@ pub(crate) fn lower_class_decl(
             }
             fields.push(ClassField {
                 name: format!("__perry_cap_{}", cid),
+                key_expr: None,
                 ty: Type::Any,
                 init: None,
                 is_private: false,
@@ -1571,10 +1582,18 @@ pub(crate) fn lower_class_from_ast(
                 }
             }
             ast::ClassMember::ClassProp(prop) => {
-                // Skip computed/Symbol property keys
-                match &prop.key {
-                    ast::PropName::Ident(_) | ast::PropName::Str(_) => {}
-                    _ => continue,
+                // Computed-key fields (`[Symbol.for("k")] = init`) flow through
+                // here too — `lower_class_prop` captures the key expression in
+                // `ClassField.key_expr` for runtime evaluation in the constructor
+                // preamble. Static computed-key fields are skipped for now since
+                // the static-init path doesn't yet honor `key_expr`.
+                if prop.is_static {
+                    if !matches!(
+                        &prop.key,
+                        ast::PropName::Ident(_) | ast::PropName::Str(_)
+                    ) {
+                        continue;
+                    }
                 }
                 let field = lower_class_prop(ctx, prop)?;
                 if prop.is_static {
@@ -2567,9 +2586,27 @@ pub(crate) fn lower_class_prop(
     ctx: &mut LoweringContext,
     prop: &ast::ClassProp,
 ) -> Result<ClassField> {
-    let name = match &prop.key {
-        ast::PropName::Ident(ident) => ident.sym.to_string(),
-        ast::PropName::Str(s) => s.value.as_str().unwrap_or("").to_string(),
+    // Computed property keys (`[Symbol.for("k")]`, `[Parent.Symbol.X]`, etc.)
+    // can't be reduced to a string at compile time — the key expression is
+    // evaluated at construction time. We capture the lowered key expression
+    // in `key_expr` and synthesize a placeholder `name` for HIR identity
+    // (string-keyed lookup paths skip these fields via `key_expr.is_some()`).
+    let (name, key_expr) = match &prop.key {
+        ast::PropName::Ident(ident) => (ident.sym.to_string(), None),
+        ast::PropName::Str(s) => (s.value.as_str().unwrap_or("").to_string(), None),
+        ast::PropName::Computed(c) => {
+            let key = lower_expr(ctx, &c.expr)?;
+            // Synthetic name — uniqueness within a class is enforced by the
+            // caller appending to fields/static_fields in source order; the
+            // HIR's field-list iterators that key on `name` will still see
+            // distinct entries because each computed-key field lowers in its
+            // own call.
+            let synth = format!(
+                "__computed_field_{}_{}",
+                c.span.lo.0, c.span.hi.0
+            );
+            (synth, Some(key))
+        }
         _ => return Err(anyhow!("Unsupported property key")),
     };
 
@@ -2596,6 +2633,7 @@ pub(crate) fn lower_class_prop(
 
     Ok(ClassField {
         name,
+        key_expr,
         ty,
         init,
         is_private: false, // TODO: check accessibility
@@ -2804,6 +2842,7 @@ pub(crate) fn lower_private_prop(
 
     Ok(ClassField {
         name,
+        key_expr: None,
         ty,
         init,
         is_private: true,

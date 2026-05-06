@@ -555,6 +555,11 @@ pub struct Class {
 #[derive(Debug, Clone)]
 pub struct ClassField {
     pub name: String,
+    /// When `Some`, this field's key is the lowered expression evaluated at
+    /// construction time (e.g. `[Symbol.for("k")]` or `[Parent.Symbol.X]`).
+    /// `name` is then a synthetic placeholder used only for HIR identity —
+    /// runtime property writes go through `IndexSet` with this expression.
+    pub key_expr: Option<Expr>,
     pub ty: Type,
     pub init: Option<Expr>,
     pub is_private: bool,

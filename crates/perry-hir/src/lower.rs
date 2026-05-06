@@ -856,6 +856,7 @@ impl LoweringContext {
             .iter()
             .map(|(name, ty, _init_expr_unused)| ClassField {
                 name: name.clone(),
+                key_expr: None,
                 ty: ty.clone(),
                 init: None,
                 is_private: false,
@@ -4117,6 +4118,17 @@ fn lower_module_decl(
                 ast::Decl::Class(class_decl) => {
                     let class = lower_class_decl(ctx, class_decl, true)?;
                     let class_name = class.name.clone();
+                    // Inject static-field-init statements in source order
+                    // (see non-export class arm below for rationale).
+                    for sf in &class.static_fields {
+                        if let Some(init) = &sf.init {
+                            module.init.push(Stmt::Expr(Expr::StaticFieldSet {
+                                class_name: class_name.clone(),
+                                field_name: sf.name.clone(),
+                                value: Box::new(init.clone()),
+                            }));
+                        }
+                    }
                     push_class_dedup(module, class);
                     module.exports.push(Export::Named {
                         local: class_name.clone(),
@@ -5136,6 +5148,27 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                 }
                 ast::Decl::Class(class_decl) => {
                     let class = lower_class_decl(ctx, class_decl, false)?;
+                    // Inject static-field-init statements at the source
+                    // position of the class declaration. Per ES spec, a
+                    // class declaration's static initializers run when the
+                    // declaration evaluates — i.e., here in source order,
+                    // not at the top of module init. This matters when a
+                    // static field's initializer references a top-level
+                    // const declared earlier in the module: the upfront
+                    // `init_static_fields` pass at codegen.rs:3449 runs
+                    // before any user `Let` bindings, so it captures
+                    // unbound (undefined) values. The inline statements
+                    // re-run with the correct values once we reach this
+                    // point in source order.
+                    for sf in &class.static_fields {
+                        if let Some(init) = &sf.init {
+                            module.init.push(Stmt::Expr(Expr::StaticFieldSet {
+                                class_name: class.name.clone(),
+                                field_name: sf.name.clone(),
+                                value: Box::new(init.clone()),
+                            }));
+                        }
+                    }
                     push_class_dedup(module, class);
                 }
                 ast::Decl::TsEnum(enum_decl) => {

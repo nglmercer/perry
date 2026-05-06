@@ -2664,13 +2664,25 @@ pub(crate) fn lower_new(ctx: &mut FnCtx<'_>, class_name: &str, args: &[Expr]) ->
                 break;
             }
         }
+        // Skip computed-key fields: their key is an expression evaluated at
+        // construction time, not a stable string, so they don't get an inline
+        // slot. The runtime stores them via IndexSet → js_object_set_field /
+        // js_object_set_symbol_property paths in `apply_field_initializers_recursive`.
+        // Including their synthetic `__computed_field_*` names in packed_keys
+        // would surface them as enumerable own properties on Object.keys().
         for pc in parent_chain.iter().rev() {
             for f in &pc.fields {
+                if f.key_expr.is_some() {
+                    continue;
+                }
                 packed_keys.push_str(&f.name);
                 packed_keys.push('\0');
             }
         }
         for f in &class.fields {
+            if f.key_expr.is_some() {
+                continue;
+            }
             packed_keys.push_str(&f.name);
             packed_keys.push('\0');
         }
@@ -2856,13 +2868,19 @@ fn apply_field_initializers_recursive(ctx: &mut FnCtx<'_>, class_name: &str) -> 
         };
         // Collect (property_name, init_expr) pairs up-front to avoid
         // holding an immutable borrow of ctx.classes across lower_expr.
+        // Computed-key fields (`[Symbol.for("k")]` etc.) live in a parallel
+        // list since their key is an expression that needs runtime evaluation.
         let mut init_pairs: Vec<(String, Expr)> = Vec::new();
+        let mut init_pairs_computed: Vec<(Expr, Expr)> = Vec::new();
         for field in &class.fields {
             if let Some(init) = &field.init {
-                init_pairs.push((field.name.clone(), init.clone()));
+                match &field.key_expr {
+                    Some(key) => init_pairs_computed.push((key.clone(), init.clone())),
+                    None => init_pairs.push((field.name.clone(), init.clone())),
+                }
             }
         }
-        if init_pairs.is_empty() {
+        if init_pairs.is_empty() && init_pairs_computed.is_empty() {
             continue;
         }
 
@@ -2939,6 +2957,22 @@ fn apply_field_initializers_recursive(ctx: &mut FnCtx<'_>, class_name: &str) -> 
             let set_expr = Expr::PropertySet {
                 object: Box::new(Expr::This),
                 property: prop,
+                value: Box::new(init_expr),
+            };
+            let _ = lower_expr(ctx, &set_expr)?;
+        }
+
+        // Computed-key fields: `[Parent.Symbol.X] = init` lowers to
+        // `this[Parent.Symbol.X] = init`. The key expression is evaluated
+        // at construction time per ES spec — `Object.defineProperty(this, k, …)`
+        // semantics through the IndexSet path. arrow-with-this-capture is
+        // unusual on a computed-key field; if it ever surfaces in real code
+        // we extend this branch the same way the string-keyed loop above
+        // does.
+        for (key_expr, init_expr) in init_pairs_computed {
+            let set_expr = Expr::IndexSet {
+                object: Box::new(Expr::This),
+                index: Box::new(key_expr),
                 value: Box::new(init_expr),
             };
             let _ = lower_expr(ctx, &set_expr)?;
