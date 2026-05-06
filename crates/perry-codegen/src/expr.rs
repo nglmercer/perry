@@ -2946,6 +2946,19 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         // (which IS the NaN-boxed value for non-number fields — same bit
         // pattern, runtime callers re-interpret based on context).
         Expr::PropertyGet { object, property } => {
+            // Cross-module static field access. When `Base` is an imported
+            // class, HIR lowering emits `PropertyGet { ExternFuncRef("Base"),
+            // property }` instead of `StaticFieldGet` because the lowering
+            // ctx's `class_statics` registry only sees same-module classes.
+            // Route through the static-field global map populated from
+            // `opts.imported_classes` at codegen entry. Refs #420.
+            if let Expr::ExternFuncRef { name, .. } = object.as_ref() {
+                let key = (name.clone(), property.clone());
+                if let Some(global_name) = ctx.static_field_globals.get(&key).cloned() {
+                    let g_ref = format!("@{}", global_name);
+                    return Ok(ctx.block().load(DOUBLE, &g_ref));
+                }
+            }
             // Scalar replacement fast path: if the receiver is a scalar-replaced
             // local, load directly from the field's alloca — no heap access.
             if let Expr::LocalGet(id) = object.as_ref() {

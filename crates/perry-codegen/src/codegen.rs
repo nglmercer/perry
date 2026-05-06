@@ -193,6 +193,12 @@ pub struct ImportedClass {
     /// source modules that haven't been updated to populate it — codegen
     /// falls back to the old upper bound when the entry is missing.
     pub method_param_counts: Vec<usize>,
+    /// Static field names defined on this class. Used to declare the foreign
+    /// `@perry_static_<src>__<class>__<field>` global with external linkage
+    /// so cross-module `[Parent.Symbol.X] = …` reads/writes resolve to the
+    /// source module's defining global. Without this, `StaticFieldGet`
+    /// silently produces `0.0` for any imported class. Refs #420.
+    pub static_field_names: Vec<String>,
     /// Static method names defined on this class. Without this, calls like
     /// `MyClass.staticMethod(...)` on an imported class are treated as a
     /// missing method and fall through to `0.0` — turning every
@@ -1263,8 +1269,74 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 sanitize(&c.name),
                 sanitize(&sf.name),
             );
-            llmod.add_internal_global(&name, DOUBLE, "0.0");
+            // External linkage so importing modules can reference the same
+            // global. Static class fields are spec-level shared state across
+            // the whole program (same `Symbol.X` value seen everywhere); they
+            // must be a single defining global, not per-module copies.
+            // Refs #420: drizzle's `Sub extends Base` reads `[Base.Symbol.X]`
+            // when Sub is in a different file from Base; without external
+            // linkage, the importing module's `StaticFieldGet { Base, Symbol }`
+            // had no symbol to resolve and silently produced 0.0.
+            llmod.add_global(&name, DOUBLE, "0.0");
             static_field_globals.insert((c.name.clone(), sf.name.clone()), name);
+        }
+    }
+    // Register foreign static-field globals from imported classes. The source
+    // module emits the defining external global (above); the consumer just
+    // declares a reference and adds it to its own `static_field_globals` map
+    // so `Expr::StaticFieldGet/Set` lowering finds it.
+    // Track which globals we've already emitted to avoid double-declarations.
+    let mut external_globals_emitted: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for ic in &opts.imported_classes {
+        let effective_name = ic.local_alias.as_deref().unwrap_or(&ic.name);
+        // Skip imported-class entries whose source matches this module's
+        // prefix — the local-class loop above already emitted the defining
+        // global. Re-declaring as external would produce a duplicate-symbol
+        // error in the LLVM IR (clang rejects `@x = global` next to `@x =
+        // external global`). Same-named local classes also win.
+        if ic.source_prefix == module_prefix {
+            // Still register in the static_field_globals map so HIR lookups
+            // by the imported alias resolve to the local definition.
+            for sf_name in &ic.static_field_names {
+                let key = (effective_name.to_string(), sf_name.clone());
+                if !static_field_globals.contains_key(&key) {
+                    let global_name = format!(
+                        "perry_static_{}__{}__{}",
+                        module_prefix,
+                        sanitize(&ic.name),
+                        sanitize(sf_name),
+                    );
+                    static_field_globals.insert(key, global_name);
+                }
+            }
+            continue;
+        }
+        if hir.classes.iter().any(|c| c.name == ic.name) {
+            continue;
+        }
+        for sf_name in &ic.static_field_names {
+            let global_name = format!(
+                "perry_static_{}__{}__{}",
+                ic.source_prefix,
+                sanitize(&ic.name),
+                sanitize(sf_name),
+            );
+            // Declare external (not define) — the source module owns the
+            // defining global. Skip if already declared (multiple imports of
+            // the same class).
+            if external_globals_emitted.insert(global_name.clone()) {
+                llmod.add_external_global(&global_name, DOUBLE);
+            }
+            // Register under both the alias (if any) and the source name so
+            // either resolves.
+            static_field_globals.insert(
+                (effective_name.to_string(), sf_name.clone()),
+                global_name.clone(),
+            );
+            if effective_name != ic.name {
+                static_field_globals.insert((ic.name.clone(), sf_name.clone()), global_name);
+            }
         }
     }
 

@@ -2640,6 +2640,11 @@ pub fn run_with_parse_cache(
                                             .iter()
                                             .map(|m| m.name.clone())
                                             .collect(),
+                                        static_field_names: class
+                                            .static_fields
+                                            .iter()
+                                            .map(|f| f.name.clone())
+                                            .collect(),
                                         getter_names: class
                                             .getters
                                             .iter()
@@ -2755,6 +2760,11 @@ pub fn run_with_parse_cache(
                                                 .iter()
                                                 .map(|m| m.name.clone())
                                                 .collect(),
+                                            static_field_names: class
+                                                .static_fields
+                                                .iter()
+                                                .map(|f| f.name.clone())
+                                                .collect(),
                                             getter_names: class
                                                 .getters
                                                 .iter()
@@ -2851,6 +2861,11 @@ pub fn run_with_parse_cache(
                                 .static_methods
                                 .iter()
                                 .map(|m| m.name.clone())
+                                .collect(),
+                            static_field_names: class
+                                .static_fields
+                                .iter()
+                                .map(|f| f.name.clone())
                                 .collect(),
                             getter_names: class.getters.iter().map(|(n, _)| n.clone()).collect(),
                             setter_names: class.setters.iter().map(|(n, _)| n.clone()).collect(),
@@ -2966,6 +2981,11 @@ pub fn run_with_parse_cache(
                                 .static_methods
                                 .iter()
                                 .map(|m| m.name.clone())
+                                .collect(),
+                            static_field_names: class
+                                .static_fields
+                                .iter()
+                                .map(|f| f.name.clone())
                                 .collect(),
                             getter_names: class.getters.iter().map(|(n, _)| n.clone()).collect(),
                             setter_names: class.setters.iter().map(|(n, _)| n.clone()).collect(),
@@ -3232,6 +3252,11 @@ pub fn run_with_parse_cache(
                                 .iter()
                                 .map(|m| m.name.clone())
                                 .collect(),
+                            static_field_names: class
+                                .static_fields
+                                .iter()
+                                .map(|f| f.name.clone())
+                                .collect(),
                             getter_names: class.getters.iter().map(|(n, _)| n.clone()).collect(),
                             setter_names: class.setters.iter().map(|(n, _)| n.clone()).collect(),
                             parent_name: class.extends_name.clone(),
@@ -3325,6 +3350,11 @@ pub fn run_with_parse_cache(
                                 .static_methods
                                 .iter()
                                 .map(|m| m.name.clone())
+                                .collect(),
+                            static_field_names: class
+                                .static_fields
+                                .iter()
+                                .map(|f| f.name.clone())
                                 .collect(),
                             getter_names: class.getters.iter().map(|(n, _)| n.clone()).collect(),
                             setter_names: class.setters.iter().map(|(n, _)| n.clone()).collect(),
