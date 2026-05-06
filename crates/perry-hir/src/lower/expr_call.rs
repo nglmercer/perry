@@ -3858,6 +3858,85 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     false
                                 }
                             }
+                            // Issue #528: chained `inner_call(...).<overlapping>(...)`.
+                            // The previous catch-all `_ => false` let the array-method
+                            // fold fire on ANY chained call, including ones whose inner
+                            // call returns a user object — `this.col().find({})` got
+                            // rewritten as `Expr::ArrayFind(this.col(), {})` and at
+                            // runtime `js_array_find` read garbage out of the object's
+                            // header (no fallback path: only `map`/`filter`/`forEach`/
+                            // `slice`/`with` have arms in `js_native_call_method`'s
+                            // array dispatch tower; `find`/`findIndex`/`reduce` do not).
+                            //
+                            // For overlapping methods (the same set the Ident arm
+                            // gates on), bail unless the inner call's method name is
+                            // one of the known array-producing builtins. The AST-level
+                            // check is conservative: it doesn't catch every chained-
+                            // array shape (e.g. `Array.from(x).find(p)` — `Array` is
+                            // an Ident, not a method on a Member), but it DOES catch
+                            // the common `arr.filter(p).find(q)` chain whose inner
+                            // call IS a Member-on-something. Non-overlapping methods
+                            // (slice/indexOf/includes/etc.) keep their existing
+                            // positive inner-HIR-shape pattern at lines ~3950+.
+                            ast::Expr::Call(inner_call) => {
+                                let is_overlapping = matches!(
+                                    method_name,
+                                    "find"
+                                        | "findIndex"
+                                        | "findLast"
+                                        | "findLastIndex"
+                                        | "map"
+                                        | "filter"
+                                        | "some"
+                                        | "every"
+                                        | "forEach"
+                                        | "reduce"
+                                        | "reduceRight"
+                                        | "join"
+                                );
+                                if !is_overlapping {
+                                    false
+                                } else {
+                                    // Look up the inner call's method name. If it's
+                                    // one of the known array-producing builtins, the
+                                    // chained fold IS safe — keep the ident-receiver
+                                    // optimistic behaviour for `arr.filter(p).find(q)`
+                                    // shapes.
+                                    let inner_method: Option<&str> = match &inner_call.callee {
+                                        ast::Callee::Expr(e) => match e.as_ref() {
+                                            ast::Expr::Member(m) => match &m.prop {
+                                                ast::MemberProp::Ident(i) => Some(i.sym.as_ref()),
+                                                _ => None,
+                                            },
+                                            _ => None,
+                                        },
+                                        _ => None,
+                                    };
+                                    let inner_returns_array = inner_method
+                                        .map(|m| matches!(
+                                            m,
+                                            "map"
+                                                | "filter"
+                                                | "slice"
+                                                | "concat"
+                                                | "flat"
+                                                | "flatMap"
+                                                | "splice"
+                                                | "sort"
+                                                | "reverse"
+                                                | "fill"
+                                                | "copyWithin"
+                                                | "toReversed"
+                                                | "toSorted"
+                                                | "toSpliced"
+                                                | "with"
+                                        ))
+                                        .unwrap_or(false);
+                                    // recv_is_class = true means BAIL. Bail when the
+                                    // inner call is NOT a known array-producing method.
+                                    !inner_returns_array
+                                }
+                            }
                             _ => false,
                         };
                         match method_name {

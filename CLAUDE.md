@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Perry is a native TypeScript compiler written in Rust that compiles TypeScript source code directly to native executables. It uses SWC for TypeScript parsing and LLVM for code generation.
 
-**Current Version:** 0.5.608
+**Current Version:** 0.5.609
 
 
 ## TypeScript Parity Status
@@ -153,7 +153,7 @@ First-resolved directory cached in `compile_package_dirs`; subsequent imports re
 
 One-liners only — full detail in CHANGELOG.md.
 
-
+- **v0.5.609** — Closes #528 (followup to #515/#518): chained-call array-method fold leaked through the `recv_is_class` `_ => false` catch-all — `this.col().find({})` got rewritten as `Expr::ArrayFind(this.col(), {})` and `js_array_find` read garbage from the user object's header. New `Call(inner)` arm in `recv_is_class` only allows the fold when the inner call's method is a known array-producing builtin; otherwise bails to runtime dispatch.
 - **v0.5.608** — Refs #421: Phase 1 of handle-NaN-boxing unification — Web Fetch (Request/Response/Headers/Blob) handles now NaN-boxed at the FFI boundary; 25 fetch FFI fns migrated, 4 untyped property dispatch helpers added. Unblocks hono `request.url` in untyped position.
 - **v0.5.607** — Closes #529 (followup to #515): `obj["method"](args)` / `obj["prop"]` on a class instance returned `undefined` — fold computed `MemberProp` with non-numeric string key to `Expr::PropertyGet` so dispatch hits the vtable; mirror fold in assignment form.
 - **v0.5.606** — Closes #526: escape JS reserved words used as method names in generated `.d.ts` (axios.delete now emits `function _delete; export { _delete as delete }`).
