@@ -2022,6 +2022,12 @@ pub fn declare_stdlib_ffi(module: &mut LlModule) {
     // Lets `typeof obj.method === "function"` and `let f = obj.method; f(args)`
     // dispatch through CLASS_VTABLE_REGISTRY instead of returning undefined.
     module.declare_function("js_class_method_bind", DOUBLE, &[DOUBLE, I64, I64]);
+    // #519: read the implicit `this` thread-local set by
+    // `js_native_call_method`'s field-scan dispatch when invoking a
+    // closure-typed class field method-style. `Expr::This` codegen reads
+    // this when the lexical this_stack is empty.
+    module.declare_function("js_implicit_this_get", DOUBLE, &[]);
+    module.declare_function("js_implicit_this_set", DOUBLE, &[DOUBLE]);
 
     // ========== Runtime init / module loader ==========
     module.declare_function("js_get_export", DOUBLE, &[I64, I64, I64]);

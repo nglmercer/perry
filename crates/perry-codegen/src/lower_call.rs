@@ -2268,11 +2268,49 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
     // The runtime checks the closure header on its own — if the value
     // isn't actually a closure, js_closure_call<N> handles the error.
     if args.len() <= 16 {
+        // Issue #519: when the callee shape is `recv.method(args)` (a
+        // PropertyGet) — i.e. a method-style invocation — bind the
+        // receiver as the implicit `this` for the duration of the call.
+        // Non-arrow function bodies (including FuncRef wrappers) read
+        // `this` via `js_implicit_this_get` when their lexical
+        // this_stack is empty (codegen Expr::This fallback). Without
+        // this save/set/restore, hono's `RegExpRouter.match = match`
+        // (where `match` is an imported function declaration whose
+        // body does `this.buildAllMatchers()`) sees `this = undefined`
+        // and TypeErrors out at the first chained method call.
+        //
+        // We evaluate `object` once into a fresh slot so that
+        // (a) it's only side-effect-evaluated once, and
+        // (b) the lowered `callee` (which re-reads `object` to get the
+        //     property) and the IMPLICIT_THIS save/set both see the
+        //     same receiver value.
+        let method_recv: Option<String> = if let Expr::PropertyGet { object, .. } = callee {
+            // Skip the method-binding when the receiver is a global,
+            // namespace import, or NativeModuleRef — those aren't
+            // user objects and shouldn't influence `this`.
+            if matches!(
+                object.as_ref(),
+                Expr::GlobalGet(_) | Expr::NativeModuleRef(_) | Expr::ExternFuncRef { .. }
+            ) {
+                None
+            } else {
+                Some(lower_expr(ctx, object)?)
+            }
+        } else {
+            None
+        };
+
         let recv_box = lower_expr(ctx, callee)?;
         let mut lowered_args: Vec<String> = Vec::with_capacity(args.len());
         for a in args {
             lowered_args.push(lower_expr(ctx, a)?);
         }
+        let prev_this: Option<String> = if let Some(ref this_val) = method_recv {
+            let blk = ctx.block();
+            Some(blk.call(DOUBLE, "js_implicit_this_set", &[(DOUBLE, this_val)]))
+        } else {
+            None
+        };
         let blk = ctx.block();
         let closure_handle = unbox_to_i64(blk, &recv_box);
         let runtime_fn = format!("js_closure_call{}", args.len());
@@ -2280,7 +2318,12 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
         for v in &lowered_args {
             call_args.push((DOUBLE, v.as_str()));
         }
-        return Ok(blk.call(DOUBLE, &runtime_fn, &call_args));
+        let result = blk.call(DOUBLE, &runtime_fn, &call_args);
+        if let Some(prev) = prev_this {
+            ctx.block()
+                .call(DOUBLE, "js_implicit_this_set", &[(DOUBLE, &prev)]);
+        }
+        return Ok(result);
     }
 
     bail!(

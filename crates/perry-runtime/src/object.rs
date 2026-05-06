@@ -56,6 +56,42 @@ thread_local! {
         const { std::cell::UnsafeCell::new((0, std::ptr::null_mut())) };
 }
 
+/// Implicit `this` for closure-typed class fields invoked method-style.
+///
+/// Issue #519: when `obj.fn(args)` calls a closure stored as a class field,
+/// the field-scan dispatch in `js_native_call_method` can't bind `this`
+/// through the closure ABI (closures take `(closure_ptr, arg0, …)` — no
+/// `this` slot). Hono's RegExpRouter does this with `match = match` (the
+/// imported function from matcher.js), and the function body's
+/// `this.buildAllMatchers()` reads `this = 0` and TypeErrors out.
+///
+/// Codegen for `Expr::This` (perry-codegen/src/expr.rs) reads from this
+/// thread-local when the lexical `this_stack` is empty (i.e. inside a
+/// non-arrow function body or top-level closure body). The field-scan
+/// dispatch saves the previous value, sets it to the receiver, calls the
+/// closure, then restores. Direct function calls (`fn(args)`) don't touch
+/// this slot, so non-method invocations don't pollute it across calls.
+///
+/// Defaults to `TAG_UNDEFINED`. JS spec says top-level `this` is undefined
+/// in strict mode, which matches.
+thread_local! {
+    static IMPLICIT_THIS: Cell<u64> = const { Cell::new(crate::value::TAG_UNDEFINED) };
+}
+
+/// Read the current implicit `this` (issue #519).
+#[no_mangle]
+pub extern "C" fn js_implicit_this_get() -> f64 {
+    IMPLICIT_THIS.with(|c| f64::from_bits(c.get()))
+}
+
+/// Set the implicit `this` and return the previous value.
+/// Callers must restore the previous value to scope the binding to the
+/// duration of a single method-style call.
+#[no_mangle]
+pub extern "C" fn js_implicit_this_set(value: f64) -> f64 {
+    IMPLICIT_THIS.with(|c| f64::from_bits(c.replace(value.to_bits())))
+}
+
 /// Read the u64 bits stored at `field_index` for `obj`, or `None` if absent.
 /// Positions never written are stored as `TAG_UNDEFINED`; this helper reports
 /// them as `None` so callers can return JS `undefined` uniformly with the
@@ -4056,6 +4092,56 @@ pub unsafe extern "C" fn js_native_call_method(
                     return f64::from_bits(JSValue::string_ptr(result).bits());
                 }
                 "toString" | "valueOf" => return object,
+                // Issue #519 follow-up: hono's matcher.js does
+                // `path2.match(matcher[0])` where `path2` is a string and
+                // `matcher[0]` is a regex. The HIR optimistic
+                // `Expr::StringMatch` lowering only fires when the regex
+                // arg is a literal or a static `RegExp`-typed Ident — for
+                // a `Member` or `Element` access (matcher[0]) it falls
+                // through to the dynamic dispatch, which then ended up at
+                // the issue #510 catch-all (`(string).match is not a
+                // function`) because no runtime arm handled `match`.
+                "match" | "matchAll" => {
+                    if args_len >= 1 && !args_ptr.is_null() {
+                        let regex_val = unsafe { *args_ptr };
+                        // Extract regex handle from the arg value. RegExp
+                        // values are NaN-boxed pointers; pass through the
+                        // pointer extraction the same way the HIR-level
+                        // StringMatch path does.
+                        let regex_jsval = JSValue::from_bits(regex_val.to_bits());
+                        if !regex_jsval.is_pointer() {
+                            return f64::from_bits(JSValue::null().bits());
+                        }
+                        let regex_ptr =
+                            regex_jsval.as_pointer::<crate::regex::RegExpHeader>();
+                        let result_ptr = if method_name == "match" {
+                            crate::regex::js_string_match(s_ptr, regex_ptr)
+                        } else {
+                            crate::regex::js_string_match_all(s_ptr, regex_ptr)
+                        };
+                        if result_ptr.is_null() {
+                            return f64::from_bits(JSValue::null().bits());
+                        }
+                        return f64::from_bits(
+                            JSValue::pointer(result_ptr as *mut u8).bits(),
+                        );
+                    }
+                    return f64::from_bits(JSValue::null().bits());
+                }
+                "search" => {
+                    if args_len >= 1 && !args_ptr.is_null() {
+                        let regex_val = unsafe { *args_ptr };
+                        let regex_jsval = JSValue::from_bits(regex_val.to_bits());
+                        if !regex_jsval.is_pointer() {
+                            return f64::from_bits(JSValue::int32(-1).bits());
+                        }
+                        let regex_ptr =
+                            regex_jsval.as_pointer::<crate::regex::RegExpHeader>();
+                        let i32_v = crate::regex::js_string_search_regex(s_ptr, regex_ptr);
+                        return f64::from_bits(JSValue::int32(i32_v).bits());
+                    }
+                    return f64::from_bits(JSValue::int32(-1).bits());
+                }
                 _ => {} // not a handled string method — fall through to TypeError catch-all
             }
         }
@@ -4226,11 +4312,29 @@ pub unsafe extern "C" fn js_native_call_method(
                                     // of invoking `js_promise_resolve`, so
                                     // the outer `await` hung forever
                                     // (issue #87).
-                                    return crate::closure::js_native_call_value(
+                                    //
+                                    // Issue #519: bind `this` to the receiver
+                                    // for the duration of the call. Non-arrow
+                                    // function bodies read `this` from
+                                    // IMPLICIT_THIS (codegen Expr::This
+                                    // fallback when this_stack is empty);
+                                    // without this save/set/restore, the
+                                    // body sees `this = undefined` and any
+                                    // `this.foo()` call falls through to the
+                                    // issue #510 catch-all "(undefined).foo
+                                    // is not a function" TypeError. Hono's
+                                    // RegExpRouter.match (imported function
+                                    // assigned as a class field) hit this.
+                                    let recv_bits = jsval.bits();
+                                    let prev_this =
+                                        IMPLICIT_THIS.with(|c| c.replace(recv_bits));
+                                    let result = crate::closure::js_native_call_value(
                                         f64::from_bits(field_val.bits()),
                                         args_ptr,
                                         args_len,
                                     );
+                                    IMPLICIT_THIS.with(|c| c.set(prev_this));
+                                    return result;
                                 }
                             }
                         }

@@ -4061,14 +4061,22 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         }
 
         // `this` — load from the topmost `this` slot in the constructor
-        // stack. Returns undefined sentinel outside any constructor
-        // body so compile succeeds for stray top-level `this` (which
-        // is `undefined` in strict mode anyway).
+        // stack. When `this_stack` is empty (top-level module code, top-
+        // level function declarations, or non-arrow function expressions
+        // without `captures_this`), fall through to the runtime
+        // IMPLICIT_THIS thread-local. Issue #519: `js_native_call_method`'s
+        // field-scan dispatch path saves/sets IMPLICIT_THIS to the
+        // receiver before calling a closure-typed class field, so the
+        // function body's `this` correctly references the calling
+        // instance. When the function is invoked outside a method-style
+        // call, IMPLICIT_THIS stays at its initial TAG_UNDEFINED — same
+        // observable behavior as the previous 0.0 sentinel for the
+        // strict-mode top-level case.
         Expr::This => {
             if let Some(slot) = ctx.this_stack.last().cloned() {
                 Ok(ctx.block().load(DOUBLE, &slot))
             } else {
-                Ok(double_literal(0.0))
+                Ok(ctx.block().call(DOUBLE, "js_implicit_this_get", &[]))
             }
         }
 
