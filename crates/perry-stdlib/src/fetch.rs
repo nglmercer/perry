@@ -1434,8 +1434,12 @@ pub fn response_bytes_clone(resp_id: usize) -> Option<Vec<u8>> {
 // per-subsystem registries publicly.
 
 /// Try to read a property off a Request handle by registry id.
-/// Returns `None` if the id isn't a known Request — caller should try
-/// Response/Headers/Blob next.
+/// Returns `Some(value)` only when both (a) the id is in REQUEST_REGISTRY AND
+/// (b) the property name is one this type exposes. Returns `None` otherwise so
+/// the dispatcher falls through to the next handler — Web Fetch registries use
+/// disjoint integer-id namespaces (Request id 1 ≠ Response id 1), so a
+/// "membership only" Some(undefined) catch-all would shadow legitimate
+/// property reads on a Response handle whose id collides with a Request id.
 #[doc(hidden)]
 pub fn dispatch_request_property(req_id: usize, prop: &str) -> Option<f64> {
     let guard = REQUEST_REGISTRY.lock().unwrap();
@@ -1456,15 +1460,15 @@ pub fn dispatch_request_property(req_id: usize, prop: &str) -> Option<f64> {
             },
             None => TAG_NULL,
         },
-        // Other Request properties (headers, signal, mode, ...) not yet wired —
-        // return undefined so untyped access doesn't masquerade as Response/Blob.
-        _ => TAG_UNDEFINED,
+        // Other Request properties not yet wired — fall through so other
+        // dispatchers (or the final undefined fallback) can answer.
+        _ => return None,
     };
     Some(f64::from_bits(bits))
 }
 
 /// Try to read a property off a Response handle by registry id.
-/// Returns `None` if the id isn't a known Response.
+/// Returns `None` if the id isn't a known Response or the property is unknown.
 #[doc(hidden)]
 pub fn dispatch_response_property(resp_id: usize, prop: &str) -> Option<f64> {
     let guard = FETCH_RESPONSES.lock().unwrap();
@@ -1482,26 +1486,128 @@ pub fn dispatch_response_property(resp_id: usize, prop: &str) -> Option<f64> {
                 TAG_FALSE
             }))
         }
-        _ => TAG_UNDEFINED,
+        _ => return None,
     };
     Some(f64::from_bits(bits))
 }
 
 /// Try to read a property off a Headers handle by registry id.
-/// Returns `None` if the id isn't a known Headers entry.
+/// Returns `None` always today — Headers has no scalar properties exposed
+/// via property reads (`.get(k)` / `.has(k)` etc. are method calls that route
+/// through `HANDLE_METHOD_DISPATCH`).
 #[doc(hidden)]
-pub fn dispatch_headers_property(headers_id: usize, _prop: &str) -> Option<f64> {
-    let guard = HEADERS_REGISTRY.lock().unwrap();
-    guard.get(&headers_id)?;
-    // Headers has no scalar properties to expose for untyped access today —
-    // `headers.get(k)` / `.has(k)` / `.set(k, v)` etc. are method calls that
-    // route through `HANDLE_METHOD_DISPATCH`, not property gets. We still
-    // claim membership so dispatch doesn't fall through to Response/Blob.
-    Some(f64::from_bits(TAG_UNDEFINED))
+pub fn dispatch_headers_property(_headers_id: usize, _prop: &str) -> Option<f64> {
+    None
+}
+
+/// Try to dispatch a method call on a Response handle. Returns `Some(result)`
+/// only when the id is a known Response AND the method is supported. Returns
+/// `None` (fall through to the next dispatcher) otherwise. Required because
+/// Web Fetch handle id namespaces are disjoint from each other and from other
+/// stdlib registries — id collision (Request id 1 ≠ Response id 1) means
+/// claiming membership alone would shadow legitimate calls on other handles.
+#[doc(hidden)]
+pub fn dispatch_response_method(resp_id: usize, method: &str, _args: &[f64]) -> Option<f64> {
+    {
+        let guard = FETCH_RESPONSES.lock().unwrap();
+        guard.get(&resp_id)?;
+    }
+    let resp_f64 = handle_to_f64(resp_id);
+    unsafe {
+        match method {
+            "text" => {
+                let promise = js_fetch_response_text(resp_f64);
+                Some(f64::from_bits(JSValue::pointer(promise as *mut u8).bits()))
+            }
+            "json" => {
+                let promise = js_fetch_response_json(resp_f64);
+                Some(f64::from_bits(JSValue::pointer(promise as *mut u8).bits()))
+            }
+            "arrayBuffer" => {
+                let promise = js_response_array_buffer(resp_f64);
+                Some(f64::from_bits(JSValue::pointer(promise as *mut u8).bits()))
+            }
+            "blob" => {
+                let promise = js_response_blob(resp_f64);
+                Some(f64::from_bits(JSValue::pointer(promise as *mut u8).bits()))
+            }
+            "clone" => Some(js_response_clone(resp_f64)),
+            _ => None,
+        }
+    }
+}
+
+/// Try to dispatch a method call on a Blob handle. Returns `None` for unknown
+/// ids or methods.
+#[doc(hidden)]
+pub fn dispatch_blob_method(blob_id: usize, method: &str, args: &[f64]) -> Option<f64> {
+    {
+        let guard = BLOB_REGISTRY.lock().unwrap();
+        guard.get(&blob_id)?;
+    }
+    let blob_f64 = handle_to_f64(blob_id);
+    unsafe {
+        match method {
+            "text" => {
+                let promise = js_blob_text(blob_f64);
+                Some(f64::from_bits(JSValue::pointer(promise as *mut u8).bits()))
+            }
+            "arrayBuffer" => {
+                let promise = js_blob_array_buffer(blob_f64);
+                Some(f64::from_bits(JSValue::pointer(promise as *mut u8).bits()))
+            }
+            "bytes" => {
+                let promise = js_blob_bytes(blob_f64);
+                Some(f64::from_bits(JSValue::pointer(promise as *mut u8).bits()))
+            }
+            "slice" => {
+                let start = args.first().copied().unwrap_or(f64::NAN);
+                let end = args.get(1).copied().unwrap_or(f64::NAN);
+                Some(js_blob_slice(blob_f64, start, end, std::ptr::null()))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Try to dispatch a method call on a Headers handle. Returns `None` for
+/// unknown ids or methods.
+#[doc(hidden)]
+pub fn dispatch_headers_method(headers_id: usize, method: &str, args: &[f64]) -> Option<f64> {
+    {
+        let guard = HEADERS_REGISTRY.lock().unwrap();
+        guard.get(&headers_id)?;
+    }
+    let h_f64 = handle_to_f64(headers_id);
+    // String args arrive as NaN-boxed STRING_TAG f64 values; extract the raw
+    // StringHeader pointer for the runtime helpers.
+    let str_arg = |i: usize| -> *const StringHeader {
+        if i < args.len() {
+            let v = args[i];
+            (v.to_bits() & 0x0000_FFFF_FFFF_FFFF) as *const StringHeader
+        } else {
+            std::ptr::null()
+        }
+    };
+    unsafe {
+        match method {
+            "get" => Some(f64::from_bits(
+                JSValue::string_ptr(js_headers_get(h_f64, str_arg(0))).bits(),
+            )),
+            "set" => Some(js_headers_set(h_f64, str_arg(0), str_arg(1))),
+            "has" => Some(js_headers_has(h_f64, str_arg(0))),
+            "delete" => Some(js_headers_delete(h_f64, str_arg(0))),
+            "forEach" => {
+                let cb = args.first().copied().unwrap_or(f64::NAN);
+                Some(js_headers_for_each(h_f64, cb))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Try to read a property off a Blob handle by registry id.
-/// Returns `None` if the id isn't a known Blob.
+/// Returns `None` if the id isn't a known Blob or the property is unknown.
 #[doc(hidden)]
 pub fn dispatch_blob_property(blob_id: usize, prop: &str) -> Option<f64> {
     let guard = BLOB_REGISTRY.lock().unwrap();
@@ -1512,7 +1618,7 @@ pub fn dispatch_blob_property(blob_id: usize, prop: &str) -> Option<f64> {
             let p = js_string_from_bytes(blob.content_type.as_ptr(), blob.content_type.len() as u32);
             JSValue::string_ptr(p).bits()
         },
-        _ => TAG_UNDEFINED,
+        _ => return None,
     };
     Some(f64::from_bits(bits))
 }

@@ -3830,6 +3830,15 @@ pub extern "C" fn js_instanceof(value: f64, class_id: u32) -> f64 {
         return false_val;
     }
 
+    // Refs #421: NaN-boxed POINTER_TAG values whose unboxed payload is a
+    // small registry id (Web Fetch handles, sockets, DB connections, etc.)
+    // are NOT real ObjectHeader pointers — reading the GC header at
+    // `obj_ptr - 8` would SIGSEGV on unmapped memory. They aren't instances
+    // of any user-defined class either, so return false unconditionally.
+    if (obj_ptr as usize) < 0x100000 {
+        return false_val;
+    }
+
     unsafe {
         // Special handling for built-in Error and its subclasses (TypeError, RangeError, etc.).
         // ErrorHeader uses GC_TYPE_ERROR; we match by error_kind against the requested CLASS_ID_*.
