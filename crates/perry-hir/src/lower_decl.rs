@@ -296,6 +296,17 @@ pub(crate) fn lower_fn_decl(ctx: &mut LoweringContext, fn_decl: &ast::FnDecl) ->
                 "WebSocket" | "WebSocketServer" => Some(("ws", type_name.as_str())),
                 "Redis" => Some(("ioredis", "Redis")),
                 "EventEmitter" => Some(("events", "EventEmitter")),
+                // Web Fetch API: Request / Response / Headers as function
+                // params — same registration the local-init paths get
+                // (destructuring.rs:1457+ for `const r = new Request(…)`).
+                // Without this, hono's `fetch(request)` body reads
+                // `request.url` through the generic-object-property-get
+                // fallback which interprets the runtime handle as an
+                // object pointer, returning undefined and TypeErroring on
+                // the downstream `url.indexOf("/")` (issue #519 follow-up).
+                "Request" => Some(("Request", "Request")),
+                "Response" => Some(("fetch", "Response")),
+                "Headers" => Some(("Headers", "Headers")),
                 // Fastify types
                 "FastifyInstance" => Some(("fastify", "App")),
                 "FastifyRequest" => Some(("fastify", "Request")),

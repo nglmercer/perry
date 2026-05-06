@@ -70,6 +70,23 @@ pub(super) fn lower_arrow(ctx: &mut LoweringContext, arrow: &ast::ArrowExpr) -> 
                 "WebSocket" | "WebSocketServer" => Some(("ws", type_name.as_str())),
                 "Redis" => Some(("ioredis", "Redis")),
                 "EventEmitter" => Some(("events", "EventEmitter")),
+                // Web Fetch API: Request / Response / Headers passed as
+                // function parameters need the same native-instance
+                // registration the `new Request()`/`new Response()`/
+                // `new Headers()` paths get from destructuring.rs:1457+,
+                // otherwise codegen's `Request.url` / `Response.status` /
+                // `Headers.get` static dispatches don't fire and the
+                // generic-object-property-get fallback hands `request.url`
+                // a raw integer handle as if it were an object pointer
+                // (handle IDs aren't NaN-boxed pointers — `js_request_new`
+                // returns `id as f64`). Hono's `app.fetch(request)` reads
+                // `request.url` inside cross-module compiled code; without
+                // this registration the read returned undefined and the
+                // downstream `url.indexOf("/")` threw "Cannot read
+                // properties of undefined (reading 'indexOf')".
+                "Request" => Some(("Request", "Request")),
+                "Response" => Some(("fetch", "Response")),
+                "Headers" => Some(("Headers", "Headers")),
                 // Fastify types
                 "FastifyInstance" => Some(("fastify", "App")),
                 "FastifyRequest" => Some(("fastify", "Request")),
