@@ -94,7 +94,7 @@ run under V8 / Node fallback; Perry's compiler resolves the function
 calls directly to the `js_*` symbols at link time, never executing
 the TS body.
 
-```ts
+```typescript,no-test
 /**
  * Extract text from a PDF buffer.
  */
@@ -181,7 +181,7 @@ bun add file:../my-bindings   # or any path your tooling supports
 
 Add to your TS:
 
-```ts
+```typescript,no-test
 import { parse } from "my-bindings";
 const buf = await Bun.file("input.pdf").bytes();
 console.log(parse(buf));

@@ -1602,6 +1602,24 @@ pub static PERRY_SYSTEM_TABLE: &[MethodRow] = &[
         ret: ReturnKind::F64,
     },
     MethodRow {
+        method: "audioSetOutputFilename",
+        runtime: "perry_system_audio_set_output_filename",
+        args: &[ArgKind::Str],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "audioStartRecording",
+        runtime: "perry_system_audio_start_recording",
+        args: &[],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
+        method: "audioStopRecording",
+        runtime: "perry_system_audio_stop_recording",
+        args: &[],
+        ret: ReturnKind::Void,
+    },
+    MethodRow {
         method: "getLocale",
         runtime: "perry_system_get_locale",
         args: &[],

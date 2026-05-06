@@ -687,6 +687,53 @@ function perry_system_get_device_model() {
     return navigator.userAgent || "Web";
 }
 
+// Web audio recording to WAV file (stub for now, but structure added)
+let _perry_audio_recording = false;
+let _perry_audio_output_filename = null;
+let _perry_audio_media_recorder = null;
+let _perry_audio_recorded_chunks = [];
+
+function perry_system_audio_set_output_filename(filename) {
+    _perry_audio_output_filename = filename;
+}
+
+function perry_system_audio_start_recording() {
+    if (_perry_audio_recording) return;
+    if (!_perry_audio_stream) return;
+    
+    try {
+        _perry_audio_recorded_chunks = [];
+        _perry_audio_media_recorder = new MediaRecorder(_perry_audio_stream);
+        _perry_audio_media_recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                _perry_audio_recorded_chunks.push(event.data);
+            }
+        };
+        _perry_audio_media_recorder.onstop = () => {
+            const blob = new Blob(_perry_audio_recorded_chunks, { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = _perry_audio_output_filename || 'recording.wav';
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+        _perry_audio_media_recorder.start();
+        _perry_audio_recording = true;
+    } catch (e) {
+        console.error("Failed to start recording:", e);
+    }
+}
+
+function perry_system_audio_stop_recording() {
+    if (!_perry_audio_recording) return;
+    if (_perry_audio_media_recorder) {
+        _perry_audio_media_recorder.stop();
+        _perry_audio_media_recorder = null;
+    }
+    _perry_audio_recording = false;
+}
+
 // --- Canvas Operations ---
 function perry_ui_canvas_fill_rect(h, x, y, w, ht) {
     const el = getHandle(h);

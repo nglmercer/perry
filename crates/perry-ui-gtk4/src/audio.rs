@@ -3,7 +3,10 @@
 //! Uses raw C FFI to libpulse-simple. Link with: -lpulse-simple -lpulse
 //! Falls back gracefully if PulseAudio is not available.
 
+use std::fs::File;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 // =============================================================================
 // Shared atomic state
@@ -17,6 +20,12 @@ static WAVEFORM_WRITE_INDEX: AtomicU64 = AtomicU64::new(0);
 static mut WAVEFORM_BUFFER: [f64; WAVEFORM_SIZE] = [0.0; WAVEFORM_SIZE];
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+// Recording state
+static RECORDING: AtomicBool = AtomicBool::new(false);
+static RECORDED_SAMPLES: Mutex<Vec<f32>> = Mutex::new(Vec::new());
+static OUTPUT_FILENAME: Mutex<String> = Mutex::new(String::new());
+const SAMPLE_RATE: u32 = 48000;
 
 // =============================================================================
 // A-weighting (48kHz coefficients)
@@ -127,6 +136,60 @@ extern "C" {
 }
 
 // =============================================================================
+// WAV file utilities
+// =============================================================================
+
+fn write_u32_le(writer: &mut File, value: u32) -> std::io::Result<()> {
+    let bytes = [
+        (value & 0xFF) as u8,
+        ((value >> 8) & 0xFF) as u8,
+        ((value >> 16) & 0xFF) as u8,
+        ((value >> 24) & 0xFF) as u8,
+    ];
+    writer.write_all(&bytes)?;
+    Ok(())
+}
+
+fn write_u16_le(writer: &mut File, value: u16) -> std::io::Result<()> {
+    writer.write_all(&[(value & 0xFF) as u8, ((value >> 8) & 0xFF) as u8])?;
+    Ok(())
+}
+
+fn write_wav_header(writer: &mut File, num_samples: u32) -> std::io::Result<()> {
+    let bits_per_sample = 16;
+    let channels = 1u16;
+    let byte_rate = (SAMPLE_RATE * u32::from(channels) * bits_per_sample) / 8;
+    let block_align = (u32::from(channels) * bits_per_sample) / 8;
+    let data_size = num_samples * u32::from(channels) * (bits_per_sample / 8);
+    let chunk_size = 36 + data_size;
+
+    writer.write_all(b"RIFF")?;
+    write_u32_le(writer, chunk_size)?;
+    writer.write_all(b"WAVE")?;
+    writer.write_all(b"fmt ")?;
+    write_u32_le(writer, 16)?;
+    write_u16_le(writer, 1)?;
+    write_u16_le(writer, channels)?;
+    write_u32_le(writer, SAMPLE_RATE)?;
+    write_u32_le(writer, byte_rate)?;
+    write_u16_le(writer, block_align as u16)?;
+    write_u16_le(writer, bits_per_sample as u16)?;
+    writer.write_all(b"data")?;
+    write_u32_le(writer, data_size)?;
+    Ok(())
+}
+
+fn write_wav_samples(writer: &mut File, samples: &[f32]) -> std::io::Result<()> {
+    for &sample in samples {
+        let int_sample = (sample * i16::MAX as f32)
+            .max(i16::MIN as f32)
+            .min(i16::MAX as f32) as i16;
+        writer.write_all(&int_sample.to_le_bytes())?;
+    }
+    Ok(())
+}
+
+// =============================================================================
 // Public API
 // =============================================================================
 
@@ -136,9 +199,46 @@ extern "C" {
     fn js_array_push_f64(array_ptr: i64, value: f64);
 }
 
+pub fn set_output_filename(filename: &str) {
+    let mut slot = OUTPUT_FILENAME.lock().unwrap();
+    slot.clear();
+    slot.push_str(filename);
+}
+
+pub fn start_recording() {
+    RECORDED_SAMPLES.lock().unwrap().clear();
+    RECORDING.store(true, Ordering::Relaxed);
+}
+
+pub fn stop_recording() {
+    RECORDING.store(false, Ordering::Relaxed);
+
+    let filename = {
+        let mut slot = OUTPUT_FILENAME.lock().unwrap();
+        if slot.is_empty() {
+            return;
+        }
+        std::mem::take(&mut *slot)
+    };
+
+    let samples = std::mem::take(&mut *RECORDED_SAMPLES.lock().unwrap());
+    if samples.is_empty() {
+        return;
+    }
+
+    if let Ok(mut file) = File::create(&filename) {
+        let _ = write_wav_header(&mut file, samples.len() as u32);
+        let _ = write_wav_samples(&mut file, &samples);
+    }
+}
+
 pub fn start() -> i64 {
     if RUNNING.load(Ordering::Relaxed) {
         return 1;
+    }
+
+    if !OUTPUT_FILENAME.lock().unwrap().is_empty() {
+        start_recording();
     }
 
     RUNNING.store(true, Ordering::Relaxed);
@@ -204,6 +304,12 @@ pub fn start() -> i64 {
 
             // Process: A-weight + RMS + dB
             let n = buffer_frames;
+
+            // Record samples if recording is enabled
+            if RECORDING.load(Ordering::Relaxed) {
+                RECORDED_SAMPLES.lock().unwrap().extend_from_slice(&buf);
+            }
+
             let mut sum_sq = 0.0f64;
             let mut peak = 0.0f32;
 
