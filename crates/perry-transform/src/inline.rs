@@ -158,6 +158,7 @@ pub fn inline_functions(
                     }
                 }
                 Stmt::Labeled { body, .. } => walk_stmt_exprs(body.as_ref(), f),
+                Stmt::PreallocateBoxes(_) => {}
             }
         }
 
@@ -725,6 +726,7 @@ pub fn is_cross_module_safe(body: &[Stmt]) -> bool {
                     && finally.as_ref().is_none_or(|f| f.iter().all(check_stmt))
             }
             Stmt::Labeled { body, .. } => check_stmt(body.as_ref()),
+            Stmt::PreallocateBoxes(_) => true,
         }
     }
     body.iter().all(check_stmt)
@@ -964,6 +966,7 @@ fn is_cross_module_safe_with_externs(body: &[Stmt], extern_names: &mut Vec<Strin
                         .is_none_or(|f| f.iter().all(|s| check_stmt(s, extern_names)))
             }
             Stmt::Labeled { body, .. } => check_stmt(body.as_ref(), extern_names),
+            Stmt::PreallocateBoxes(_) => true,
         }
     }
     body.iter().all(|s| check_stmt(s, extern_names))
@@ -1095,6 +1098,7 @@ fn body_references_class_in_set(stmts: &[Stmt], set: &HashSet<String>) -> bool {
                         .is_some_and(|f| f.iter().any(|s| check_stmt(s, set)))
             }
             Stmt::Labeled { body, .. } => check_stmt(body.as_ref(), set),
+            Stmt::PreallocateBoxes(_) => false,
         }
     }
     stmts.iter().any(|s| check_stmt(s, set))
@@ -1413,6 +1417,7 @@ fn has_simple_control_flow(stmts: &[Stmt]) -> bool {
             | Stmt::LabeledContinue(_) => {
                 return false;
             }
+            Stmt::PreallocateBoxes(_) => {}
         }
     }
     true
@@ -1584,6 +1589,11 @@ fn find_max_local_id(stmts: &[Stmt]) -> LocalId {
                 }
             }
             Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+            Stmt::PreallocateBoxes(ids) => {
+                for id in ids {
+                    *max_id = (*max_id).max(*id);
+                }
+            }
         }
     }
 
@@ -3432,6 +3442,18 @@ fn substitute_locals_in_stmts(
                     substitute_locals(upd, param_map, next_local_id);
                 }
                 substitute_locals_in_stmts(body, param_map, next_local_id);
+            }
+            Stmt::PreallocateBoxes(ids) => {
+                // Issue #569: remap each id in the prealloc list. Inlining
+                // can rename body locals so the slot+box allocation must
+                // refer to the new ids. If a callee with a PreallocateBoxes
+                // gets inlined into a caller, its body's hoisted FnDecls
+                // still need their boxes set up.
+                for id in ids.iter_mut() {
+                    if let Some(Expr::LocalGet(new_id)) = param_map.get(id) {
+                        *id = *new_id;
+                    }
+                }
             }
             _ => {}
         }

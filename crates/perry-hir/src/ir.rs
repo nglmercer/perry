@@ -692,6 +692,12 @@ pub enum Stmt {
         discriminant: Expr,
         cases: Vec<SwitchCase>,
     },
+    /// Pre-allocate slot+box for a set of LocalIds at function-body
+    /// entry. Emitted by `lower_fn_body_block_stmt` to support hoisted
+    /// inner `function`-declarations that capture sibling FnDecls or
+    /// forward `let`/`const` bindings whose own `Stmt::Let` would
+    /// otherwise lazily allocate the box at source position. Issue #569.
+    PreallocateBoxes(Vec<LocalId>),
 }
 
 /// A case in a switch statement

@@ -501,6 +501,26 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
             // this, the capture reads 0.0 from the soft fallback
             // instead of the box pointer.
             if ctx.boxed_vars.contains(id) {
+                // Issue #569: if `Stmt::PreallocateBoxes` already alloca'd
+                // a slot+box for this id at function-body entry, skip the
+                // fresh alloc and just `js_box_set` the init value into
+                // the existing box. The slot is already registered in
+                // `ctx.locals` from the prealloc pass.
+                if ctx.prealloc_boxes.contains(id) {
+                    ctx.local_types.insert(*id, refined_ty);
+                    if let Some(init_expr) = init {
+                        let init_val = lower_expr(ctx, init_expr)?;
+                        let slot_clone = ctx.locals[id].clone();
+                        let blk = ctx.block();
+                        let box_dbl = blk.load(DOUBLE, &slot_clone);
+                        let bptr = blk.bitcast_double_to_i64(&box_dbl);
+                        blk.call_void(
+                            "js_box_set",
+                            &[(crate::types::I64, &bptr), (DOUBLE, &init_val)],
+                        );
+                    }
+                    return Ok(());
+                }
                 // Step 1: allocate box with undefined sentinel.
                 let undef =
                     crate::nanbox::double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED));
@@ -918,6 +938,36 @@ pub(crate) fn lower_stmt(ctx: &mut FnCtx<'_>, stmt: &Stmt) -> Result<()> {
             catch,
             finally,
         } => lower_try(ctx, body, catch.as_ref(), finally.as_deref()),
+
+        // Issue #569: pre-allocate slot+box for hoisted FnDecl ids and any
+        // function-body let/const captured by a hoisted closure. Each id
+        // gets an alloca'd entry-block slot whose value is a pointer to a
+        // `js_box_alloc(undefined)` heap cell. Subsequent `Stmt::Let`s for
+        // these ids skip the allocation and only `js_box_set` the init
+        // value. `LocalGet` / `LocalSet` / `Update` already route through
+        // the box because the id is in `ctx.boxed_vars`.
+        Stmt::PreallocateBoxes(ids) => {
+            for id in ids {
+                if ctx.locals.contains_key(id) {
+                    // A previous PreallocateBoxes (or an unusual nesting)
+                    // already set this up — skip to keep the existing slot.
+                    ctx.prealloc_boxes.insert(*id);
+                    ctx.boxed_vars.insert(*id);
+                    continue;
+                }
+                let undef =
+                    crate::nanbox::double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED));
+                let blk = ctx.block();
+                let box_ptr = blk.call(crate::types::I64, "js_box_alloc", &[(DOUBLE, &undef)]);
+                let slot = ctx.func.alloca_entry(DOUBLE);
+                let box_as_double = ctx.block().bitcast_i64_to_double(&box_ptr);
+                ctx.block().store(DOUBLE, &box_as_double, &slot);
+                ctx.locals.insert(*id, slot);
+                ctx.prealloc_boxes.insert(*id);
+                ctx.boxed_vars.insert(*id);
+            }
+            Ok(())
+        }
 
         other => bail!(
             "perry-codegen Phase B.12: Stmt {} not yet supported",
@@ -1516,6 +1566,7 @@ fn stmt_preserves_array_length(s: &perry_hir::Stmt, arr_id: u32, bounded_idx_id:
             stmt_preserves_array_length(body.as_ref(), arr_id, bounded_idx_id)
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => true,
+        Stmt::PreallocateBoxes(_) => true,
     }
 }
 
@@ -2074,6 +2125,7 @@ fn stmt_variant_name(s: &Stmt) -> &'static str {
         Stmt::Throw(_) => "Throw",
         Stmt::Try { .. } => "Try",
         Stmt::Switch { .. } => "Switch",
+        Stmt::PreallocateBoxes(_) => "PreallocateBoxes",
     }
 }
 

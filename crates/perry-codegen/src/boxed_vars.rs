@@ -35,7 +35,68 @@ pub(crate) fn collect_boxed_vars(stmts: &[perry_hir::Stmt]) -> HashSet<u32> {
     // mutable captures inside Promise executors, setTimeout callbacks,
     // etc. never get boxed and the outer mutation is lost.
     collect_nested_closure_boxed_vars_in_stmts(stmts, &mut boxed);
+    // Issue #569: HIR's `lower_fn_body_block_stmt` emits `Stmt::Preallocate
+    // Boxes(ids)` at the top of any function body that has hoisted inner
+    // `function`-decls capturing siblings or forward `let`/`const` bindings.
+    // Codegen needs every such id in the boxed set so reads/writes route
+    // through `js_box_get` / `js_box_set` rather than reading the raw slot
+    // (which holds a box pointer, not a usable value).
+    collect_prealloc_box_ids_in_stmts(stmts, &mut boxed);
     boxed
+}
+
+fn collect_prealloc_box_ids_in_stmts(stmts: &[perry_hir::Stmt], out: &mut HashSet<u32>) {
+    use perry_hir::Stmt;
+    for s in stmts {
+        match s {
+            Stmt::PreallocateBoxes(ids) => {
+                for id in ids {
+                    out.insert(*id);
+                }
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_prealloc_box_ids_in_stmts(then_branch, out);
+                if let Some(eb) = else_branch {
+                    collect_prealloc_box_ids_in_stmts(eb, out);
+                }
+            }
+            Stmt::For { init, body, .. } => {
+                if let Some(i) = init {
+                    collect_prealloc_box_ids_in_stmts(std::slice::from_ref(i.as_ref()), out);
+                }
+                collect_prealloc_box_ids_in_stmts(body, out);
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                collect_prealloc_box_ids_in_stmts(body, out);
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                collect_prealloc_box_ids_in_stmts(body, out);
+                if let Some(c) = catch {
+                    collect_prealloc_box_ids_in_stmts(&c.body, out);
+                }
+                if let Some(f) = finally {
+                    collect_prealloc_box_ids_in_stmts(f, out);
+                }
+            }
+            Stmt::Switch { cases, .. } => {
+                for c in cases {
+                    collect_prealloc_box_ids_in_stmts(&c.body, out);
+                }
+            }
+            Stmt::Labeled { body, .. } => {
+                collect_prealloc_box_ids_in_stmts(std::slice::from_ref(body.as_ref()), out);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Boxing analysis for a single lexical scope (does NOT recurse into

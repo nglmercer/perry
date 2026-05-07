@@ -467,6 +467,7 @@ fn stmt_is_unrollable(stmt: &Stmt, iv_id: LocalId, loop_depth: u32) -> bool {
                             .all(|s| stmt_is_unrollable(s, iv_id, loop_depth + 1))
                 })
         }
+        Stmt::PreallocateBoxes(_) => true,
     }
 }
 
@@ -605,6 +606,7 @@ fn substitute_localget_with_int_in_stmt(stmt: &mut Stmt, iv_id: LocalId, value: 
             substitute_localget_with_int_in_stmt(body, iv_id, value);
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -776,6 +778,13 @@ fn scan_stmt_for_max_local(stmt: &Stmt, max_id: &mut LocalId) {
         }
         Stmt::Labeled { body, .. } => scan_stmt_for_max_local(body, max_id),
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(ids) => {
+            for id in ids {
+                if *id > *max_id {
+                    *max_id = *id;
+                }
+            }
+        }
     }
 }
 
@@ -931,6 +940,7 @@ fn scan_stmt_for_max_func(stmt: &Stmt, max_id: &mut FuncId) {
         }
         Stmt::Labeled { body, .. } => scan_stmt_for_max_func(body, max_id),
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -1088,6 +1098,11 @@ fn refresh_in_stmt(
         }
         Stmt::Labeled { body, .. } => refresh_in_stmt(body, remap, next_id, next_func_id),
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(ids) => {
+            for id in ids.iter_mut() {
+                alloc_fresh(remap, next_id, id);
+            }
+        }
     }
 }
 

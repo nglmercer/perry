@@ -270,6 +270,13 @@ pub(crate) struct FnCtx<'a> {
     /// - Closure creation captures the box pointer directly so
     ///   the closure body sees the same storage.
     pub boxed_vars: std::collections::HashSet<u32>,
+    /// LocalIds whose slot+box was allocated up-front via `Stmt::
+    /// PreallocateBoxes` (issue #569). When a later `Stmt::Let` is
+    /// processed for an id in this set, codegen skips the slot/box
+    /// allocation and just `js_box_set`s the init value into the
+    /// pre-allocated box. The id is added to `boxed_vars` automatically
+    /// so subsequent `LocalGet`/`LocalSet`/`Update` go through the box.
+    pub prealloc_boxes: std::collections::HashSet<u32>,
     /// Closure rest param index: closure `FuncId` → index of the rest
     /// parameter. Built once in `compile_module` from the collected
     /// closures. Used by the closure call site in `lower_call` to

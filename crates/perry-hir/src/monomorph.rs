@@ -1801,6 +1801,7 @@ fn substitute_stmt(stmt: &Stmt, substitutions: &HashMap<String, Type>) -> Stmt {
                 })
                 .collect(),
         },
+        Stmt::PreallocateBoxes(ids) => Stmt::PreallocateBoxes(ids.clone()),
     }
 }
 
@@ -2214,6 +2215,7 @@ fn collect_instantiations_in_stmt(
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -2718,6 +2720,7 @@ fn update_call_sites_in_stmt(
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -3329,6 +3332,7 @@ fn fill_defaults_in_stmt(stmt: &mut Stmt, ctor_defaults: &HashMap<String, Vec<Op
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 

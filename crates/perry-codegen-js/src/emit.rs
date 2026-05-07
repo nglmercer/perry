@@ -733,6 +733,11 @@ impl JsEmitter {
                 self.indent -= 1;
                 self.writeln("}");
             }
+            // Issue #569: PreallocateBoxes is a perry-codegen-only directive
+            // (alloca slot+box for hoisted FnDecl ids). The JS backend has no
+            // equivalent — JS hoisting handles this for free in the V8 / JSC
+            // runtime. Emit nothing.
+            Stmt::PreallocateBoxes(_) => {}
         }
     }
 

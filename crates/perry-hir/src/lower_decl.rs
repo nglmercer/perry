@@ -385,9 +385,13 @@ pub(crate) fn lower_fn_decl(ctx: &mut LoweringContext, fn_decl: &ast::FnDecl) ->
         destructuring_stmts.extend(stmts);
     }
 
-    // Lower body
+    // Lower body — `lower_fn_body_block_stmt` handles ECMAScript function-
+    // declaration hoisting (issue #569): inner `function name() {...}`
+    // statements are pulled to the top of the result so forward references
+    // resolve, and a synthetic `Stmt::PreallocateBoxes` is emitted for any
+    // sibling/forward captures that need a box pre-allocated.
     let mut body = if let Some(ref block) = fn_decl.function.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2120,9 +2124,11 @@ pub(crate) fn lower_constructor(
         }
     }
 
-    // Lower body
+    // Lower body — issue #569; constructor body may contain hoisted
+    // inner function declarations that need PreallocateBoxes for sibling
+    // captures.
     let mut body = if let Some(ref block) = ctor.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2445,9 +2451,9 @@ pub(crate) fn lower_class_method(
         }
     }
 
-    // Lower body
+    // Lower body — see issue #569.
     let mut body = if let Some(ref block) = method.function.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2551,9 +2557,9 @@ pub(crate) fn lower_getter_method(
         .map(|rt| extract_ts_type_with_ctx(&rt.type_ann, Some(ctx)))
         .unwrap_or(Type::Any);
 
-    // Lower body
+    // Lower body — see issue #569.
     let body = if let Some(ref block) = method.function.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2620,9 +2626,9 @@ pub(crate) fn lower_setter_method(
         });
     }
 
-    // Lower body
+    // Lower body — see issue #569.
     let body = if let Some(ref block) = method.function.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2754,9 +2760,9 @@ pub(crate) fn lower_private_method(
         .map(|rt| extract_ts_type_with_ctx(&rt.type_ann, Some(ctx)))
         .unwrap_or(Type::Any);
 
-    // Lower body
+    // Lower body — see issue #569.
     let body = if let Some(ref block) = method.function.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2801,7 +2807,7 @@ pub(crate) fn lower_private_getter(
         .unwrap_or(Type::Any);
 
     let body = if let Some(ref block) = method.function.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2849,7 +2855,7 @@ pub(crate) fn lower_private_setter(
     }
 
     let body = if let Some(ref block) = method.function.body {
-        lower_block_stmt(ctx, block)?
+        lower_fn_body_block_stmt(ctx, block)?
     } else {
         Vec::new()
     };
@@ -2916,6 +2922,261 @@ pub(crate) fn lower_block_stmt(
     block: &ast::BlockStmt,
 ) -> Result<Vec<Stmt>> {
     lower_stmts_using_aware(ctx, &block.stmts)
+}
+
+/// Lower a function-body block, with support for ECMAScript function-decl
+/// hoisting (issue #569). Pre-defines locals for every non-generator
+/// `function name() {...}` at the block's top level so forward-reference
+/// callsites resolve at HIR lowering time, then after the body is lowered
+/// rearranges the resulting `Vec<Stmt>` so the hoisted FnDecls' `Stmt::Let`
+/// entries appear before any other top-level statement (matching JS spec
+/// "function declarations are hoisted AND initialized at function entry").
+///
+/// Sibling/forward captures need their box pre-allocated at the function
+/// entry so the hoisted closure's `captures` list can stash a stable box
+/// pointer instead of a TAG_UNDEFINED snapshot of the not-yet-run `Stmt::
+/// Let`. We compute the set of (a) hoisted FnDecl ids referenced from any
+/// closure body in the function, plus (b) function-body lets/consts
+/// captured by any hoisted closure, and emit a synthetic `Stmt::Preallocate
+/// Boxes(...)` at the very top of the result. Codegen consumes that variant
+/// to alloca a slot+box for each id before any user statement runs.
+pub(crate) fn lower_fn_body_block_stmt(
+    ctx: &mut LoweringContext,
+    block: &ast::BlockStmt,
+) -> Result<Vec<Stmt>> {
+    use std::collections::HashSet;
+
+    // Phase 1: pre-define hoisted FnDecl locals so forward references in
+    // any earlier statement resolve via `lookup_local`. Generator and
+    // async-generator FnDecls are excluded — those go through the
+    // hoist-to-top-level + FuncRef path in `lower_body_stmt` and aren't
+    // closure-bound at the source position.
+    let mut hoisted_id_set: HashSet<LocalId> = HashSet::new();
+    for stmt in &block.stmts {
+        if let ast::Stmt::Decl(ast::Decl::Fn(fn_decl)) = stmt {
+            if fn_decl.function.body.is_none() || fn_decl.function.is_generator {
+                continue;
+            }
+            let name = fn_decl.ident.sym.to_string();
+            let local_id = if let Some(existing) = ctx.lookup_local(&name) {
+                existing
+            } else {
+                ctx.define_local(name.clone(), Type::Any)
+            };
+            hoisted_id_set.insert(local_id);
+        }
+    }
+
+    // Phase 2: lower the body. The inner FnDecl arm in `lower_body_stmt`
+    // calls `lookup_local(name)` and reuses our pre-defined id.
+    let body = lower_block_stmt(ctx, block)?;
+
+    if hoisted_id_set.is_empty() {
+        return Ok(body);
+    }
+
+    // Phase 3: split — pull every top-level `Stmt::Let` whose id is in the
+    // hoisted set to the front (preserving relative source order).
+    let mut hoisted_lets: Vec<Stmt> = Vec::new();
+    let mut other: Vec<Stmt> = Vec::new();
+    for s in body {
+        let is_hoisted = matches!(
+            &s,
+            Stmt::Let { id, init: Some(Expr::Closure { .. }), .. }
+                if hoisted_id_set.contains(id)
+        );
+        if is_hoisted {
+            hoisted_lets.push(s);
+        } else {
+            other.push(s);
+        }
+    }
+
+    // Phase 4: compute the prealloc-box set.
+    //   (a) Hoisted FnDecl ids referenced from inside any closure body in
+    //       this function body. These need a box because a sibling
+    //       hoisted closure that runs first would otherwise capture a
+    //       TAG_UNDEFINED snapshot of the slot.
+    //   (b) Function-body let/const ids captured by any hoisted closure.
+    //       Hoisting moves the closure's `Stmt::Let` ahead of the source-
+    //       position let, so the let's slot must already exist (and be
+    //       boxed) when the hoisted closure literal is built.
+    let mut closure_body_refs: HashSet<LocalId> = HashSet::new();
+    for s in hoisted_lets.iter().chain(other.iter()) {
+        collect_refs_in_closure_bodies_stmt(s, &mut closure_body_refs);
+    }
+
+    let mut body_let_ids: HashSet<LocalId> = HashSet::new();
+    for s in hoisted_lets.iter().chain(other.iter()) {
+        collect_top_level_let_ids_stmt(s, &mut body_let_ids);
+    }
+
+    let mut prealloc_set: HashSet<LocalId> = HashSet::new();
+    for &id in &hoisted_id_set {
+        if closure_body_refs.contains(&id) {
+            prealloc_set.insert(id);
+        }
+    }
+    for s in &hoisted_lets {
+        if let Stmt::Let {
+            init: Some(Expr::Closure { captures, .. }),
+            ..
+        } = s
+        {
+            for &cap in captures {
+                if body_let_ids.contains(&cap) && !hoisted_id_set.contains(&cap) {
+                    prealloc_set.insert(cap);
+                }
+            }
+        }
+    }
+
+    let mut prealloc: Vec<LocalId> = prealloc_set.into_iter().collect();
+    prealloc.sort();
+
+    // Phase 5: assemble the final body — PreallocateBoxes (if any),
+    // then the hoisted FnDecl Lets, then everything else.
+    let mut result: Vec<Stmt> = Vec::new();
+    if !prealloc.is_empty() {
+        result.push(Stmt::PreallocateBoxes(prealloc));
+    }
+    result.extend(hoisted_lets);
+    result.extend(other);
+    Ok(result)
+}
+
+/// Collect every `LocalId` referenced (LocalGet / LocalSet / Update / etc.)
+/// from inside any `Expr::Closure` body found within `stmt`. Used by
+/// `lower_fn_body_block_stmt` to decide which hoisted FnDecl ids need a
+/// pre-allocated box.
+fn collect_refs_in_closure_bodies_stmt(
+    stmt: &Stmt,
+    out: &mut std::collections::HashSet<LocalId>,
+) {
+    match stmt {
+        Stmt::Expr(e) | Stmt::Throw(e) => collect_refs_in_closure_bodies_expr(e, out),
+        Stmt::Return(opt) => {
+            if let Some(e) = opt {
+                collect_refs_in_closure_bodies_expr(e, out);
+            }
+        }
+        Stmt::Let { init, .. } => {
+            if let Some(e) = init {
+                collect_refs_in_closure_bodies_expr(e, out);
+            }
+        }
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_refs_in_closure_bodies_expr(condition, out);
+            for s in then_branch {
+                collect_refs_in_closure_bodies_stmt(s, out);
+            }
+            if let Some(eb) = else_branch {
+                for s in eb {
+                    collect_refs_in_closure_bodies_stmt(s, out);
+                }
+            }
+        }
+        Stmt::While { condition, body } | Stmt::DoWhile { body, condition } => {
+            collect_refs_in_closure_bodies_expr(condition, out);
+            for s in body {
+                collect_refs_in_closure_bodies_stmt(s, out);
+            }
+        }
+        Stmt::For {
+            init,
+            condition,
+            update,
+            body,
+        } => {
+            if let Some(i) = init {
+                collect_refs_in_closure_bodies_stmt(i, out);
+            }
+            if let Some(c) = condition {
+                collect_refs_in_closure_bodies_expr(c, out);
+            }
+            if let Some(u) = update {
+                collect_refs_in_closure_bodies_expr(u, out);
+            }
+            for s in body {
+                collect_refs_in_closure_bodies_stmt(s, out);
+            }
+        }
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+        } => {
+            for s in body {
+                collect_refs_in_closure_bodies_stmt(s, out);
+            }
+            if let Some(c) = catch {
+                for s in &c.body {
+                    collect_refs_in_closure_bodies_stmt(s, out);
+                }
+            }
+            if let Some(f) = finally {
+                for s in f {
+                    collect_refs_in_closure_bodies_stmt(s, out);
+                }
+            }
+        }
+        Stmt::Switch {
+            discriminant,
+            cases,
+        } => {
+            collect_refs_in_closure_bodies_expr(discriminant, out);
+            for case in cases {
+                if let Some(t) = &case.test {
+                    collect_refs_in_closure_bodies_expr(t, out);
+                }
+                for s in &case.body {
+                    collect_refs_in_closure_bodies_stmt(s, out);
+                }
+            }
+        }
+        Stmt::Labeled { body, .. } => collect_refs_in_closure_bodies_stmt(body, out),
+        Stmt::Break
+        | Stmt::Continue
+        | Stmt::LabeledBreak(_)
+        | Stmt::LabeledContinue(_)
+        | Stmt::PreallocateBoxes(_) => {}
+    }
+}
+
+fn collect_refs_in_closure_bodies_expr(
+    expr: &Expr,
+    out: &mut std::collections::HashSet<LocalId>,
+) {
+    if let Expr::Closure { body, .. } = expr {
+        // Inside a closure body — collect every reference (including refs
+        // from any further-nested closures, since those run when the outer
+        // closure runs, after the function body has set up bindings).
+        let mut tmp_refs: Vec<LocalId> = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        for s in body {
+            collect_local_refs_stmt(s, &mut tmp_refs, &mut visited);
+        }
+        for id in tmp_refs {
+            out.insert(id);
+        }
+        return;
+    }
+    crate::walker::walk_expr_children(expr, &mut |child| {
+        collect_refs_in_closure_bodies_expr(child, out)
+    });
+}
+
+/// Collect `LocalId`s declared by a top-level `Stmt::Let` in `stmt`. Does
+/// NOT recurse into nested blocks (those are block-scoped — their lets
+/// aren't hoisted to function-entry).
+fn collect_top_level_let_ids_stmt(stmt: &Stmt, out: &mut std::collections::HashSet<LocalId>) {
+    if let Stmt::Let { id, .. } = stmt {
+        out.insert(*id);
+    }
 }
 
 /// Lower a block statement that introduces its own lexical scope for
@@ -3286,9 +3547,11 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                     destructuring_stmts.extend(stmts);
                 }
 
-                // Lower body
+                // Lower body — see issue #569; hoist nested function-decl
+                // statements within this inner fn body to the top so
+                // forward refs and sibling captures work end-to-end.
                 let mut body = if let Some(ref block) = fn_decl.function.body {
-                    lower_block_stmt(ctx, block)?
+                    lower_fn_body_block_stmt(ctx, block)?
                 } else {
                     Vec::new()
                 };

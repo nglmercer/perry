@@ -2448,6 +2448,10 @@ impl WasmModuleEmitter {
                 }
                 out.push_str(&format!("{pad}    }}\n"));
             }
+            // Issue #569: PreallocateBoxes is a perry-codegen-only directive
+            // — JS hoisting handles forward refs natively, so the wasm/JS
+            // backend has no equivalent to emit.
+            Stmt::PreallocateBoxes(_) => {}
         }
     }
 
@@ -3305,6 +3309,7 @@ impl WasmModuleEmitter {
                 }
             }
             Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+            Stmt::PreallocateBoxes(_) => {}
         }
     }
 
@@ -4807,6 +4812,10 @@ impl<'a> FuncEmitCtx<'a> {
                 self.block_depth -= 1;
                 func.instruction(&Instruction::End);
             }
+            // Issue #569: Wasm backend has no equivalent of LLVM's
+            // alloca'd box slot — JS hoisting in the host runtime handles
+            // forward refs natively. Emit nothing.
+            Stmt::PreallocateBoxes(_) => {}
         }
     }
 

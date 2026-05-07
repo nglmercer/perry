@@ -190,6 +190,9 @@ pub fn collect_local_refs_stmt(
         Stmt::Throw(expr) => {
             collect_local_refs_expr(expr, refs, visited);
         }
+        Stmt::PreallocateBoxes(_) => {
+            // Pre-allocates slot+box; no expression sub-tree to visit.
+        }
     }
 }
 
@@ -292,6 +295,9 @@ pub(crate) fn collect_assigned_locals_stmt(stmt: &Stmt, assigned: &mut Vec<Local
         }
         Stmt::Throw(expr) => {
             collect_assigned_locals_expr(expr, assigned);
+        }
+        Stmt::PreallocateBoxes(_) => {
+            // Slot+box allocation; no assignment to an outer variable.
         }
     }
 }

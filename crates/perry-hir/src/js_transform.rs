@@ -472,6 +472,7 @@ fn transform_stmt(
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -1817,6 +1818,7 @@ fn fix_native_instance_stmt(
         }
         Stmt::Throw(e) => fix_native_instance_expr(e, native_instances, local_id_instances),
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -2427,6 +2429,7 @@ fn fix_class_field_stmt(
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -2897,6 +2900,7 @@ fn fix_field_native_instance_stmt(
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 
@@ -3276,6 +3280,7 @@ fn fix_native_instance_stmt_with_locals(
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
+        Stmt::PreallocateBoxes(_) => {}
     }
 }
 

@@ -4002,6 +4002,7 @@ fn stmts_use_this_as_value(stmts: &[perry_hir::Stmt], fields: &HashSet<String>) 
             Stmt::Break | Stmt::Continue | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {
                 false
             }
+            Stmt::PreallocateBoxes(_) => false,
         };
         if bad {
             return true;
