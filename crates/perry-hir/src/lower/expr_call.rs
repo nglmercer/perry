@@ -112,7 +112,9 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
     // The runtime helper consults the class's `Symbol.toStringTag`
     // getter (registered at module init via `__perry_wk_tostringtag_*`)
     // and returns `[object <tag>]` or the default `[object Object]`.
-    if !has_spread && args.len() == 1 {
+    // `Object.prototype.<method>.call(...)` idioms — perry doesn't expose
+    // `Object.prototype` so we rewrite to runtime helpers. Refs #420.
+    if !has_spread && (args.len() == 1 || args.len() == 2) {
         if let ast::Callee::Expr(callee_expr) = &call.callee {
             if let ast::Expr::Member(outer) = callee_expr.as_ref() {
                 if let (ast::MemberProp::Ident(outer_prop), ast::Expr::Member(mid)) =
@@ -122,7 +124,12 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                         if let (ast::MemberProp::Ident(mid_prop), ast::Expr::Member(inner)) =
                             (&mid.prop, mid.obj.as_ref())
                         {
-                            if mid_prop.sym.as_ref() == "toString" {
+                            let runtime_fn = match (mid_prop.sym.as_ref(), args.len()) {
+                                ("toString", 1) => Some("js_object_to_string"),
+                                ("hasOwnProperty", 2) => Some("js_object_has_own"),
+                                _ => None,
+                            };
+                            if let Some(runtime_fn) = runtime_fn {
                                 if let (
                                     ast::MemberProp::Ident(inner_prop),
                                     ast::Expr::Ident(inner_obj),
@@ -131,14 +138,13 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     if inner_obj.sym.as_ref() == "Object"
                                         && inner_prop.sym.as_ref() == "prototype"
                                     {
-                                        let arg = args.into_iter().next().unwrap();
                                         return Ok(Expr::Call {
                                             callee: Box::new(Expr::ExternFuncRef {
-                                                name: "js_object_to_string".to_string(),
+                                                name: runtime_fn.to_string(),
                                                 param_types: Vec::new(),
                                                 return_type: Type::Any,
                                             }),
-                                            args: vec![arg],
+                                            args,
                                             type_args: Vec::new(),
                                         });
                                     }

@@ -6224,6 +6224,14 @@ pub extern "C" fn js_object_has_own(obj_value: f64, key_value: f64) -> f64 {
     const TAG_TRUE: u64 = 0x7FFC_0000_0000_0004;
     const TAG_FALSE: u64 = 0x7FFC_0000_0000_0003;
     unsafe {
+        // Symbol-keyed lookup: route through SYMBOL_PROPERTIES side table.
+        // drizzle's `is(value, type)` checks `entityKind` which is a Symbol;
+        // string-coercion would yield null and the check would always fail.
+        // Refs #420.
+        if crate::symbol::js_is_symbol(key_value) != 0 {
+            let present = crate::symbol::js_object_has_own_symbol(obj_value, key_value);
+            return f64::from_bits(if present { TAG_TRUE } else { TAG_FALSE });
+        }
         let obj = extract_obj_ptr(obj_value);
         if obj.is_null() || (obj as usize) < 0x1000000 {
             return f64::from_bits(TAG_FALSE);

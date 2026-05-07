@@ -435,6 +435,28 @@ pub unsafe extern "C" fn js_object_set_symbol_property(
     value_f64
 }
 
+/// `Object.prototype.hasOwnProperty.call(obj, sym)` for Symbol keys.
+/// Refs #420 — drizzle's `is(value, type)` checks entityKind which is a Symbol.
+#[no_mangle]
+pub unsafe extern "C" fn js_object_has_own_symbol(obj_f64: f64, sym_f64: f64) -> bool {
+    let obj_key = obj_key_from_f64(obj_f64);
+    let sym_key = sym_key_from_f64(sym_f64);
+    if obj_key == 0 || sym_key == 0 {
+        return false;
+    }
+    let guard = SYMBOL_PROPERTIES.lock().unwrap();
+    if let Some(map) = guard.as_ref() {
+        if let Some(entries) = map.get(&obj_key) {
+            for &(sk, _) in entries.iter() {
+                if sk == sym_key {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// `obj[sym]` where `sym` is a Symbol. Returns NaN-boxed undefined if the
 /// property isn't present.
 #[no_mangle]
