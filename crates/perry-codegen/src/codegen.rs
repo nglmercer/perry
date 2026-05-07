@@ -634,12 +634,24 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // `Refinement` / `Composite` / `ParseError` /
     // `PropertySignatureTransformation` / `DroppingStrategy` cases).
     let mut imported_class_prefix: HashMap<String, String> = HashMap::new();
+    // Issue #568: when `import { Widget as PublicWidget }` (or the
+    // re-export shape `export { Widget as PublicWidget }` followed by
+    // `import { PublicWidget }`) renames a cross-module class, the stub
+    // pushed into `class_table` carries `name = effective_name` (the
+    // alias). Method-symbol mangling needs the SOURCE-side name (the
+    // canonical `ic.name`) so the LLVM call resolves to the symbol the
+    // source module's `.o` actually exports. This side map lets the
+    // method-registry loop below recover the source name.
+    let mut imported_class_source_name: HashMap<String, String> = HashMap::new();
     for ic in &opts.imported_classes {
         let effective_name = ic.local_alias.as_deref().unwrap_or(&ic.name);
         if hir.classes.iter().any(|c| c.name == *effective_name) {
             continue;
         }
         imported_class_prefix.insert(effective_name.to_string(), ic.source_prefix.clone());
+        if effective_name != ic.name {
+            imported_class_source_name.insert(effective_name.to_string(), ic.name.clone());
+        }
     }
     for stub in &imported_class_stubs {
         class_table.entry(stub.name.clone()).or_insert(stub);
@@ -1387,8 +1399,21 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // Use the source module prefix for imported classes so the method
         // symbol name matches where the method was actually compiled.
         let class_prefix = imported_class_prefix.get(&c.name).unwrap_or(&module_prefix);
+        // Issue #568: when `c` is the stub for an imported renamed class
+        // (`export { Widget as PublicWidget }` consumed via
+        // `import { PublicWidget }`), `c.name` is the local alias
+        // ("PublicWidget"). The source module emits its symbols mangled
+        // with the ORIGINAL name ("Widget"); the consumer-side LLVM
+        // symbol must match. `mangle_class_name` is the source-side
+        // canonical name; the dispatch-table KEY stays `c.name` so
+        // `receiver_class_name` lookups (which see the renamed type)
+        // still hit.
+        let mangle_class_name = imported_class_source_name
+            .get(&c.name)
+            .map(|s| s.as_str())
+            .unwrap_or(c.name.as_str());
         for m in &c.methods {
-            let llvm_name = scoped_method_name(class_prefix, &c.name, &m.name);
+            let llvm_name = scoped_method_name(class_prefix, mangle_class_name, &m.name);
             method_names.insert((c.name.clone(), m.name.clone()), llvm_name.clone());
             // Refs #486: also register self-binding aliases (e.g. `_X` from
             // `var X = class _X`) so static method dispatch on a receiver typed
@@ -1407,7 +1432,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             let ctor_method_name = format!("{}_constructor", c.name);
             method_names.insert(
                 (c.name.clone(), ctor_method_name.clone()),
-                format!("{}__{}_constructor", class_prefix, c.name),
+                format!("{}__{}_constructor", class_prefix, mangle_class_name),
             );
         }
         // Getters: register under the property name with a `__get_`
@@ -1417,13 +1442,13 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         for (prop, f) in &c.getters {
             method_names.insert(
                 (c.name.clone(), format!("__get_{}", prop)),
-                scoped_method_name(class_prefix, &c.name, &format!("__get_{}", f.name)),
+                scoped_method_name(class_prefix, mangle_class_name, &format!("__get_{}", f.name)),
             );
         }
         for (prop, f) in &c.setters {
             method_names.insert(
                 (c.name.clone(), format!("__set_{}", prop)),
-                scoped_method_name(class_prefix, &c.name, &format!("__set_{}", f.name)),
+                scoped_method_name(class_prefix, mangle_class_name, &format!("__set_{}", f.name)),
             );
         }
         // Static methods. Registered under their plain method name
@@ -1438,7 +1463,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 format!(
                     "perry_static_{}__{}__{}",
                     class_prefix,
-                    sanitize(&c.name),
+                    sanitize(mangle_class_name),
                     sanitize(&sm.name),
                 ),
             );
@@ -4374,6 +4399,62 @@ fn emit_string_pool(
         let bytes_i64 = blk.ptrtoint(&bytes_global, I64);
         blk.call_void(
             "js_register_class_getter",
+            &[
+                (I64, &cid.to_string()),
+                (I64, &bytes_i64),
+                (I64, &len_str),
+                (I64, &func_i64),
+            ],
+        );
+    }
+
+    // Refs #486 (hono): parallel registration for class setters. Without
+    // this, `c.res = response` (where `c` is `any`-typed) bypasses hono
+    // Context's `set res(_res) { …; this.finalized = true; }` and writes
+    // directly to a regular field slot. `this.finalized = true` never
+    // executes, hono-base sees `c.finalized = false` and throws "Context
+    // is not finalized" on every request through compose. Mirror's the
+    // getter-pairs loop above; emission mangling matches the
+    // setter-method-emission path at codegen.rs:2041 (renamed.name =
+    // "__set_<prop>" → LLVM symbol perry_method_<mp>__<class>____set_<f.name>).
+    let mut setter_pairs: Vec<(u32, String, String)> = Vec::new();
+    for (class_name, class) in classes.iter() {
+        if *class_name != class.name {
+            continue;
+        }
+        let cid = match class_ids.get(class_name).copied() {
+            Some(c) if c != 0 => c,
+            _ => continue,
+        };
+        for (prop, setter_fn) in &class.setters {
+            // Skip imported class stubs (their body is empty — the defining
+            // module's init registers them).
+            if setter_fn.body.is_empty() {
+                continue;
+            }
+            let inner = format!("__set_{}", setter_fn.name);
+            let llvm_name = format!(
+                "perry_method_{}__{}__{}",
+                module_prefix,
+                sanitize(class_name),
+                sanitize(&inner),
+            );
+            setter_pairs.push((cid, prop.clone(), llvm_name));
+        }
+    }
+    setter_pairs.sort_unstable();
+    for (cid, prop_name, llvm_name) in setter_pairs {
+        let entry = match strings.iter().find(|e| e.value == prop_name) {
+            Some(e) => e,
+            None => continue,
+        };
+        let bytes_global = format!("@{}", entry.bytes_global);
+        let len_str = entry.byte_len.to_string();
+        let func_ref = format!("@{}", llvm_name);
+        let func_i64 = blk.ptrtoint(&func_ref, I64);
+        let bytes_i64 = blk.ptrtoint(&bytes_global, I64);
+        blk.call_void(
+            "js_register_class_setter",
             &[
                 (I64, &cid.to_string()),
                 (I64, &bytes_i64),

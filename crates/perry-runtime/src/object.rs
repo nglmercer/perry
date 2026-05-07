@@ -820,10 +820,11 @@ pub struct VTableMethodEntry {
     pub param_count: u32,
 }
 
-/// Per-class vtable with methods and getters
+/// Per-class vtable with methods, getters, and setters
 pub struct ClassVTable {
     pub methods: HashMap<String, VTableMethodEntry>,
-    pub getters: HashMap<String, usize>, // getter func_ptr (signature: fn(i64) -> f64)
+    pub getters: HashMap<String, usize>, // getter func_ptr (signature: fn(this_f64) -> f64)
+    pub setters: HashMap<String, usize>, // setter func_ptr (signature: fn(this_f64, value_f64) -> f64)
 }
 
 /// Global vtable registry: class_id -> vtable
@@ -905,6 +906,7 @@ pub unsafe extern "C" fn js_register_class_method(
     let vtable = reg.entry(class_id as u32).or_insert_with(|| ClassVTable {
         methods: HashMap::new(),
         getters: HashMap::new(),
+        setters: HashMap::new(),
     });
     vtable.methods.insert(
         name,
@@ -940,8 +942,49 @@ pub unsafe extern "C" fn js_register_class_getter(
     let vtable = reg.entry(class_id as u32).or_insert_with(|| ClassVTable {
         methods: HashMap::new(),
         getters: HashMap::new(),
+        setters: HashMap::new(),
     });
     vtable.getters.insert(name, func_ptr as usize);
+    VTABLE_GEN.fetch_add(1, Ordering::Release);
+}
+
+/// Register a class setter in the vtable registry.
+///
+/// Refs #486 (hono): hono's Context has `set res(_res) { ...; this.#res = _res;
+/// this.finalized = true; }`. Without setter dispatch in `js_object_set_field_by_name`,
+/// `c.res = response` from inside compose's `await handler(c, next)` chain stored
+/// the response into a regular field slot but never ran the setter body — so
+/// `this.finalized = true` never executed, `c.finalized` stayed false, and
+/// hono-base's `if (!context.finalized) throw …` fired.
+///
+/// Setter signature: `fn(this_f64, value_f64) -> f64` (returns ignored, but
+/// codegen emits a return so the LLVM signature matches a regular method body).
+#[no_mangle]
+pub unsafe extern "C" fn js_register_class_setter(
+    class_id: i64,
+    name_ptr: *const u8,
+    name_len: i64,
+    func_ptr: i64,
+) {
+    let name = if name_ptr.is_null() || name_len <= 0 {
+        return;
+    } else {
+        match std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len as usize)) {
+            Ok(s) => s.to_string(),
+            Err(_) => return,
+        }
+    };
+    let mut registry = CLASS_VTABLE_REGISTRY.write().unwrap();
+    if registry.is_none() {
+        *registry = Some(HashMap::new());
+    }
+    let reg = registry.as_mut().unwrap();
+    let vtable = reg.entry(class_id as u32).or_insert_with(|| ClassVTable {
+        methods: HashMap::new(),
+        getters: HashMap::new(),
+        setters: HashMap::new(),
+    });
+    vtable.setters.insert(name, func_ptr as usize);
     VTABLE_GEN.fetch_add(1, Ordering::Release);
 }
 
@@ -3267,6 +3310,61 @@ pub extern "C" fn js_object_set_field_by_name(
             return;
         }
 
+        // Refs #486 (hono): class setter dispatch. JS spec: a `set X(...)`
+        // accessor on the prototype intercepts `obj.X = value` writes
+        // before they hit the instance's data slots. Hono's `set res(_res)
+        // { …; this.#res = _res; this.finalized = true; }` is the canonical
+        // example — without setter dispatch, `c.res = response` from inside
+        // compose stored the response into a regular field slot but never
+        // ran the body, so `this.finalized = true` never executed and
+        // hono-base's `if (!context.finalized) throw` fired on every
+        // request. Walk the class -> parent chain mirroring the getter
+        // dispatch in `js_object_get_field_by_name`.
+        if !key.is_null() && (key as usize) > 0x10000 {
+            let class_id = (*obj).class_id;
+            if class_id != 0 {
+                if let Ok(registry) = CLASS_VTABLE_REGISTRY.read() {
+                    if let Some(ref reg) = *registry {
+                        let key_bytes = {
+                            let name_ptr = (key as *const u8)
+                                .add(std::mem::size_of::<crate::StringHeader>());
+                            let name_len = (*key).byte_len as usize;
+                            std::slice::from_raw_parts(name_ptr, name_len)
+                        };
+                        let mut cid = class_id;
+                        let mut depth = 0usize;
+                        while depth < 32 {
+                            if let Some(vtable) = reg.get(&cid) {
+                                if let Ok(name) = std::str::from_utf8(key_bytes) {
+                                    if let Some(&setter_ptr) = vtable.setters.get(name) {
+                                        // Setters take `(this_f64, value_f64)`
+                                        // matching the codegen calling
+                                        // convention for class methods (this
+                                        // = NaN-boxed POINTER_TAG of the
+                                        // receiver).
+                                        let this_f64: f64 = f64::from_bits(
+                                            crate::value::js_nanbox_pointer(obj as i64).to_bits(),
+                                        );
+                                        let f: extern "C" fn(f64, f64) -> f64 =
+                                            std::mem::transmute(setter_ptr);
+                                        let _ = f(this_f64, value);
+                                        return;
+                                    }
+                                }
+                            }
+                            match get_parent_class_id(cid) {
+                                Some(p) if p != 0 && p != cid => {
+                                    cid = p;
+                                    depth += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Check Object.freeze/seal/preventExtensions flags
         let obj_flags = (*gc_header)._reserved;
         let is_frozen = obj_flags & crate::gc::OBJ_FLAG_FROZEN != 0;
@@ -4345,7 +4443,26 @@ pub unsafe extern "C" fn js_native_call_method(
                     } else {
                         std::ptr::null()
                     };
-                    let arr = crate::string::js_string_split(s_ptr, sep);
+                    // Issue #567: optional 2nd arg `limit`.
+                    let limit = if args_len >= 2 && !args_ptr.is_null() {
+                        let v = unsafe { *args_ptr.add(1) };
+                        let jsv = JSValue::from_bits(v.to_bits());
+                        if jsv.is_undefined() || jsv.is_null() {
+                            -1
+                        } else {
+                            let n = crate::builtins::js_number_coerce(v);
+                            if n.is_nan() || n < 0.0 {
+                                0
+                            } else if n > i32::MAX as f64 {
+                                i32::MAX
+                            } else {
+                                n as i32
+                            }
+                        }
+                    } else {
+                        -1
+                    };
+                    let arr = crate::string::js_string_split_n(s_ptr, sep, limit);
                     return f64::from_bits(JSValue::pointer(arr as *mut u8).bits());
                 }
                 "replace" | "replaceAll" => {

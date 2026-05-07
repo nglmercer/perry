@@ -22,7 +22,7 @@ use crate::lower_types::*;
 /// cross-module callers that pad missing args with `undefined` still observe
 /// the intended default. Rest params are skipped (they're handled by the
 /// call-site array bundling, not by scalar default substitution).
-fn build_default_param_stmts(params: &[Param]) -> Vec<Stmt> {
+pub(crate) fn build_default_param_stmts(params: &[Param]) -> Vec<Stmt> {
     let mut out: Vec<Stmt> = Vec::new();
     for param in params {
         if param.is_rest {

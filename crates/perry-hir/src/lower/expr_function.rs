@@ -171,6 +171,21 @@ pub(super) fn lower_arrow(ctx: &mut LoweringContext, arrow: &ast::ArrowExpr) -> 
         body = new_body;
     }
 
+    // Refs #486: prepend default-parameter `if (p === undefined) p = <default>`
+    // checks. Without this, arrow functions with `(fn = console.log) =>
+    // fn(out)` (the canonical hono `logger()` middleware shape) lower to
+    // a closure whose body invokes `LocalGet(fn_id)` directly — but the
+    // call-site doesn't pass `fn`, the call-site arg-padding writes
+    // TAG_UNDEFINED, and the body never sees the default. Mirror the
+    // identical desugar on `lower_fn_decl` / constructor / class method
+    // bodies (lower_decl.rs:406 / :2156 / :2465).
+    let default_stmts = crate::lower_decl::build_default_param_stmts(&params);
+    if !default_stmts.is_empty() {
+        let mut new_body = default_stmts;
+        new_body.append(&mut body);
+        body = new_body;
+    }
+
     ctx.exit_scope(scope_mark);
 
     let (captures, mutable_captures) = compute_closure_captures(ctx, &body, &outer_locals, &params);
@@ -286,6 +301,14 @@ pub(super) fn lower_fn_expr(ctx: &mut LoweringContext, fn_expr: &ast::FnExpr) ->
     // Prepend destructuring statements to body
     if !destructuring_stmts.is_empty() {
         let mut new_body = destructuring_stmts;
+        new_body.append(&mut body);
+        body = new_body;
+    }
+
+    // Refs #486: same default-param desugar as lower_arrow above.
+    let default_stmts = crate::lower_decl::build_default_param_stmts(&params);
+    if !default_stmts.is_empty() {
+        let mut new_body = default_stmts;
         new_body.append(&mut body);
         body = new_body;
     }

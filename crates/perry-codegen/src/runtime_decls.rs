@@ -116,6 +116,7 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_string_slice", I64, &[I64, I32, I32]);
     module.declare_function("js_string_substring", I64, &[I64, I32, I32]);
     module.declare_function("js_string_split", I64, &[I64, I64]);
+    module.declare_function("js_string_split_n", I64, &[I64, I64, I32]);
     module.declare_function("js_math_pow", DOUBLE, &[DOUBLE, DOUBLE]);
 
     // Math.* unary functions: use LLVM intrinsics directly so we
@@ -2078,6 +2079,8 @@ pub fn declare_stdlib_ffi(module: &mut LlModule) {
 
     // ========== Class registration ==========
     module.declare_function("js_register_class_getter", VOID, &[I64, I64, I64, I64]);
+    // Refs #486: per-class setter dispatch — see object.rs::js_register_class_setter.
+    module.declare_function("js_register_class_setter", VOID, &[I64, I64, I64, I64]);
     module.declare_function("js_register_class_method", VOID, &[I64, I64, I64, I64, I64]);
     // #446: bound-method closure for `obj.method` PropertyGet on a known class.
     // Lets `typeof obj.method === "function"` and `let f = obj.method; f(args)`
