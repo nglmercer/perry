@@ -143,6 +143,21 @@ fn scan_stmt_for_max_local(stmt: &Stmt, max_id: &mut LocalId) {
         } => {
             scan_stmts_for_max_local(body, max_id);
             if let Some(c) = catch {
+                // The catch param's LocalId only appears in the
+                // `CatchClause::param` field; if the catch body never
+                // reads/writes it (`catch (e) {}`), no LocalGet/LocalSet
+                // carries it, and the body-only scan misses it. The
+                // generator transform then allocates `__gen_state` over
+                // the catch param's id — every `LocalSet(__gen_state, N)`
+                // clobbers `e` and vice versa, so the state machine never
+                // advances and the function returns undefined without
+                // ever entering state 0. Repro: any async function with
+                // `try { await … } catch (e) {}` and an unused catch
+                // binding (hono's compose dispatches every middleware
+                // through this exact shape).
+                if let Some((id, _)) = c.param {
+                    *max_id = (*max_id).max(id);
+                }
                 scan_stmts_for_max_local(&c.body, max_id);
             }
             if let Some(f) = finally {
