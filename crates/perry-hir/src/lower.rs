@@ -5725,10 +5725,16 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
             // for (const [k, v] of this.classMap) { ... } per #302.
             let mut map_key_type: Option<Type> = None;
             let mut map_val_type: Option<Type> = None;
-            let is_iterable_map = matches!(
-                &iterable_type,
-                Some(Type::Generic { base, .. }) if base == "Map"
-            );
+            // Issue #542/#543: also accept Type::Union containing Map (the
+            // shape produced by `Map<K, V> | undefined` parameters/returns).
+            let type_contains_map = |ty: &Type| -> bool {
+                matches!(ty, Type::Generic { base, .. } if base == "Map")
+            };
+            let is_iterable_map = match &iterable_type {
+                Some(Type::Generic { base, .. }) if base == "Map" => true,
+                Some(Type::Union(variants)) => variants.iter().any(type_contains_map),
+                _ => false,
+            };
             // Fast path: `for (const [k, v] of mapExpr)` with an exact two-element
             // identifier destructure can iterate the Map's flat entries buffer
             // directly via `MapEntryKeyAt` / `MapEntryValueAt`, skipping the N+1
@@ -5764,10 +5770,15 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
             // `js_set_value_at`) instead of materializing the buffer with
             // `js_set_to_array`. ECS hot paths (changeset.removes, etc.)
             // iterate Sets repeatedly; this saves an Array alloc per loop.
-            let is_iterable_set = matches!(
-                &iterable_type,
-                Some(Type::Generic { base, .. }) if base == "Set"
-            );
+            // Issue #542/#543: also accept Type::Union containing Set.
+            let type_contains_set = |ty: &Type| -> bool {
+                matches!(ty, Type::Generic { base, .. } if base == "Set")
+            };
+            let is_iterable_set = match &iterable_type {
+                Some(Type::Generic { base, .. }) if base == "Set" => true,
+                Some(Type::Union(variants)) => variants.iter().any(type_contains_set),
+                _ => false,
+            };
             let set_fastpath = is_iterable_set
                 && match &for_of_stmt.left {
                     ast::ForHead::VarDecl(var_decl) => match var_decl.decls.first() {
@@ -5776,30 +5787,47 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                     },
                     _ => false,
                 };
-            let arr_expr = match &iterable_type {
-                Some(Type::Generic { base, type_args }) if base == "Map" => {
-                    if type_args.len() >= 2 {
-                        map_key_type = Some(type_args[0].clone());
-                        map_val_type = Some(type_args[1].clone());
+            // Issue #542/#543: dispatch on `is_iterable_map` / `is_iterable_set`
+            // so the Union-with-Map / Union-with-Set shapes also wrap correctly
+            // (matches the same fix applied to `lower_decl.rs`'s for-of arm).
+            // Extract the Map's K/V type args from whichever variant carries
+            // them (direct Generic or the Union's Map arm).
+            let map_type_args: Option<Vec<Type>> = if is_iterable_map {
+                match &iterable_type {
+                    Some(Type::Generic { base, type_args }) if base == "Map" => {
+                        Some(type_args.clone())
                     }
-                    if map_kv_fastpath {
-                        // Keep the raw map expression — fast path reads flat
-                        // entries via MapEntryKeyAt / MapEntryValueAt below.
-                        arr_expr
-                    } else {
-                        Expr::MapEntries(Box::new(arr_expr))
+                    Some(Type::Union(variants)) => variants.iter().find_map(|v| match v {
+                        Type::Generic { base, type_args } if base == "Map" => {
+                            Some(type_args.clone())
+                        }
+                        _ => None,
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let arr_expr = if is_iterable_map {
+                if let Some(args) = map_type_args.as_ref() {
+                    if args.len() >= 2 {
+                        map_key_type = Some(args[0].clone());
+                        map_val_type = Some(args[1].clone());
                     }
                 }
-                Some(Type::Generic { base, .. }) if base == "Set" => {
-                    if set_fastpath {
-                        // Keep the raw set expression — fast path reads
-                        // elements directly via SetValueAt below.
-                        arr_expr
-                    } else {
-                        Expr::SetValues(Box::new(arr_expr))
-                    }
+                if map_kv_fastpath {
+                    arr_expr
+                } else {
+                    Expr::MapEntries(Box::new(arr_expr))
                 }
-                _ => arr_expr,
+            } else if is_iterable_set {
+                if set_fastpath {
+                    arr_expr
+                } else {
+                    Expr::SetValues(Box::new(arr_expr))
+                }
+            } else {
+                arr_expr
             };
 
             // Determine the array element type: String for strings, Tuple(K, V) for Maps, Any otherwise.

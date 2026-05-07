@@ -3802,10 +3802,20 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
             // Fast path: `for (const [k, v] of mapExpr)` reads flat entries
             // directly via `MapEntryKeyAt` / `MapEntryValueAt` — no pair-Array
             // materialization. Mirrors the same detection in `lower::lower_stmt`.
-            let is_iterable_map = matches!(
-                &iterable_type,
-                Some(Type::Generic { base, .. }) if base == "Map"
-            );
+            // Issue #542/#543: also accept `Type::Union([Generic{Map}, Void])`
+            // (the shape produced by `Map<K, V> | undefined` parameters /
+            // return types). After the `if (!m) return;` narrowing, the type
+            // is morally `Map<K, V>` but perry doesn't propagate the narrow
+            // through the union type, so `for (const [k, v] of m)` would fall
+            // through to array iteration and read garbage from MapHeader bytes.
+            let type_contains_map = |ty: &Type| -> bool {
+                matches!(ty, Type::Generic { base, .. } if base == "Map")
+            };
+            let is_iterable_map = match &iterable_type {
+                Some(Type::Generic { base, .. }) if base == "Map" => true,
+                Some(Type::Union(variants)) => variants.iter().any(type_contains_map),
+                _ => false,
+            };
             // Map fast path also fires for the single-binding shapes
             //   for (const [k] of map)        — only key
             //   for (const [, v] of map)      — only value
@@ -3832,10 +3842,15 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
             // Fast path: `for (const x of setExpr)` reads elements directly
             // via `SetValueAt` (→ `js_set_value_at`) instead of materializing
             // the buffer with `js_set_to_array`.
-            let is_iterable_set = matches!(
-                &iterable_type,
-                Some(Type::Generic { base, .. }) if base == "Set"
-            );
+            // Issue #542/#543: also accept `Type::Union([Generic{Set}, Void])`.
+            let type_contains_set = |ty: &Type| -> bool {
+                matches!(ty, Type::Generic { base, .. } if base == "Set")
+            };
+            let is_iterable_set = match &iterable_type {
+                Some(Type::Generic { base, .. }) if base == "Set" => true,
+                Some(Type::Union(variants)) => variants.iter().any(type_contains_set),
+                _ => false,
+            };
             let set_fastpath = is_iterable_set
                 && match &for_of_stmt.left {
                     ast::ForHead::VarDecl(var_decl) => match var_decl.decls.first() {
@@ -3848,22 +3863,23 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
             // to materialize it as an array for the index-based loop.
             // Fast-path Map+[k,v] / Set+ident iterables stay unwrapped — the
             // loop reads entries directly via runtime helpers below.
-            let arr_expr = match &iterable_type {
-                Some(Type::Generic { base, .. }) if base == "Map" => {
-                    if map_kv_fastpath {
-                        arr_expr
-                    } else {
-                        Expr::MapEntries(Box::new(arr_expr))
-                    }
+            // Issue #542/#543: handle `Map | undefined` / `Set | undefined`
+            // shapes via the same `is_iterable_map` / `is_iterable_set` flags
+            // (which now Union-aware) instead of a fresh narrow match here.
+            let arr_expr = if is_iterable_map {
+                if map_kv_fastpath {
+                    arr_expr
+                } else {
+                    Expr::MapEntries(Box::new(arr_expr))
                 }
-                Some(Type::Generic { base, .. }) if base == "Set" => {
-                    if set_fastpath {
-                        arr_expr
-                    } else {
-                        Expr::SetValues(Box::new(arr_expr))
-                    }
+            } else if is_iterable_set {
+                if set_fastpath {
+                    arr_expr
+                } else {
+                    Expr::SetValues(Box::new(arr_expr))
                 }
-                _ => arr_expr,
+            } else {
+                arr_expr
             };
 
             // For string iteration the __arr holder is typed as String (so codegen

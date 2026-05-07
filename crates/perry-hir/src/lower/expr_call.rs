@@ -2738,10 +2738,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         }
                                     }
                                     "forEach" => {
-                                        // Check if the receiver is a Map or Set - if so, don't use ArrayForEach
-                                        let is_map_or_set = ctx.lookup_local_type(&arr_name)
-                                                .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map" || base == "Set"))
-                                                .unwrap_or(false);
+                                        // Check if the receiver is a Map or Set - if so, don't use ArrayForEach.
+                                        // Issue #542/#543: also reject `Map | undefined` / `Set | undefined`
+                                        // so the same array/Map mismatch on for-of doesn't recur for
+                                        // forEach calls on optional-Map parameters.
+                                        let recv_ty = ctx.lookup_local_type(&arr_name);
+                                        let is_map_or_set_variant = |ty: &Type| -> bool {
+                                            matches!(ty, Type::Generic { base, .. } if base == "Map" || base == "Set")
+                                        };
+                                        let is_map_or_set = match recv_ty {
+                                            Some(ty) if is_map_or_set_variant(ty) => true,
+                                            Some(Type::Union(variants)) => {
+                                                variants.iter().any(is_map_or_set_variant)
+                                            }
+                                            _ => false,
+                                        };
                                         if !is_map_or_set && !args.is_empty() {
                                             let cb = args.into_iter().next().unwrap();
                                             let cb =
@@ -2988,52 +2999,81 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                             });
                                         }
                                     }
-                                    "entries" => {
-                                        let is_map = ctx.lookup_local_type(&arr_name)
-                                                .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map"))
-                                                .unwrap_or(false);
-                                        if is_map {
-                                            return Ok(Expr::MapEntries(Box::new(Expr::LocalGet(
-                                                array_id,
-                                            ))));
+                                    "entries" | "keys" | "values" => {
+                                        // Issue #542/#543: `keys()`/`values()`/`entries()` are
+                                        // shared between Array, Map, and Set. When the receiver's
+                                        // static type is Any (e.g. an interface method return
+                                        // whose signature wasn't tracked, or a `JSON.parse`
+                                        // result), the optimistic fall-through to `ArrayKeys`/
+                                        // `ArrayValues`/`ArrayEntries` runs `js_array_*` against
+                                        // a real `MapHeader`. The map's `size` field aliases
+                                        // `ArrayHeader.length`, so an N-entry Map produces
+                                        // `[0..N-1]` for `keys()` and reads garbage from the
+                                        // entries pointer for `values()`/`entries()`. Only fold
+                                        // to the Array variant when the receiver is statically
+                                        // known to be Array/Tuple; otherwise leave as a generic
+                                        // method call so codegen routes through
+                                        // `js_native_call_method`, which does the runtime
+                                        // is_registered_map / is_registered_set check.
+                                        let recv_ty = ctx.lookup_local_type(&arr_name);
+                                        let is_map = matches!(
+                                            recv_ty,
+                                            Some(Type::Generic { base, .. }) if base == "Map" || base == "WeakMap"
+                                        );
+                                        let is_set = matches!(
+                                            recv_ty,
+                                            Some(Type::Generic { base, .. }) if base == "Set" || base == "WeakSet"
+                                        );
+                                        let is_known_array = matches!(
+                                            recv_ty,
+                                            Some(Type::Array(_)) | Some(Type::Tuple(_))
+                                        );
+                                        match method_name {
+                                            "entries" => {
+                                                if is_map {
+                                                    return Ok(Expr::MapEntries(Box::new(
+                                                        Expr::LocalGet(array_id),
+                                                    )));
+                                                }
+                                                if is_known_array {
+                                                    return Ok(Expr::ArrayEntries(Box::new(
+                                                        Expr::LocalGet(array_id),
+                                                    )));
+                                                }
+                                            }
+                                            "keys" => {
+                                                if is_map {
+                                                    return Ok(Expr::MapKeys(Box::new(
+                                                        Expr::LocalGet(array_id),
+                                                    )));
+                                                }
+                                                if is_known_array {
+                                                    return Ok(Expr::ArrayKeys(Box::new(
+                                                        Expr::LocalGet(array_id),
+                                                    )));
+                                                }
+                                            }
+                                            "values" => {
+                                                if is_map {
+                                                    return Ok(Expr::MapValues(Box::new(
+                                                        Expr::LocalGet(array_id),
+                                                    )));
+                                                }
+                                                if is_set {
+                                                    return Ok(Expr::SetValues(Box::new(
+                                                        Expr::LocalGet(array_id),
+                                                    )));
+                                                }
+                                                if is_known_array {
+                                                    return Ok(Expr::ArrayValues(Box::new(
+                                                        Expr::LocalGet(array_id),
+                                                    )));
+                                                }
+                                            }
+                                            _ => unreachable!(),
                                         }
-                                        return Ok(Expr::ArrayEntries(Box::new(Expr::LocalGet(
-                                            array_id,
-                                        ))));
-                                    }
-                                    "keys" => {
-                                        let is_map = ctx.lookup_local_type(&arr_name)
-                                                .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map"))
-                                                .unwrap_or(false);
-                                        if is_map {
-                                            return Ok(Expr::MapKeys(Box::new(Expr::LocalGet(
-                                                array_id,
-                                            ))));
-                                        }
-                                        return Ok(Expr::ArrayKeys(Box::new(Expr::LocalGet(
-                                            array_id,
-                                        ))));
-                                    }
-                                    "values" => {
-                                        let is_map = ctx.lookup_local_type(&arr_name)
-                                                .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Map"))
-                                                .unwrap_or(false);
-                                        if is_map {
-                                            return Ok(Expr::MapValues(Box::new(Expr::LocalGet(
-                                                array_id,
-                                            ))));
-                                        }
-                                        let is_set = ctx.lookup_local_type(&arr_name)
-                                                .map(|ty| matches!(ty, Type::Generic { base, .. } if base == "Set"))
-                                                .unwrap_or(false);
-                                        if is_set {
-                                            return Ok(Expr::SetValues(Box::new(Expr::LocalGet(
-                                                array_id,
-                                            ))));
-                                        }
-                                        return Ok(Expr::ArrayValues(Box::new(Expr::LocalGet(
-                                            array_id,
-                                        ))));
+                                        // Fall through: receiver type unknown — let general
+                                        // dispatch (js_native_call_method) inspect at runtime.
                                     }
                                     // Map methods (only apply to actual Map/Set types)
                                     "set" => {
