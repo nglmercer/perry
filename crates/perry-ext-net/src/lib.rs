@@ -919,6 +919,29 @@ pub extern "C" fn js_ext_net_is_socket_handle(handle: i64) -> i32 {
     }
 }
 
+/// Returns 1 if there are pending socket events or live socket handles
+/// keeping the runtime's event loop alive.
+///
+/// "Live" here means *registered* — including sockets still establishing
+/// their TCP connection. Counting only fully-open sockets caused the
+/// runtime to exit before async `connect` ever completed (the open flag
+/// flips inside the spawned task, after `await TcpStream::connect`).
+///
+/// Without this, `await new Promise(r => sock.on('connect', r))` from
+/// a TS-source npm driver (e.g. `@perryts/mysql`) returns a Promise the
+/// runtime can't see is pending, so the event loop exits before the
+/// socket's 'connect' event ever fires through the pump. Issue #536.
+#[no_mangle]
+pub extern "C" fn js_ext_net_has_active_handles() -> i32 {
+    if !statics::pending_events().lock().unwrap().is_empty() {
+        return 1;
+    }
+    if !statics::sockets().lock().unwrap().is_empty() {
+        return 1;
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

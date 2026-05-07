@@ -94,14 +94,8 @@ run under V8 / Node fallback; Perry's compiler resolves the function
 calls directly to the `js_*` symbols at link time, never executing
 the TS body.
 
-```typescript,no-test
-/**
- * Extract text from a PDF buffer.
- */
-export function parse(buf: Uint8Array): string {
-  // Unreachable under perry — links to js_pdf_parse instead.
-  throw new Error("Not implemented under V8 fallback");
-}
+```typescript
+{{#include ../../examples/_fixtures/native-libraries/my-bindings/src/index.ts}}
 ```
 
 ### `package.json`
@@ -181,10 +175,8 @@ bun add file:../my-bindings   # or any path your tooling supports
 
 Add to your TS:
 
-```typescript,no-test
-import { parse } from "my-bindings";
-const buf = await Bun.file("input.pdf").bytes();
-console.log(parse(buf));
+```typescript
+{{#include ../../examples/_fixtures/native-libraries/my-bindings/test-app.ts}}
 ```
 
 Then `perry compile main.ts -o main && ./main`.

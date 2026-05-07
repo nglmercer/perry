@@ -299,10 +299,35 @@ pub extern "C" fn js_stdlib_has_active_handles() -> i32 {
     // Without this, an `await net.connect(...)` returns a Promise that the
     // runtime can't see is pending, so the event loop exits before the
     // socket's 'connect' event ever fires through the pump.
-    #[cfg(all(feature = "net", not(target_os = "ios"), not(target_os = "android")))]
+    //
+    // Two paths: `bundled-net` (perry-stdlib's own net implementation
+    // is compiled in) calls `crate::net::js_net_has_active_handles`
+    // directly; `external-net-pump` (the well-known flip routes
+    // `import 'net'` to perry-ext-net) calls perry-ext-net's
+    // `js_ext_net_has_active_handles` extern. Pre-fix only the
+    // bundled-net gate fired, so programs using TS-source drivers
+    // like `@perryts/mysql` that route through perry-ext-net saw
+    // `await new Promise(r => sock.on('connect', r))` exit early
+    // because perry-stdlib's empty NET_SOCKETS map reported no
+    // active handles. Issue #536.
+    #[cfg(all(feature = "bundled-net", not(target_os = "ios"), not(target_os = "android")))]
     {
         let has_net = crate::net::js_net_has_active_handles();
         if has_net != 0 {
+            return 1;
+        }
+    }
+    #[cfg(all(
+        feature = "external-net-pump",
+        not(feature = "bundled-net"),
+        not(target_os = "ios"),
+        not(target_os = "android")
+    ))]
+    {
+        extern "C" {
+            fn js_ext_net_has_active_handles() -> i32;
+        }
+        if unsafe { js_ext_net_has_active_handles() } != 0 {
             return 1;
         }
     }

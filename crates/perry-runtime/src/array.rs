@@ -725,18 +725,24 @@ pub extern "C" fn js_array_push_f64(arr: *mut ArrayHeader, value: f64) -> *mut A
     }
 }
 
-/// Pop an element from the end of an array
-/// Returns the removed element (or NaN if empty)
+/// Pop an element from the end of an array.
+/// Returns the removed element, or `undefined` if the array is empty (per
+/// ECMAScript §23.1.3.21 — `Array.prototype.pop` on an empty array returns
+/// undefined, NOT NaN). Pre-fix this returned `f64::NAN` (bare NaN bits,
+/// which compare `!== undefined`); callers like `@perryts/mysql`'s pool
+/// `acquire()` did `const entry = this.idle.shift(); if (entry !== undefined)`
+/// and took the wrong branch on an empty pool. Issue #536.
 #[no_mangle]
 pub extern "C" fn js_array_pop_f64(arr: *mut ArrayHeader) -> f64 {
+    const TAG_UNDEFINED_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0001u64) };
     let arr = clean_arr_ptr_mut(arr);
     if arr.is_null() {
-        return f64::NAN;
+        return TAG_UNDEFINED_F64;
     }
     unsafe {
         let length = (*arr).length;
         if length == 0 {
-            return f64::NAN; // undefined coerced to number
+            return TAG_UNDEFINED_F64;
         }
 
         let new_length = length - 1;
@@ -832,18 +838,23 @@ pub extern "C" fn js_array_delete(arr: *mut ArrayHeader, index: u32) -> i32 {
     }
 }
 
-/// Shift an element from the beginning of an array
-/// Returns the removed element (or NaN if empty)
+/// Shift an element from the beginning of an array.
+/// Returns the removed element, or `undefined` if the array is empty (per
+/// ECMAScript §23.1.3.27). See the matching note on `js_array_pop_f64` —
+/// returning bare `f64::NAN` here was a perry bug that broke the
+/// `entry !== undefined` check in connection-pool drivers like
+/// `@perryts/mysql`. Issue #536.
 #[no_mangle]
 pub extern "C" fn js_array_shift_f64(arr: *mut ArrayHeader) -> f64 {
+    const TAG_UNDEFINED_F64: f64 = unsafe { f64::from_bits(0x7FFC_0000_0000_0001u64) };
     let arr = clean_arr_ptr_mut(arr);
     if arr.is_null() {
-        return f64::NAN;
+        return TAG_UNDEFINED_F64;
     }
     unsafe {
         let length = (*arr).length;
         if length == 0 {
-            return f64::NAN;
+            return TAG_UNDEFINED_F64;
         }
 
         let elements_ptr = (arr as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;

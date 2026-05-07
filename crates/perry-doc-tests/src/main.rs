@@ -374,11 +374,19 @@ fn discover_examples(root: &Path) -> Result<Vec<Example>> {
         if path.extension().and_then(|s| s.to_str()) != Some("ts") {
             continue;
         }
-        // Skip harness/support files.
+        // Skip harness/support files. `_fixtures` holds illustrative
+        // snippets that docs pages pull in via `{{#include}}` — they're
+        // expected to drift-protect via PR diff, not via compile-testing
+        // (a fixture may legitimately import a package that doesn't exist
+        // in-tree, see docs/examples/_fixtures/native-libraries/).
         if path.components().any(|c| {
             matches!(
                 c.as_os_str().to_str(),
-                Some("_harness") | Some("_baselines") | Some("_expected") | Some("_reports")
+                Some("_harness")
+                    | Some("_baselines")
+                    | Some("_expected")
+                    | Some("_reports")
+                    | Some("_fixtures")
             )
         }) {
             continue;
