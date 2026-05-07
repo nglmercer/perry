@@ -51,3 +51,34 @@ for (const { entity, components } of results) {
   const [a, b] = components;
   console.log(`entity=${entity} a=${JSON.stringify(a)} b=${JSON.stringify(b)}`);
 }
+
+// Re-opened followup: the same destructure pattern inside a FUNCTION
+// body lowered through `lower_decl.rs::ast::Stmt::ForOf` instead of
+// `lower.rs::lower_stmt`. Both paths had the same parallel gaps; the
+// initial v0.5.629 fix only covered the top-level `lower.rs` site.
+function printResultsFn(items: typeof results): void {
+  for (const { entity, components: [a, b] } of items) {
+    console.log(`fn entity=${entity} a=${JSON.stringify(a)} b=${JSON.stringify(b)}`);
+  }
+}
+console.log("=== nested in function body ===");
+printResultsFn(results);
+
+// Triple-nested inside a function body.
+function printTripleFn(items: typeof results): void {
+  for (const { entity, components: [{ x: ax, y: ay }, { x: bx }] } of items) {
+    console.log(`fn3 entity=${entity} ax=${ax} ay=${ay} bx=${bx}`);
+  }
+}
+console.log("=== triple nested in function body ===");
+printTripleFn(results);
+
+// `pos = arr[0]` shape from the issue's followup repro
+// (codehz/ecs serialization.ts printWorldState).
+function printSinglePos(items: typeof results): void {
+  for (const { entity, components: [pos] } of items) {
+    console.log(`fn1 entity=${entity} pos=${JSON.stringify(pos)} typeof=${typeof pos}`);
+  }
+}
+console.log("=== single-element nested in function body ===");
+printSinglePos(results);

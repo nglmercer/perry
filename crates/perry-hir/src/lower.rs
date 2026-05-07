@@ -4685,7 +4685,7 @@ fn lower_namespace_as_class(
 /// `for (const { foo, bar: [a, b] } of arr)` — the outer per-prop loop only
 /// handled `Ident` leaves, so leaves buried in nested array/object patterns
 /// were silently skipped and read as zero in the body. Issue #554.
-fn collect_for_of_pattern_leaves(
+pub(crate) fn collect_for_of_pattern_leaves(
     ctx: &mut LoweringContext,
     pat: &ast::Pat,
     out: &mut Vec<(String, LocalId)>,
@@ -4740,7 +4740,7 @@ fn collect_for_of_pattern_leaves(
 /// was already lowered against those ids — sees the correct bindings. Mirrors
 /// `destructuring::lower_pattern_binding_into` but takes pre-allocated ids
 /// instead of calling `define_local` itself. Issue #554.
-fn emit_for_of_pattern_binding(
+pub(crate) fn emit_for_of_pattern_binding(
     ctx: &mut LoweringContext,
     pat: &ast::Pat,
     source: Expr,

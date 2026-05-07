@@ -11,7 +11,9 @@ use swc_ecma_ast as ast;
 use crate::analysis::*;
 use crate::destructuring::*;
 use crate::ir::*;
-use crate::lower::{lower_expr, LoweringContext};
+use crate::lower::{
+    collect_for_of_pattern_leaves, emit_for_of_pattern_binding, lower_expr, LoweringContext,
+};
 use crate::lower_patterns::*;
 use crate::lower_types::*;
 
@@ -4014,6 +4016,15 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                                                 let name = ident.id.sym.to_string();
                                                 let id = ctx.define_local(name.clone(), Type::Any);
                                                 ids.push((name, id));
+                                            } else {
+                                                // Nested pattern (e.g. `key: [a, b]`).
+                                                // Recurse so leaves get pre-defined and the
+                                                // body can reference them. Issue #554 (the
+                                                // function-body counterpart of the lower.rs
+                                                // top-level fix in v0.5.629).
+                                                collect_for_of_pattern_leaves(
+                                                    ctx, &kv.value, &mut ids,
+                                                );
                                             }
                                         }
                                         _ => {}
@@ -4186,7 +4197,16 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                                                 ast::PropName::Ident(ident) => {
                                                     ident.sym.to_string()
                                                 }
+                                                ast::PropName::Str(s) => s
+                                                    .value
+                                                    .as_str()
+                                                    .unwrap_or("")
+                                                    .to_string(),
                                                 _ => continue,
+                                            };
+                                            let key_source = Expr::PropertyGet {
+                                                object: Box::new(Expr::LocalGet(item_id)),
+                                                property: key,
                                             };
                                             if let ast::Pat::Ident(_) = &*kv.value {
                                                 let (name, id) = var_ids[var_idx].clone();
@@ -4196,11 +4216,19 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                                                     name,
                                                     ty: Type::Any,
                                                     mutable: false,
-                                                    init: Some(Expr::PropertyGet {
-                                                        object: Box::new(Expr::LocalGet(item_id)),
-                                                        property: key,
-                                                    }),
+                                                    init: Some(key_source),
                                                 });
+                                            } else {
+                                                // Nested pattern (e.g. `key: [a, b]`).
+                                                // Issue #554 (function-body path).
+                                                emit_for_of_pattern_binding(
+                                                    ctx,
+                                                    &kv.value,
+                                                    key_source,
+                                                    &var_ids,
+                                                    &mut var_idx,
+                                                    &mut stmts,
+                                                )?;
                                             }
                                         }
                                         _ => {}
