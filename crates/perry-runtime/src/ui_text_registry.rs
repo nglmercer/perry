@@ -227,6 +227,48 @@ pub extern "C" fn perry_arkts_set_text(id_handle: f64, val_handle: f64) {
     }
 }
 
+// =============================================================================
+// Issue #535 — `perry/ui` `state<T>` runtime registry.
+// =============================================================================
+
+static STATE_VALUES: Mutex<Option<std::collections::HashMap<String, f64>>> = Mutex::new(None);
+
+fn with_state_values<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut std::collections::HashMap<String, f64>) -> R,
+{
+    let mut guard = STATE_VALUES.lock().expect("STATE_VALUES poisoned");
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    f(map)
+}
+
+#[no_mangle]
+pub extern "C" fn js_state_init(id_handle: f64, initial: f64) {
+    let id = decode_jsvalue_string(id_handle);
+    with_state_values(|m| {
+        m.insert(id, initial);
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn js_state_get(id_handle: f64) -> f64 {
+    let id = decode_jsvalue_string(id_handle);
+    let undefined_bits: u64 = 0x7FFC_0000_0000_0001;
+    with_state_values(|m| m.get(&id).copied()).unwrap_or_else(|| f64::from_bits(undefined_bits))
+}
+
+#[no_mangle]
+pub extern "C" fn js_state_set(id_handle: f64, value: f64) {
+    let id = decode_jsvalue_string(id_handle);
+    with_state_values(|m| {
+        m.insert(id, value);
+    });
+    #[cfg(not(feature = "ohos-napi"))]
+    perry_arkts_set_text(id_handle, value);
+    #[cfg(feature = "ohos-napi")]
+    crate::arkts_callbacks::perry_arkts_set_text(id_handle, value);
+}
+
 /// Cross-platform widget-id registration. Codegen at
 /// `lower_call/native.rs` emits a call to this immediately after
 /// `perry_ui_text_create` when the user wrote `Text("content", "id")`,

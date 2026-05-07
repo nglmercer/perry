@@ -507,6 +507,12 @@ pub(super) fn collect_modules(
         }
     }
 
+    // Issue #535 — `perry/ui` `state<T>` desugar pass.
+    let is_harmonyos = matches!(target, Some("harmonyos") | Some("harmonyos-simulator"));
+    if !is_harmonyos {
+        perry_transform::state_desugar::run(&mut hir_module);
+    }
+
     // Run HIR transforms AFTER imports/re-exports have been recursively
     // collected, so `ctx.native_modules` already contains every dependency
     // of this module. The cross-module method-inlining harvester below

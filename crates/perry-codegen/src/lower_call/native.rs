@@ -544,6 +544,43 @@ pub(crate) fn lower_native_method_call(
         return Ok(double_literal(f64::from_bits(0x7FFC_0000_0000_0001)));
     }
 
+    // Issue #535 — perry/ui `state<T>` desugar trio. Synthetic methods
+    // emitted only by `crates/perry-transform/src/state_desugar.rs`.
+    if module == "perry/ui"
+        && (method == "__state_init" || method == "__state_set")
+        && object.is_none()
+    {
+        if args.len() != 2 {
+            return Ok(double_literal(f64::from_bits(0x7FFC_0000_0000_0001)));
+        }
+        let id_d = lower_expr(ctx, &args[0])?;
+        let val_d = lower_expr(ctx, &args[1])?;
+        let runtime_fn = if method == "__state_init" {
+            "js_state_init"
+        } else {
+            "js_state_set"
+        };
+        ctx.pending_declares.push((
+            runtime_fn.to_string(),
+            crate::types::VOID,
+            vec![DOUBLE, DOUBLE],
+        ));
+        let blk = ctx.block();
+        blk.call_void(runtime_fn, &[(DOUBLE, &id_d), (DOUBLE, &val_d)]);
+        return Ok(double_literal(f64::from_bits(0x7FFC_0000_0000_0001)));
+    }
+    if module == "perry/ui" && method == "__state_get" && object.is_none() {
+        if args.len() != 1 {
+            return Ok(double_literal(f64::from_bits(0x7FFC_0000_0000_0001)));
+        }
+        let id_d = lower_expr(ctx, &args[0])?;
+        ctx.pending_declares
+            .push(("js_state_get".to_string(), DOUBLE, vec![DOUBLE]));
+        let blk = ctx.block();
+        let result = blk.call(DOUBLE, "js_state_get", &[(DOUBLE, &id_d)]);
+        return Ok(result);
+    }
+
     // perry/arkts: HarmonyOS Phase 2 v2 callback bridge. Synthetic module
     // injected by the harvest pass (`compile.rs::emit_index_ets`) — never
     // user-authored. `registerCallback(idx, closure)` lowers to a call to
