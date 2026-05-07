@@ -9257,6 +9257,19 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         // checks work; calling those values via stored references would
         // need a separate runtime path that this commit doesn't add.
         Expr::ExternFuncRef { name, .. } => {
+            // Imported class references (refs #420 / drizzle): when `name`
+            // resolves to a class registered in `ctx.class_ids` (populated
+            // from `opts.imported_classes` for imported classes too), emit
+            // the same INT32-tagged class-id NaN-box that local `Expr::ClassRef`
+            // produces. This is what `js_object_has_own`'s Symbol-key branch
+            // looks for to consult `CLASS_STATIC_SYMBOLS`. Without this,
+            // `Object.prototype.hasOwnProperty.call(ImportedClass, sym)`
+            // always returned false because the receiver was a closure-pointer
+            // NaN-box (POINTER_TAG) rather than a class-ref (INT32_TAG).
+            if let Some(&cid) = ctx.class_ids.get(name) {
+                let bits = crate::nanbox::INT32_TAG | (cid as u64 & 0xFFFF_FFFF);
+                return Ok(double_literal(f64::from_bits(bits)));
+            }
             if let Some(source_prefix) = ctx.import_function_prefixes.get(name).cloned() {
                 // Imported VARIABLES (exported consts/lets) need to be
                 // called through their getter to fetch the value, not

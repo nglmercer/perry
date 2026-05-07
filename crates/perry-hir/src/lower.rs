@@ -4349,6 +4349,12 @@ fn lower_module_decl(
                                             | Expr::BigInt(_)
                                             | Expr::Null
                                             | Expr::Undefined
+                                            // Refs #420 (drizzle): `const entityKind = Symbol.for(...)`
+                                            // followed by `export { entityKind }` must register the
+                                            // local as an exported variable so importing modules
+                                            // pick it up via `imported_vars` (and route through the
+                                            // getter, not as a closure pointer).
+                                            | Expr::SymbolFor(_)
                                     );
                                     if is_exportable {
                                         module.exported_objects.push(exported.clone());
