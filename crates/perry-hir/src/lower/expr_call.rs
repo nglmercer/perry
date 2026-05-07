@@ -4054,6 +4054,24 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                     callback: Box::new(cb),
                                 });
                             }
+                            "some" if !args.is_empty() && !recv_is_class => {
+                                let cb = args.into_iter().next().unwrap();
+                                let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
+                                let array_expr = lower_expr(ctx, &member.obj)?;
+                                return Ok(Expr::ArraySome {
+                                    array: Box::new(array_expr),
+                                    callback: Box::new(cb),
+                                });
+                            }
+                            "every" if !args.is_empty() && !recv_is_class => {
+                                let cb = args.into_iter().next().unwrap();
+                                let cb = ctx.maybe_wrap_builtin_callback(cb, &call.args[0]);
+                                let array_expr = lower_expr(ctx, &member.obj)?;
+                                return Ok(Expr::ArrayEvery {
+                                    array: Box::new(array_expr),
+                                    callback: Box::new(cb),
+                                });
+                            }
                             "sort" if !args.is_empty() => {
                                 let array_expr = lower_expr(ctx, &member.obj)?;
                                 return Ok(Expr::ArraySort {

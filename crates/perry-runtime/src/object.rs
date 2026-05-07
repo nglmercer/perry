@@ -4542,6 +4542,56 @@ pub unsafe extern "C" fn js_native_call_method(
                         let result = crate::array::js_array_with(arr, index, value);
                         return f64::from_bits(JSValue::pointer(result as *mut u8).bits());
                     }
+                    // Issue #546 followup: defensive `some` / `every` /
+                    // `find` / `findIndex` / `findLast` / `findLastIndex`
+                    // arms for any-typed receivers that escape the HIR
+                    // fast-path. The `is_class_overlapping_method` guard
+                    // (expr_call.rs ~2621) bails on Any-typed locals — so
+                    // a destructured `const { arr } = entry; arr.some(cb)`
+                    // (where `arr` lost its `EntityId<any>[]` type through
+                    // destructuring) silently fell through to the object
+                    // field-scan and returned the array itself, producing
+                    // `typeof = object` instead of a boolean. The hooks
+                    // module in @codehz/ecs hits this exact pattern in
+                    // `triggerMultiComponentHooks`, so on_set never fired.
+                    "some" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        return crate::array::js_array_some(arr, cb_ptr);
+                    }
+                    "every" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        return crate::array::js_array_every(arr, cb_ptr);
+                    }
+                    "find" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        return crate::array::js_array_find(arr, cb_ptr);
+                    }
+                    "findIndex" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        let idx = crate::array::js_array_findIndex(arr, cb_ptr);
+                        return idx as f64;
+                    }
+                    "findLast" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        return crate::array::js_array_find_last(arr, cb_ptr);
+                    }
+                    "findLastIndex" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        let idx = crate::array::js_array_find_last_index(arr, cb_ptr);
+                        return idx as f64;
+                    }
                     _ => {} // not a handled array method — fall through to object dispatch
                 }
             }
