@@ -115,9 +115,10 @@ pub(crate) fn lower_string_method(
             Ok(nanbox_string_inline(blk, &result_handle))
         }
         "split" => {
-            if args.len() != 1 {
+            // Issue #567: accept the optional 2nd `limit: number` arg.
+            if args.is_empty() || args.len() > 2 {
                 bail!(
-                    "perry-codegen: String.split expects 1 arg (delimiter), got {}",
+                    "perry-codegen: String.split expects 1 or 2 args (delimiter[, limit]), got {}",
                     args.len()
                 );
             }
@@ -126,14 +127,28 @@ pub(crate) fn lower_string_method(
             // their GC header and delegate to js_string_split_regex
             // internally. This avoids needing a new LLVM runtime decl.
             let delim_box = lower_expr(ctx, &args[0])?;
+            let limit_d = if args.len() == 2 {
+                Some(lower_expr(ctx, &args[1])?)
+            } else {
+                None
+            };
             let blk = ctx.block();
             let recv_handle = unbox_str_handle(blk, &recv_box);
             let delim_handle = unbox_str_handle(blk, &delim_box);
-            let result_arr = blk.call(
-                I64,
-                "js_string_split",
-                &[(I64, &recv_handle), (I64, &delim_handle)],
-            );
+            let result_arr = if let Some(limit_d) = limit_d {
+                let limit_i32 = blk.fptosi(DOUBLE, &limit_d, I32);
+                blk.call(
+                    I64,
+                    "js_string_split_n",
+                    &[(I64, &recv_handle), (I64, &delim_handle), (I32, &limit_i32)],
+                )
+            } else {
+                blk.call(
+                    I64,
+                    "js_string_split",
+                    &[(I64, &recv_handle), (I64, &delim_handle)],
+                )
+            };
             // Returns an array pointer (ArrayHeader*) — NaN-box with POINTER_TAG.
             Ok(crate::expr::nanbox_pointer_inline(blk, &result_arr))
         }

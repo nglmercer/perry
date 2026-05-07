@@ -1929,6 +1929,19 @@ pub extern "C" fn js_string_split(
     s: *const StringHeader,
     delimiter: *const StringHeader,
 ) -> *mut ArrayHeader {
+    js_string_split_n(s, delimiter, -1)
+}
+
+/// Split a string by a delimiter, with optional limit (issue #567).
+/// `limit < 0` → no limit (matches `js_string_split`).
+/// `limit == 0` → empty array.
+/// `limit > 0` → at most `limit` substrings.
+#[no_mangle]
+pub extern "C" fn js_string_split_n(
+    s: *const StringHeader,
+    delimiter: *const StringHeader,
+    limit: i32,
+) -> *mut ArrayHeader {
     if !is_valid_string_ptr(s) {
         // Return empty array
         return crate::array::js_array_alloc(0);
@@ -1941,10 +1954,15 @@ pub extern "C" fn js_string_split(
     // on a match. Otherwise the regex header would be read as a
     // StringHeader and segfault on the first byte of its `regex_ptr`.
     if crate::regex::is_regex_pointer(delimiter as *const u8) {
-        return crate::regex::js_string_split_regex(
+        return crate::regex::js_string_split_regex_n(
             s,
             delimiter as *const crate::regex::RegExpHeader,
+            limit,
         );
+    }
+
+    if limit == 0 {
+        return crate::array::js_array_alloc(0);
     }
 
     let str_data = string_as_str(s);
@@ -1960,7 +1978,7 @@ pub extern "C" fn js_string_split(
 
     if delim.is_empty() {
         // Empty delimiter: split into individual characters (single pass)
-        let parts: Vec<*mut StringHeader> = str_data
+        let mut parts: Vec<*mut StringHeader> = str_data
             .chars()
             .map(|c| {
                 let mut buf = [0u8; 4];
@@ -1968,6 +1986,9 @@ pub extern "C" fn js_string_split(
                 js_string_from_bytes(char_str.as_ptr(), char_str.len() as u32)
             })
             .collect();
+        if limit > 0 && (parts.len() as i64) > (limit as i64) {
+            parts.truncate(limit as usize);
+        }
 
         let arr = crate::array::js_array_alloc(parts.len() as u32);
         unsafe {
@@ -1982,7 +2003,10 @@ pub extern "C" fn js_string_split(
     }
 
     // Non-empty delimiter: arena-allocate parts (bump-pointer, no tracking overhead)
-    let part_slices: Vec<&str> = str_data.split(delim).collect();
+    let mut part_slices: Vec<&str> = str_data.split(delim).collect();
+    if limit > 0 && (part_slices.len() as i64) > (limit as i64) {
+        part_slices.truncate(limit as usize);
+    }
     let n = part_slices.len();
 
     let src_is_ascii = is_ascii_string(s);

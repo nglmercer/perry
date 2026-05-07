@@ -513,10 +513,24 @@ pub extern "C" fn js_string_split_regex(
     s: *const StringHeader,
     re: *const RegExpHeader,
 ) -> *mut ArrayHeader {
+    js_string_split_regex_n(s, re, -1)
+}
+
+/// string.split(regex, limit) — limit<0 means no limit, limit==0 means empty
+/// (issue #567).
+#[no_mangle]
+pub extern "C" fn js_string_split_regex_n(
+    s: *const StringHeader,
+    re: *const RegExpHeader,
+    limit: i32,
+) -> *mut ArrayHeader {
     const STRING_TAG: u64 = 0x7FFF_0000_0000_0000;
     const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
     if !is_valid_ptr(s) {
+        return crate::array::js_array_alloc(0);
+    }
+    if limit == 0 {
         return crate::array::js_array_alloc(0);
     }
     let str_data = string_as_str(s);
@@ -536,7 +550,10 @@ pub extern "C" fn js_string_split_regex(
 
     unsafe {
         let regex = &*(*re).regex_ptr;
-        let parts: Vec<&str> = regex.split(str_data).collect();
+        let mut parts: Vec<&str> = regex.split(str_data).collect();
+        if limit > 0 && (parts.len() as i64) > (limit as i64) {
+            parts.truncate(limit as usize);
+        }
 
         let arr = crate::array::js_array_alloc(parts.len() as u32);
         (*arr).length = parts.len() as u32;
