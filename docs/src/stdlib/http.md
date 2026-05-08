@@ -141,6 +141,71 @@ Perry's Fastify implementation is API-compatible with the npm package. Routes, r
 {{#include ../../examples/stdlib/http/snippets.ts:websocket-client}}
 ```
 
+## AWS S3 / S3-Compatible Object Storage
+
+[`@bradenmacdonald/s3-lite-client`](https://github.com/bradenmacdonald/s3-lite-client) is a zero-dependency, MIT-licensed S3 client (~1.9k LoC, derived from the official MinIO JS client without the lodash/async/xml2js baggage). It compiles natively under `perry.compilePackages` with no patches required — verified against a SigV4 presigned-URL byte-for-byte match with `bun` (issue #551).
+
+```json
+{
+  "perry": {
+    "compilePackages": ["@bradenmacdonald/s3-lite-client"]
+  }
+}
+```
+
+```typescript
+import { S3Client } from "@bradenmacdonald/s3-lite-client"
+
+const s3 = new S3Client({
+    endPoint: "https://s3.us-east-1.amazonaws.com",
+    region: "us-east-1",
+    bucket: "my-bucket",
+    accessKey: process.env.AWS_ACCESS_KEY_ID,
+    secretKey: process.env.AWS_SECRET_ACCESS_KEY,
+})
+
+// Presigned GET URL (no network I/O — pure SigV4 signing)
+const url = await s3.presignedGetObject("path/to/object.png", { expirySeconds: 3600 })
+console.log(url)
+
+// Upload bytes
+await s3.putObject("path/to/object.txt", "hello world", {
+    metadata: { "x-amz-acl": "public-read" },
+})
+
+// Stream a download — returns a standard fetch Response
+const res = await s3.getObject("path/to/object.txt")
+console.log(await res.text())
+
+// Head / Delete / List
+const meta = await s3.statObject("path/to/object.txt")
+console.log(meta.size, meta.lastModified)
+
+for await (const obj of s3.listObjects({ prefix: "path/to/" })) {
+    console.log(obj.key, obj.size)
+}
+
+await s3.deleteObject("path/to/object.txt")
+```
+
+Same code works against any S3-compatible service — only `endPoint` changes:
+
+| Service | `endPoint` |
+|---------|-----------|
+| AWS S3 | `https://s3.<region>.amazonaws.com` |
+| Cloudflare R2 | `https://<account>.r2.cloudflarestorage.com` |
+| MinIO | `http://localhost:9000` |
+| Backblaze B2 | `https://s3.<region>.backblazeb2.com` |
+| DigitalOcean Spaces | `https://<region>.digitaloceanspaces.com` |
+| Supabase Storage | `https://<project>.supabase.co/storage/v1/s3` |
+| LocalStack (testing) | `http://localhost:4566` |
+
+The full SigV4 signing chain (Web Crypto HMAC-SHA-256 + SHA-256, TextEncoder, URLSearchParams, Headers iteration, typed-array byte marshalling) is exercised end-to-end. Read paths (`getObject`, `statObject`, `deleteObject`, `listObjects`, `presignedGetObject`, `presignedPostObject`) are verified byte-identical to `bun` against pinned test vectors and will authenticate against real S3.
+
+Multipart uploads (`putObject` with a `ReadableStream` source large enough to chunk) exercise additional surface — `WritableStream` / `TransformStream` subclassing per #562 — that path compiles but isn't independently verified against pinned vectors here.
+
+For the AWS SDK v3 (`@aws-sdk/client-s3`): Perry currently can't compile it. Its dependency tree pulls in `@smithy/*` and runtime middleware registration that uses `Proxy` and dynamic property assignment, neither of which is in Perry's [TypeScript subset](../language/limitations.md). `@bradenmacdonald/s3-lite-client` covers the same surface (Put/Get/Head/Delete/List/presign + multipart) for almost every real-world need.
+
 ## Next Steps
 
 - [Databases](database.md)

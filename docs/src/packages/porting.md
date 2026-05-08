@@ -24,6 +24,13 @@ These work end-to-end via `compilePackages` with no patches required:
   Long-lived HTTP server deployment via `@hono/node-server` or hand-rolled
   `node:http` is currently blocked on [#589](https://github.com/PerryTS/perry/issues/589).
   Closed via issues #421 / #486 / #487 / #577.
+- **`@bradenmacdonald/s3-lite-client`** — pure-TS AWS S3 / S3-compatible
+  storage client (R2, MinIO, B2, Spaces, Supabase, LocalStack). Full SigV4
+  signing chain (Put/Get/Head/Delete/List + presigned URLs) verified
+  byte-identical to `bun`. See [HTTP & Networking → AWS S3](../stdlib/http.md#aws-s3--s3-compatible-object-storage)
+  for the usage pattern. Closed via [#551](https://github.com/PerryTS/perry/issues/551)
+  + 15 general-purpose stdlib fixes (Web Crypto, Web Streams subclassing,
+  typed-array marshalling, `extends Error`, namespace imports, etc.).
 
 ## The workflow
 
