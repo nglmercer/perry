@@ -53,8 +53,14 @@ set -e
 # Try to extract per-crate test counts from the log.
 # `cargo test` prints lines like "test result: ok. 12 passed; 0 failed; 0 ignored ..."
 # at the end of each crate's run. We sum those.
-total_passed=$(grep -cE 'test result: ok\.' "$LOG" 2>/dev/null || echo 0)
-total_failed=$(grep -cE 'test result: FAILED' "$LOG" 2>/dev/null || echo 0)
+#
+# Defensive parsing: `grep -c PATTERN` exits 1 (and prints "0") on no match,
+# so the naive `$(grep -c ... || echo 0)` produces multi-line output ("0\n0")
+# that breaks downstream arithmetic. Capture, then validate integer.
+total_passed=$(grep -cE 'test result: ok\.' "$LOG" 2>/dev/null || true)
+total_failed=$(grep -cE 'test result: FAILED' "$LOG" 2>/dev/null || true)
+[[ "$total_passed" =~ ^[0-9]+$ ]] || total_passed=0
+[[ "$total_failed" =~ ^[0-9]+$ ]] || total_failed=0
 
 end="$(date +%s)"
 dur="$((end - start))"

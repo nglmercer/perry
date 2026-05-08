@@ -45,6 +45,46 @@ fixture_setup() {
     return 0
 }
 
+# Default per-fixture runtime budget. A fixture that hangs past this is
+# treated as a runtime FAIL (some fixtures spin up servers / threads that
+# don't cleanly exit; the harness should not deadlock the whole sweep).
+# Override via PERRY_FIXTURE_TIMEOUT_SECS in any fixture.sh that needs more.
+: "${PERRY_FIXTURE_TIMEOUT_SECS:=60}"
+
+# Run a command with a wall-clock deadline. Returns the command's exit
+# code, or 124 if the deadline expired (matching GNU coreutils `timeout`).
+# macOS doesn't ship GNU timeout; gtimeout (from Homebrew coreutils) is
+# preferred when present. Pure-bash fallback otherwise.
+_fixture_run_with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+        return $?
+    fi
+    "$@" &
+    local pid=$!
+    ( sleep "$secs" && kill -TERM "$pid" 2>/dev/null && sleep 1 && kill -KILL "$pid" 2>/dev/null ) &
+    local watcher=$!
+    if wait "$pid" 2>/dev/null; then
+        kill -TERM "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null
+        return 0
+    else
+        local rc=$?
+        kill -TERM "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null
+        # Bash-killed-by-SIGTERM shows up as 143; map to 124 to match
+        # `timeout`'s convention (real timeouts and signal kills are both
+        # "the process didn't finish in time").
+        [[ "$rc" == "143" ]] && return 124
+        return "$rc"
+    fi
+}
+
 fixture_compile_run_diff() {
     local name="$1"
     local entry="${2:-entry.ts}"
@@ -56,9 +96,20 @@ fixture_compile_run_diff() {
         sed 's/^/    /' perry-compile.log | tail -40
         return 1
     fi
-    echo "  [./out]"
-    if ! ./out > perry-out.txt 2> perry-run.log; then
-        echo "FAIL $name — runtime exit non-zero"
+    echo "  [./out] (timeout=${PERRY_FIXTURE_TIMEOUT_SECS}s)"
+    set +e
+    _fixture_run_with_timeout "$PERRY_FIXTURE_TIMEOUT_SECS" ./out > perry-out.txt 2> perry-run.log
+    local rc=$?
+    set -e
+    if [[ "$rc" -eq 124 ]]; then
+        echo "FAIL $name — runtime did not exit within ${PERRY_FIXTURE_TIMEOUT_SECS}s (likely a hang — server.close() not stopping the event loop, lingering threads, etc.)"
+        sed 's/^/    /' perry-run.log | tail -20
+        echo "    --- stdout (truncated) ---"
+        sed 's/^/    /' perry-out.txt | tail -20
+        return 1
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+        echo "FAIL $name — runtime exit non-zero (rc=$rc)"
         sed 's/^/    /' perry-run.log | tail -40
         echo "    --- stdout (truncated) ---"
         sed 's/^/    /' perry-out.txt | tail -20
