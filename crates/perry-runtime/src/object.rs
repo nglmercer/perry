@@ -4697,6 +4697,116 @@ pub unsafe extern "C" fn js_native_call_method(
                         let idx = crate::array::js_array_find_last_index(arr, cb_ptr);
                         return idx as f64;
                     }
+                    // Issue #587: `str.split(sep).map(fn).sort()` returned ""
+                    // because chained `.sort()` falls through HIR's array-fold
+                    // (the `"sort" if !args.is_empty()` arm in expr_call.rs
+                    // requires a comparator) and lands here. Without these
+                    // arms the very-end fallthrough returns NULL_OBJECT_BYTES,
+                    // which JSON.stringify renders as "". The s3-lite-client
+                    // SigV4 canonical-query-string builder
+                    // (`.split("&").map(...).sort().join("&")`) was the
+                    // load-bearing user impact. Same gap for `.reverse()` —
+                    // tracked by issue #587's regressions list. Adding
+                    // `reduce` / `reduceRight` / `flat` / `flatMap` / `concat`
+                    // / `indexOf` / `includes` / `at` / `fill` while we're
+                    // here defensively, since they have the same shape and
+                    // share the HIR-fold escape risk for chained-call
+                    // receivers.
+                    "sort" => {
+                        let arr = raw_ptr as *mut crate::array::ArrayHeader;
+                        let result = if args_len >= 1 && !args_ptr.is_null() {
+                            let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                            let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                            crate::array::js_array_sort_with_comparator(arr, cb_ptr)
+                        } else {
+                            crate::array::js_array_sort_default(arr)
+                        };
+                        return f64::from_bits(JSValue::pointer(result as *mut u8).bits());
+                    }
+                    "reverse" => {
+                        let arr = raw_ptr as *mut crate::array::ArrayHeader;
+                        let result = crate::array::js_array_reverse(arr);
+                        return f64::from_bits(JSValue::pointer(result as *mut u8).bits());
+                    }
+                    "reduce" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        let (has_init, init) = if args_len >= 2 {
+                            (1i32, *args_ptr.add(1))
+                        } else {
+                            (0i32, f64::from_bits(crate::value::TAG_UNDEFINED))
+                        };
+                        return crate::array::js_array_reduce(arr, cb_ptr, has_init, init);
+                    }
+                    "reduceRight" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        let (has_init, init) = if args_len >= 2 {
+                            (1i32, *args_ptr.add(1))
+                        } else {
+                            (0i32, f64::from_bits(crate::value::TAG_UNDEFINED))
+                        };
+                        return crate::array::js_array_reduce_right(arr, cb_ptr, has_init, init);
+                    }
+                    "flat" => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let result = crate::array::js_array_flat(arr);
+                        return f64::from_bits(JSValue::pointer(result as *mut u8).bits());
+                    }
+                    "flatMap" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let cb_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let cb_ptr = cb_bits as *const crate::closure::ClosureHeader;
+                        let result = crate::array::js_array_flatMap(arr, cb_ptr);
+                        return f64::from_bits(JSValue::pointer(result as *mut u8).bits());
+                    }
+                    "concat" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *mut crate::array::ArrayHeader;
+                        let other_bits = (*args_ptr).to_bits() & 0x0000_FFFF_FFFF_FFFF;
+                        let other_ptr = other_bits as *mut crate::array::ArrayHeader;
+                        let result = crate::array::js_array_concat(arr, other_ptr);
+                        return f64::from_bits(JSValue::pointer(result as *mut u8).bits());
+                    }
+                    "indexOf" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let value = *args_ptr;
+                        return crate::array::js_array_indexOf_jsvalue(arr, value) as f64;
+                    }
+                    "includes" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let value = *args_ptr;
+                        let r = crate::array::js_array_includes_jsvalue(arr, value);
+                        return f64::from_bits(JSValue::bool(r != 0).bits());
+                    }
+                    "at" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        return crate::array::js_array_at(arr, *args_ptr);
+                    }
+                    "fill" if args_len >= 1 && !args_ptr.is_null() => {
+                        let arr = raw_ptr as *mut crate::array::ArrayHeader;
+                        let result = crate::array::js_array_fill(arr, *args_ptr);
+                        return f64::from_bits(JSValue::pointer(result as *mut u8).bits());
+                    }
+                    "join" => {
+                        let arr = raw_ptr as *const crate::array::ArrayHeader;
+                        let sep_ptr = if args_len >= 1 && !args_ptr.is_null() {
+                            let bits = (*args_ptr).to_bits();
+                            let tag = bits >> 48;
+                            if tag == 0x7FFF || tag == 0x7FFE {
+                                // STRING_TAG or SHORT_STRING tag
+                                (bits & 0x0000_FFFF_FFFF_FFFF)
+                                    as *const crate::string::StringHeader
+                            } else {
+                                std::ptr::null()
+                            }
+                        } else {
+                            std::ptr::null()
+                        };
+                        let s = crate::array::js_array_join(arr, sep_ptr);
+                        return f64::from_bits(JSValue::string_ptr(s).bits());
+                    }
                     _ => {} // not a handled array method — fall through to object dispatch
                 }
             }
