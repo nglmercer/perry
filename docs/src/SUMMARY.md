@@ -15,6 +15,7 @@
 
 - [Supported Features](language/supported-features.md)
 - [Type System](language/type-system.md)
+- [Decorators](language/decorators.md)
 - [Limitations](language/limitations.md)
 
 # npm Packages

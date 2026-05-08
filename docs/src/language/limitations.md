@@ -23,16 +23,14 @@ eval("console.log('hi')");
 new Function("return 42");
 ```
 
-## No Decorators
+## Decorators
 
-TypeScript decorators are not currently supported:
-
-<!-- intentionally-rejects: this snippet documents code Perry refuses to compile -->
-```text
-// Not supported
-@Component
-class MyClass {}
-```
+Perry parses decorator syntax and supports compile-time-only transforms
+(see the bundled `@log` example), but does not implement the runtime
+metadata facilities (`Reflect.metadata`, `Symbol`-keyed metadata,
+`emitDecoratorMetadata` type capture) that Angular / NestJS / TypeORM
+DI containers rely on. See [Decorators](decorators.md) for the full
+stance and a worked migration recipe.
 
 ## No Reflection
 
