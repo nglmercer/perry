@@ -1078,13 +1078,23 @@ pub unsafe extern "C" fn js_headers_delete(handle: f64, key_ptr: *const StringHe
     f64::from_bits(TAG_UNDEFINED)
 }
 
+/// Snapshot the headers store sorted by key (WHATWG spec: iteration order is
+/// sorted lexicographically by name, regardless of insertion order). Used by
+/// `forEach`, `keys`, `values`, `entries`, and `Symbol.iterator` so all five
+/// surfaces agree byte-for-byte (refs #576).
+fn snapshot_sorted(handle: f64) -> Vec<(String, String)> {
+    let id = handle_id(handle);
+    let mut entries: Vec<(String, String)> = match HEADERS_REGISTRY.lock().unwrap().get(&id) {
+        Some(s) => s.entries.clone(),
+        None => return Vec::new(),
+    };
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
 #[no_mangle]
 pub extern "C" fn js_headers_for_each(handle: f64, callback: f64) -> f64 {
-    let id = handle_id(handle);
-    let entries: Vec<(String, String)> = match HEADERS_REGISTRY.lock().unwrap().get(&id) {
-        Some(s) => s.entries.clone(),
-        None => return f64::from_bits(TAG_UNDEFINED),
-    };
+    let entries = snapshot_sorted(handle);
     // Extract closure pointer from NaN-boxed callback
     let cb_bits = callback.to_bits();
     let cb_ptr = (cb_bits & 0x0000_FFFF_FFFF_FFFF) as i64;
@@ -1102,6 +1112,69 @@ pub extern "C" fn js_headers_for_each(handle: f64, callback: f64) -> f64 {
         }
     }
     f64::from_bits(TAG_UNDEFINED)
+}
+
+const POINTER_TAG: u64 = 0x7FFD_0000_0000_0000;
+
+#[inline]
+fn nanbox_array_pointer(arr: *mut perry_runtime::ArrayHeader) -> f64 {
+    let bits = POINTER_TAG | ((arr as u64) & 0x0000_FFFF_FFFF_FFFF);
+    f64::from_bits(bits)
+}
+
+/// `headers.keys()` — returns a sorted-by-key array of header names. The
+/// returned array is itself iterable, so `for (const k of headers.keys())`,
+/// spread, and `Array.from` all work via the array's existing `Symbol.iterator`
+/// (refs #576).
+#[no_mangle]
+pub extern "C" fn js_headers_keys(handle: f64) -> f64 {
+    let entries = snapshot_sorted(handle);
+    unsafe {
+        let mut arr = perry_runtime::js_array_alloc(entries.len() as u32);
+        for (k, _) in entries {
+            let k_ptr = js_string_from_bytes(k.as_ptr(), k.len() as u32);
+            let k_nan = JSValue::string_ptr(k_ptr).bits();
+            arr = perry_runtime::js_array_push_f64(arr, f64::from_bits(k_nan));
+        }
+        nanbox_array_pointer(arr)
+    }
+}
+
+/// `headers.values()` — sorted-by-key array of header values. See `js_headers_keys`.
+#[no_mangle]
+pub extern "C" fn js_headers_values(handle: f64) -> f64 {
+    let entries = snapshot_sorted(handle);
+    unsafe {
+        let mut arr = perry_runtime::js_array_alloc(entries.len() as u32);
+        for (_, v) in entries {
+            let v_ptr = js_string_from_bytes(v.as_ptr(), v.len() as u32);
+            let v_nan = JSValue::string_ptr(v_ptr).bits();
+            arr = perry_runtime::js_array_push_f64(arr, f64::from_bits(v_nan));
+        }
+        nanbox_array_pointer(arr)
+    }
+}
+
+/// `headers.entries()` — sorted-by-key array of `[key, value]` pair arrays.
+/// `for (const [k, v] of headers.entries())` and `for (const [k, v] of h)` both
+/// route here (the latter via the `Symbol.iterator` alias, see #576).
+#[no_mangle]
+pub extern "C" fn js_headers_entries(handle: f64) -> f64 {
+    let entries = snapshot_sorted(handle);
+    unsafe {
+        let mut arr = perry_runtime::js_array_alloc(entries.len() as u32);
+        for (k, v) in entries {
+            let k_ptr = js_string_from_bytes(k.as_ptr(), k.len() as u32);
+            let v_ptr = js_string_from_bytes(v.as_ptr(), v.len() as u32);
+            let k_nan = JSValue::string_ptr(k_ptr).bits();
+            let v_nan = JSValue::string_ptr(v_ptr).bits();
+            let mut pair = perry_runtime::js_array_alloc(2);
+            pair = perry_runtime::js_array_push_f64(pair, f64::from_bits(k_nan));
+            pair = perry_runtime::js_array_push_f64(pair, f64::from_bits(v_nan));
+            arr = perry_runtime::js_array_push_f64(arr, nanbox_array_pointer(pair));
+        }
+        nanbox_array_pointer(arr)
+    }
 }
 
 // ----------------- Response FFI (constructor + extra methods) -----------------

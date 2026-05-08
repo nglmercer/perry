@@ -10165,13 +10165,17 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         }
 
         Expr::UrlSearchParamsNew(init) => {
+            // Pre-#575 this routed every init through `js_url_search_params_new`
+            // which only accepts a string — object literals (`new
+            // URLSearchParams({a:"1"})`) reached here as NaN-boxed pointers
+            // and `js_get_string_pointer_unified` re-interpreted the pointer
+            // bits as a `*mut StringHeader`, reading garbage. We now hand the
+            // init f64 to `js_url_search_params_new_any` which decodes
+            // string / record / URLSearchParams / null / undefined at runtime.
             let params_obj = if let Some(init) = init {
                 let v = lower_expr(ctx, init)?;
-                let str_ptr =
-                    ctx.block()
-                        .call(I64, "js_get_string_pointer_unified", &[(DOUBLE, &v)]);
                 ctx.block()
-                    .call(I64, "js_url_search_params_new", &[(I64, &str_ptr)])
+                    .call(I64, "js_url_search_params_new_any", &[(DOUBLE, &v)])
             } else {
                 ctx.block().call(I64, "js_url_search_params_new_empty", &[])
             };
@@ -10300,6 +10304,18 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 .block()
                 .call(I64, "js_url_search_params_to_string", &[(I64, &p_ptr)]);
             Ok(nanbox_string_inline(ctx.block(), &str_ptr))
+        }
+
+        Expr::UrlSearchParamsEntries(params) => {
+            // Runtime returns a fully NaN-boxed POINTER_TAG f64, so we pass
+            // it through unchanged. See `js_url_search_params_entries_arr`
+            // rustdoc.
+            let p_v = lower_expr(ctx, params)?;
+            let p_ptr = unbox_to_i64(ctx.block(), &p_v);
+            let arr = ctx
+                .block()
+                .call(DOUBLE, "js_url_search_params_entries_arr", &[(I64, &p_ptr)]);
+            Ok(arr)
         }
 
         Expr::UrlSearchParamsGetAll { params, name } => {

@@ -295,6 +295,7 @@ where
         | Expr::UrlGetOrigin(v)
         | Expr::UrlGetSearchParams(v)
         | Expr::UrlSearchParamsToString(v)
+        | Expr::UrlSearchParamsEntries(v)
         | Expr::JsCreateCallback { closure: v, .. }
         | Expr::JsGetExport {
             module_handle: v, ..
@@ -1412,6 +1413,7 @@ where
         | Expr::UrlGetOrigin(v)
         | Expr::UrlGetSearchParams(v)
         | Expr::UrlSearchParamsToString(v)
+        | Expr::UrlSearchParamsEntries(v)
         | Expr::JsCreateCallback { closure: v, .. }
         | Expr::JsGetExport {
             module_handle: v, ..

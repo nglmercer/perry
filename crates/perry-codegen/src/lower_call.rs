@@ -3814,6 +3814,29 @@ pub(super) fn lower_fetch_native_method(
                     crate::nanbox::TAG_UNDEFINED,
                 ))));
             }
+            // `headers.keys()` / `.values()` / `.entries()` return arrays
+            // sorted by header name (WHATWG Fetch spec). The arrays are
+            // themselves iterable via the array Symbol.iterator, so
+            // `for…of`, spread, and `Array.from` all work for free
+            // (refs #576).
+            "keys" => {
+                let arr = ctx
+                    .block()
+                    .call(DOUBLE, "js_headers_keys", &[(DOUBLE, &h_handle)]);
+                return Ok(Some(arr));
+            }
+            "values" => {
+                let arr = ctx
+                    .block()
+                    .call(DOUBLE, "js_headers_values", &[(DOUBLE, &h_handle)]);
+                return Ok(Some(arr));
+            }
+            "entries" => {
+                let arr = ctx
+                    .block()
+                    .call(DOUBLE, "js_headers_entries", &[(DOUBLE, &h_handle)]);
+                return Ok(Some(arr));
+            }
             _ => return Ok(None),
         }
     }

@@ -549,6 +549,154 @@ pub extern "C" fn js_url_search_params_new_empty() -> *mut ObjectHeader {
     create_url_search_params_object(Vec::new())
 }
 
+/// Create a URLSearchParams from any NaN-boxed init value.
+///
+/// Spec init shapes (`new URLSearchParams(init)`):
+/// - `undefined` / `null`        → empty
+/// - `string` (with or without `?`)→ parse as query string
+/// - record `{ k: v, ... }`      → use property names + stringified values
+/// - another `URLSearchParams`   → copy entries
+/// - array of `[k, v]` pairs     → use as-is (spec-conformant; rarely used)
+///
+/// Pre-fix, codegen routed every init through `js_url_search_params_new`
+/// (which only handles strings) — object inits got `js_get_string_pointer_unified`'d
+/// into an interpret-pointer-as-string read of garbage bytes (typed-local
+/// repro printed `"%00="`). Refs #575.
+#[no_mangle]
+pub extern "C" fn js_url_search_params_new_any(init: f64) -> *mut ObjectHeader {
+    let bits = init.to_bits();
+    let jsval = crate::value::JSValue::from_bits(bits);
+
+    if jsval.is_undefined() || jsval.is_null() {
+        return create_url_search_params_object(Vec::new());
+    }
+
+    // String — common path. Includes both STRING_TAG and SHORT_STRING (SSO).
+    if jsval.is_string() || jsval.is_short_string() {
+        let s = get_string_content(init);
+        return create_url_search_params_object(parse_query_string(&s));
+    }
+
+    if jsval.is_pointer() {
+        let ptr_i64 = crate::value::js_nanbox_get_pointer(init);
+        if ptr_i64 == 0 {
+            return create_url_search_params_object(Vec::new());
+        }
+        let obj_ptr = ptr_i64 as *mut ObjectHeader;
+
+        // Detect another URLSearchParams: its `_entries` field holds the
+        // ArrayHeader of [k, v] pair arrays. We can't tell apart by class
+        // (both are class_id 0), so peek at the keys array's first entry.
+        // Simpler heuristic: try to read it as an entries-table; fall back
+        // to record enumeration if shape doesn't match.
+        let copied = try_read_as_search_params(obj_ptr);
+        if let Some(entries) = copied {
+            return create_url_search_params_object(entries);
+        }
+
+        // Treat as record `{ k: v }`. Iterate keys and read each field.
+        let entries = read_record_entries(obj_ptr);
+        return create_url_search_params_object(entries);
+    }
+
+    // Numbers / booleans / etc. — coerce to string via the unified string-ptr
+    // helper, then parse. Matches Node which `String(init)`-coerces unknown
+    // init values before parsing.
+    let s = get_string_content(init);
+    create_url_search_params_object(parse_query_string(&s))
+}
+
+/// Walk an object as if it were a URLSearchParams, returning `Some(entries)`
+/// only if the shape matches: a single field whose value is a top-level array
+/// of 2-element [string, string] pair arrays. Returns None for any other shape
+/// (the caller falls back to record enumeration).
+fn try_read_as_search_params(params: *mut ObjectHeader) -> Option<Vec<(String, String)>> {
+    if params.is_null() {
+        return None;
+    }
+    unsafe {
+        // URLSearchParams stores entries in field index 0 (URL_SEARCH_PARAMS_ENTRIES).
+        // If this isn't a URLSearchParams, that slot likely holds a string or
+        // is missing — we detect by checking the keys array shape.
+        let keys_arr = (*params).keys_array;
+        if keys_arr.is_null() {
+            return None;
+        }
+        let keys_len = (*keys_arr).length;
+        if keys_len != 1 {
+            return None;
+        }
+        let key0 = crate::array::js_array_get_f64(keys_arr, 0);
+        let key0_str = get_string_content(key0);
+        if key0_str != "_entries" {
+            return None;
+        }
+    }
+    Some(get_url_search_params_entries(params))
+}
+
+/// Enumerate an object's own enumerable keys as `(name, String(value))` pairs.
+/// Used for `new URLSearchParams({ a: "1", b: "2" })` — order matches the
+/// keys array (insertion order, like Node).
+fn read_record_entries(obj: *mut ObjectHeader) -> Vec<(String, String)> {
+    if obj.is_null() {
+        return Vec::new();
+    }
+    unsafe {
+        let keys_arr = (*obj).keys_array;
+        if keys_arr.is_null() {
+            return Vec::new();
+        }
+        let len = (*keys_arr).length as usize;
+        let mut out = Vec::with_capacity(len);
+        for i in 0..len {
+            let key_f64 = crate::array::js_array_get_f64(keys_arr, i as u32);
+            let key = get_string_content(key_f64);
+            if key.is_empty() {
+                continue;
+            }
+            let val_f64 = crate::object::js_object_get_field_f64(obj, i as u32);
+            let val = stringify_field_value(val_f64);
+            out.push((key, val));
+        }
+        out
+    }
+}
+
+/// Coerce a NaN-boxed field value to a String the way Node's
+/// `URLSearchParams` does — values are passed through `String(...)`. Strings
+/// pass through; numbers / booleans use their textual form; null/undefined
+/// stringify literally.
+fn stringify_field_value(v: f64) -> String {
+    let bits = v.to_bits();
+    let jsval = crate::value::JSValue::from_bits(bits);
+    if jsval.is_string() || jsval.is_short_string() {
+        return get_string_content(v);
+    }
+    if jsval.is_undefined() {
+        return "undefined".to_string();
+    }
+    if jsval.is_null() {
+        return "null".to_string();
+    }
+    if !v.is_nan() {
+        // Plain double — format without trailing ".0" for integers.
+        if v == v.trunc() && v.is_finite() && v.abs() < 1e21 {
+            return format!("{}", v as i64);
+        }
+        return format!("{}", v);
+    }
+    // Booleans land in the NaN-tag space.
+    if bits == 0x7FFC_0000_0000_0004 {
+        return "true".to_string();
+    }
+    if bits == 0x7FFC_0000_0000_0003 {
+        return "false".to_string();
+    }
+    // Pointer / unknown: stringify via the unified helper.
+    get_string_content(v)
+}
+
 /// Get a value by name
 /// js_url_search_params_get(params: *mut ObjectHeader, name: *mut StringHeader) -> *mut StringHeader (string or null)
 #[no_mangle]
@@ -761,6 +909,28 @@ pub extern "C" fn js_url_search_params_to_string(
     let joined = result.join("&");
     let bytes = joined.as_bytes();
     js_string_from_bytes(bytes.as_ptr(), bytes.len() as u32)
+}
+
+/// `params.entries()` — returns an array of `[key, value]` pair arrays. Used
+/// to lower direct iteration `for (const [k, v] of params)` (refs #575). The
+/// pair arrays expose strings, so the destructure `[k, v]` reads them with
+/// the standard array-element path.
+#[no_mangle]
+pub extern "C" fn js_url_search_params_entries_arr(params: *mut ObjectHeader) -> f64 {
+    let entries = get_url_search_params_entries(params);
+    unsafe {
+        let mut arr = js_array_alloc(entries.len() as u32);
+        for (k, v) in entries {
+            let mut pair = js_array_alloc(2);
+            pair = js_array_push_f64(pair, create_string_f64(&k));
+            pair = js_array_push_f64(pair, create_string_f64(&v));
+            // Inline NaN-box the pair pointer with POINTER_TAG so for-of
+            // destructure reads the array via `js_array_get_f64` correctly.
+            let pair_bits = 0x7FFD_0000_0000_0000u64 | ((pair as u64) & 0x0000_FFFF_FFFF_FFFF);
+            arr = js_array_push_f64(arr, f64::from_bits(pair_bits));
+        }
+        f64::from_bits(0x7FFD_0000_0000_0000u64 | ((arr as u64) & 0x0000_FFFF_FFFF_FFFF))
+    }
 }
 
 /// Get all values for a name

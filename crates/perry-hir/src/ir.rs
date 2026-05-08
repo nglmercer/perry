@@ -1835,6 +1835,11 @@ pub enum Expr {
         params: Box<Expr>,
         name: Box<Expr>,
     },
+    /// params.entries() / iteration source for `for (const [k, v] of params)` —
+    /// returns an array of `[key, value]` pair arrays. The receiver itself is
+    /// an iterable per spec; the for-of lowering wraps the receiver in this
+    /// node so the standard array-iter path handles the rest. Refs #575.
+    UrlSearchParamsEntries(Box<Expr>),
 
     // Delete operator
     Delete(Box<Expr>), // delete obj.prop or delete obj["prop"] -> bool

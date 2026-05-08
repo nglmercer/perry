@@ -9310,7 +9310,7 @@ impl<'a> FuncEmitCtx<'a> {
                 self.emit_store_arg(func, 0, params);
                 self.emit_memcall(func, "searchparams_to_string", 1);
             }
-            Expr::UrlSearchParamsGetAll { .. } => {
+            Expr::UrlSearchParamsGetAll { .. } | Expr::UrlSearchParamsEntries(_) => {
                 func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
             }
             // --- JS runtime interop stubs ---

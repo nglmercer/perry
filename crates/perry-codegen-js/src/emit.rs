@@ -2274,6 +2274,11 @@ impl JsEmitter {
                 self.emit_expr(params);
                 self.output.push_str(".toString()");
             }
+            Expr::UrlSearchParamsEntries(params) => {
+                self.output.push_str("Array.from(");
+                self.emit_expr(params);
+                self.output.push_str(".entries())");
+            }
             Expr::UrlSearchParamsGetAll { params, name } => {
                 self.emit_expr(params);
                 self.output.push_str(".getAll(");

@@ -5990,8 +5990,50 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
             // for (const ch of "hello") — each iteration yields a 1-char string via str[i].
             let is_string_iter = is_ast_string_expr(ctx, &for_of_stmt.right);
 
+            // `for (const [k, v] of h)` where h is a Headers handle: WHATWG
+            // Fetch spec says iteration of a Headers object yields `[key,
+            // value]` pairs sorted by key. Without this rewrite, for-of falls
+            // through to the generic array path and reads `.length` on the
+            // raw handle (returns 0 → silent empty loop). Refs #576.
+            let is_headers_iter = match &*for_of_stmt.right {
+                ast::Expr::Ident(ident) => matches!(
+                    ctx.lookup_native_instance(ident.sym.as_ref()),
+                    Some((_, "Headers"))
+                ),
+                _ => false,
+            };
+
+            // `for (const [k, v] of params)` where `params` is a
+            // URLSearchParams local. Same shape as the Headers case but
+            // tracked via `lookup_local_type` (Type::Named) instead of the
+            // native-instance registry. Refs #575.
+            let is_urlsp_iter = match &*for_of_stmt.right {
+                ast::Expr::Ident(ident) => matches!(
+                    ctx.lookup_local_type(ident.sym.as_ref()),
+                    Some(Type::Named(n)) if n == "URLSearchParams"
+                ),
+                ast::Expr::New(new_expr) => matches!(
+                    new_expr.callee.as_ref(),
+                    ast::Expr::Ident(c) if c.sym.as_ref() == "URLSearchParams"
+                ),
+                _ => false,
+            };
+
             // Lower the iterable expression (the array)
             let arr_expr = lower_expr(ctx, &for_of_stmt.right)?;
+            let arr_expr = if is_headers_iter {
+                Expr::NativeMethodCall {
+                    module: "Headers".to_string(),
+                    class_name: Some("Headers".to_string()),
+                    object: Some(Box::new(arr_expr)),
+                    method: "entries".to_string(),
+                    args: vec![],
+                }
+            } else if is_urlsp_iter {
+                Expr::UrlSearchParamsEntries(Box::new(arr_expr))
+            } else {
+                arr_expr
+            };
 
             // Issue #302: resolve iterable type from either local var or
             // class instance field (`this.someMap`). Was limited to

@@ -28,6 +28,71 @@ use super::{
     LoweringContext,
 };
 
+/// Build the `Expr::UrlSearchParams*` HIR variant for `<recv>.<method>(args)`.
+/// Returns the populated `args` back when the (method, arity) combo doesn't
+/// match a known URLSearchParams op so the caller can fall through.
+///
+/// Shared between the typed-local arm and the chained-`new URLSearchParams(...)`
+/// arm so both surfaces dispatch identically (refs #575).
+fn build_url_search_params_method_call(
+    recv: Expr,
+    method: &str,
+    args: Vec<Expr>,
+) -> std::result::Result<Expr, Vec<Expr>> {
+    match method {
+        "get" if !args.is_empty() => {
+            let name = args.into_iter().next().unwrap();
+            Ok(Expr::UrlSearchParamsGet {
+                params: Box::new(recv),
+                name: Box::new(name),
+            })
+        }
+        "has" if !args.is_empty() => {
+            let name = args.into_iter().next().unwrap();
+            Ok(Expr::UrlSearchParamsHas {
+                params: Box::new(recv),
+                name: Box::new(name),
+            })
+        }
+        "set" if args.len() >= 2 => {
+            let mut iter = args.into_iter();
+            let name = iter.next().unwrap();
+            let value = iter.next().unwrap();
+            Ok(Expr::UrlSearchParamsSet {
+                params: Box::new(recv),
+                name: Box::new(name),
+                value: Box::new(value),
+            })
+        }
+        "append" if args.len() >= 2 => {
+            let mut iter = args.into_iter();
+            let name = iter.next().unwrap();
+            let value = iter.next().unwrap();
+            Ok(Expr::UrlSearchParamsAppend {
+                params: Box::new(recv),
+                name: Box::new(name),
+                value: Box::new(value),
+            })
+        }
+        "delete" if !args.is_empty() => {
+            let name = args.into_iter().next().unwrap();
+            Ok(Expr::UrlSearchParamsDelete {
+                params: Box::new(recv),
+                name: Box::new(name),
+            })
+        }
+        "toString" => Ok(Expr::UrlSearchParamsToString(Box::new(recv))),
+        "getAll" if !args.is_empty() => {
+            let name = args.into_iter().next().unwrap();
+            Ok(Expr::UrlSearchParamsGetAll {
+                params: Box::new(recv),
+                name: Box::new(name),
+            })
+        }
+        _ => Err(args),
+    }
+}
+
 pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Result<Expr> {
     // Check if any argument has spread
     let has_spread = call.args.iter().any(|arg| arg.spread.is_some());
@@ -2352,6 +2417,30 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                     }
                 }
 
+                // Chained `new URLSearchParams(init).<method>(args)` — without
+                // an intermediate let binding the typed-local arm below
+                // doesn't fire and `.toString()` falls through to
+                // Object.prototype.toString printing `"[object Object]"`.
+                // Refs #575.
+                if let ast::Expr::New(new_expr) = member.obj.as_ref() {
+                    if let ast::Expr::Ident(class_ident) = new_expr.callee.as_ref() {
+                        if class_ident.sym.as_ref() == "URLSearchParams" {
+                            if let ast::MemberProp::Ident(method_ident) = &member.prop {
+                                let method_name = method_ident.sym.as_ref();
+                                let recv = lower_expr(ctx, &member.obj)?;
+                                match build_url_search_params_method_call(
+                                    recv,
+                                    method_name,
+                                    args,
+                                ) {
+                                    Ok(expr) => return Ok(expr),
+                                    Err(returned_args) => args = returned_args,
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Check for Date instance method calls (date.getTime(), etc.)
                 if let ast::MemberProp::Ident(method_ident) = &member.prop {
                     let method_name = method_ident.sym.as_ref();
@@ -3375,77 +3464,13 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         .map(|ty| matches!(ty, Type::Named(name) if name == "URLSearchParams"))
                                         .unwrap_or(false);
                                 if is_url_search_params {
-                                    match method_name {
-                                        "get" => {
-                                            if !args.is_empty() {
-                                                return Ok(Expr::UrlSearchParamsGet {
-                                                    params: Box::new(Expr::LocalGet(array_id)),
-                                                    name: Box::new(
-                                                        args.into_iter().next().unwrap(),
-                                                    ),
-                                                });
-                                            }
-                                        }
-                                        "has" => {
-                                            if !args.is_empty() {
-                                                return Ok(Expr::UrlSearchParamsHas {
-                                                    params: Box::new(Expr::LocalGet(array_id)),
-                                                    name: Box::new(
-                                                        args.into_iter().next().unwrap(),
-                                                    ),
-                                                });
-                                            }
-                                        }
-                                        "set" => {
-                                            if args.len() >= 2 {
-                                                let mut args_iter = args.into_iter();
-                                                let name_arg = args_iter.next().unwrap();
-                                                let value_arg = args_iter.next().unwrap();
-                                                return Ok(Expr::UrlSearchParamsSet {
-                                                    params: Box::new(Expr::LocalGet(array_id)),
-                                                    name: Box::new(name_arg),
-                                                    value: Box::new(value_arg),
-                                                });
-                                            }
-                                        }
-                                        "append" => {
-                                            if args.len() >= 2 {
-                                                let mut args_iter = args.into_iter();
-                                                let name_arg = args_iter.next().unwrap();
-                                                let value_arg = args_iter.next().unwrap();
-                                                return Ok(Expr::UrlSearchParamsAppend {
-                                                    params: Box::new(Expr::LocalGet(array_id)),
-                                                    name: Box::new(name_arg),
-                                                    value: Box::new(value_arg),
-                                                });
-                                            }
-                                        }
-                                        "delete" => {
-                                            if !args.is_empty() {
-                                                return Ok(Expr::UrlSearchParamsDelete {
-                                                    params: Box::new(Expr::LocalGet(array_id)),
-                                                    name: Box::new(
-                                                        args.into_iter().next().unwrap(),
-                                                    ),
-                                                });
-                                            }
-                                        }
-                                        "toString" => {
-                                            return Ok(Expr::UrlSearchParamsToString(Box::new(
-                                                Expr::LocalGet(array_id),
-                                            )));
-                                        }
-                                        "getAll" => {
-                                            if !args.is_empty() {
-                                                return Ok(Expr::UrlSearchParamsGetAll {
-                                                    params: Box::new(Expr::LocalGet(array_id)),
-                                                    name: Box::new(
-                                                        args.into_iter().next().unwrap(),
-                                                    ),
-                                                });
-                                            }
-                                        }
-                                        _ => {}
+                                    match build_url_search_params_method_call(
+                                        Expr::LocalGet(array_id),
+                                        method_name,
+                                        args,
+                                    ) {
+                                        Ok(expr) => return Ok(expr),
+                                        Err(returned_args) => args = returned_args,
                                     }
                                 }
 
