@@ -756,6 +756,61 @@ pub extern "C" fn js_date_to_locale_time_string(timestamp: f64) -> *mut crate::S
     alloc_runtime_string(&s)
 }
 
+/// `(n).toLocaleString()` for numeric receivers (#600). Formats with
+/// thousands separators in en-US — `(12345).toLocaleString() === "12,345"`.
+/// The HIR lowers `n.toLocaleString()` on any receiver to
+/// `Expr::DateToLocaleString(n)` (the variant predates numeric
+/// support), so the LLVM codegen routes statically-Number receivers
+/// here and Date receivers to `js_date_to_locale_string` below. Decimal
+/// part follows JS spec: trailing zeros after the decimal stripped,
+/// leading sign preserved, NaN/Infinity passed through as the literal
+/// strings "NaN" / "Infinity" / "-Infinity".
+#[no_mangle]
+pub extern "C" fn js_number_to_locale_string(n: f64) -> *mut crate::StringHeader {
+    if n.is_nan() {
+        return alloc_runtime_string("NaN");
+    }
+    if n.is_infinite() {
+        return alloc_runtime_string(if n > 0.0 { "Infinity" } else { "-Infinity" });
+    }
+    let negative = n < 0.0;
+    let abs = n.abs();
+    // Split into integer and decimal parts. JS's default
+    // `Number.prototype.toLocaleString()` shows up to 3 fraction digits
+    // (Intl.NumberFormat default `maximumFractionDigits`), trailing
+    // zeros stripped.
+    let int_part = abs.trunc() as u64;
+    let frac = abs - abs.trunc();
+    // Format integer part with comma every 3 digits (en-US).
+    let int_str = int_part.to_string();
+    let mut grouped = String::new();
+    let bytes = int_str.as_bytes();
+    let len = bytes.len();
+    for (i, &b) in bytes.iter().enumerate() {
+        let from_end = len - i;
+        grouped.push(b as char);
+        if from_end > 1 && from_end % 3 == 1 {
+            grouped.push(',');
+        }
+    }
+    let mut out = if negative {
+        format!("-{}", grouped)
+    } else {
+        grouped
+    };
+    if frac != 0.0 {
+        // 3 fraction digits, trailing zeros stripped.
+        let frac_str = format!("{:.3}", frac);
+        // frac_str = "0.xxx" — keep "xxx", strip trailing zeros.
+        let frac_digits = frac_str.trim_start_matches("0.").trim_end_matches('0');
+        if !frac_digits.is_empty() {
+            out.push('.');
+            out.push_str(frac_digits);
+        }
+    }
+    alloc_runtime_string(&out)
+}
+
 /// date.toLocaleString() — combined date and time (local time).
 #[no_mangle]
 pub extern "C" fn js_date_to_locale_string(timestamp: f64) -> *mut crate::StringHeader {

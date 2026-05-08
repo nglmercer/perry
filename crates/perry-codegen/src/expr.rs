@@ -8463,6 +8463,87 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             let handle = blk.call(I64, "js_date_to_iso_string", &[(DOUBLE, &v)]);
             Ok(nanbox_string_inline(blk, &handle))
         }
+        // #600: `(12345).toLocaleString()` and `date.toLocaleString()`
+        // both lower to the misnamed `Expr::DateToLocaleString`. Route
+        // statically-Number receivers to `js_number_to_locale_string`
+        // (formats with thousands separators); everything else to
+        // `js_date_to_locale_string`. The LLVM backend had no arm at
+        // all pre-fix — Phase 2 raised
+        // "expression DateToLocaleString not yet supported". The
+        // fall-through path matches what the JS / WASM backends emit.
+        Expr::DateToLocaleString(d) => {
+            // Pick the runtime helper based on the receiver's static
+            // type. The HIR variant is misnamed — it covers BOTH
+            // `(12345).toLocaleString()` (number) and
+            // `new Date(...).toLocaleString()` (date) — so the LLVM
+            // arm has to disambiguate. `refine_type_from_init` returns
+            // a HirType for a small set of literal / built-in shapes;
+            // `Number` / `Integer` route to `js_number_to_locale_string`
+            // (formats with thousands separators). Anything else falls
+            // through to `js_date_to_locale_string`.
+            let v = lower_expr(ctx, d)?;
+            let inferred = crate::type_analysis::refine_type_from_init(ctx, d);
+            let rt_fn = match inferred {
+                Some(perry_types::Type::Number)
+                | Some(perry_types::Type::Int32) => "js_number_to_locale_string",
+                _ => "js_date_to_locale_string",
+            };
+            let blk = ctx.block();
+            let handle = blk.call(I64, rt_fn, &[(DOUBLE, &v)]);
+            Ok(nanbox_string_inline(blk, &handle))
+        }
+        // #600: `fetchWithAuth(url, "Bearer ...")` — perry's recognized
+        // built-in for authenticated GET. Dispatches to perry-stdlib's
+        // `js_fetch_get_with_auth(url_ptr, auth_header_ptr) -> *mut Promise`
+        // and NaN-boxes the returned promise pointer with POINTER_TAG.
+        // Both args are unboxed to raw `*const StringHeader`.
+        Expr::FetchGetWithAuth { url, auth_header } => {
+            let url_box = lower_expr(ctx, url)?;
+            let auth_box = lower_expr(ctx, auth_header)?;
+            let blk = ctx.block();
+            let url_ptr = blk.call(I64, "js_get_string_pointer_unified", &[(DOUBLE, &url_box)]);
+            let auth_ptr = blk.call(
+                I64,
+                "js_get_string_pointer_unified",
+                &[(DOUBLE, &auth_box)],
+            );
+            let promise = blk.call(
+                I64,
+                "js_fetch_get_with_auth",
+                &[(I64, &url_ptr), (I64, &auth_ptr)],
+            );
+            Ok(nanbox_pointer_inline(blk, &promise))
+        }
+        // #600: `fetchPostWithAuth(url, "Bearer ...", body)` — three-arg
+        // POST form. Body is pre-stringified by the caller (matches the
+        // existing perry-stdlib impl's signature).
+        Expr::FetchPostWithAuth {
+            url,
+            auth_header,
+            body,
+        } => {
+            let url_box = lower_expr(ctx, url)?;
+            let auth_box = lower_expr(ctx, auth_header)?;
+            let body_box = lower_expr(ctx, body)?;
+            let blk = ctx.block();
+            let url_ptr = blk.call(I64, "js_get_string_pointer_unified", &[(DOUBLE, &url_box)]);
+            let auth_ptr = blk.call(
+                I64,
+                "js_get_string_pointer_unified",
+                &[(DOUBLE, &auth_box)],
+            );
+            let body_ptr = blk.call(
+                I64,
+                "js_get_string_pointer_unified",
+                &[(DOUBLE, &body_box)],
+            );
+            let promise = blk.call(
+                I64,
+                "js_fetch_post_with_auth",
+                &[(I64, &url_ptr), (I64, &auth_ptr), (I64, &body_ptr)],
+            );
+            Ok(nanbox_pointer_inline(blk, &promise))
+        }
         Expr::DateParse(s) => {
             let s_box = lower_expr(ctx, s)?;
             let blk = ctx.block();

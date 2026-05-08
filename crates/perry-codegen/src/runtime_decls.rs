@@ -2103,6 +2103,11 @@ pub fn declare_stdlib_ffi(module: &mut LlModule) {
 
     // ========== Date ==========
     module.declare_function("js_date_to_locale_string", I64, &[DOUBLE]);
+    // #600: number-form `(n).toLocaleString()` — formats with
+    // thousands separators (en-US default). Routed by the
+    // `Expr::DateToLocaleString` LLVM arm when the receiver's static
+    // type narrows to `HirType::Number` / `HirType::Int32`.
+    module.declare_function("js_number_to_locale_string", I64, &[DOUBLE]);
 
     // ========== String ==========
     module.declare_function("js_string_split_regex", I64, &[I64, I64]);
