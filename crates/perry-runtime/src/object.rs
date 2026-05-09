@@ -2668,6 +2668,26 @@ pub extern "C" fn js_object_get_field_by_name(
             return JSValue::undefined();
         }
         let gc_type = (*gc_header).obj_type;
+        // Issue #618: closures have their own GC type (GC_TYPE_CLOSURE=4)
+        // distinct from GC_TYPE_OBJECT, but support dynamic-property storage
+        // via the `CLOSURE_DYNAMIC_PROPS` side-table. `js_object_set_field_by_name`
+        // routes writes there for the IIFE-namespace pattern
+        // (`((sql2) => { sql2.identifier = ...; })(sql)`); mirror the read
+        // path here so the companion get fires. Pre-fix the
+        // `gc_type != GC_TYPE_OBJECT` arm below would early-return undefined
+        // for any closure receiver, masking the dynamic-prop side-table.
+        if gc_type == crate::gc::GC_TYPE_CLOSURE {
+            if !key.is_null() {
+                let name_ptr = (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
+                let name_len = (*key).byte_len as usize;
+                let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
+                if let Ok(name_str) = std::str::from_utf8(name_bytes) {
+                    let val = crate::closure::closure_get_dynamic_prop(obj as usize, name_str);
+                    return JSValue::from_bits(val.to_bits());
+                }
+            }
+            return JSValue::undefined();
+        }
         // Error objects: route the common instance properties (message,
         // name, stack, cause) through the dedicated error accessors.
         // `js_object_get_field_by_name_f64` is the codegen's default
@@ -2832,13 +2852,6 @@ pub extern "C" fn js_object_get_field_by_name(
             }
         }
 
-        // Check for CLOSURE_MAGIC at offset 12 (closures may share GC_TYPE_OBJECT arena slot)
-        {
-            let type_tag_at_12 = *((obj as *const u8).add(12) as *const u32);
-            if type_tag_at_12 == crate::closure::CLOSURE_MAGIC {
-                return JSValue::undefined();
-            }
-        }
 
         let keys = (*obj).keys_array;
 
@@ -5387,6 +5400,32 @@ pub unsafe extern "C" fn js_native_call_method(
         let gc_header =
             (obj as *const u8).sub(crate::gc::GC_HEADER_SIZE) as *const crate::gc::GcHeader;
         let gc_type = (*gc_header).obj_type;
+
+        // Issue #618: closure receivers (GC_TYPE_CLOSURE=4 OR
+        // CLOSURE_MAGIC-marked GC_TYPE_OBJECT slot) — look up the method
+        // name in the closure's dynamic-prop side-table. If a callable
+        // closure is stored there (via the IIFE-namespace pattern
+        // `((sql2) => { sql2.identifier = ...; })(sql)`), dispatch
+        // through `js_native_call_value`. Pre-fix this path returned the
+        // NULL_OBJECT_BYTES stub for any method call on a closure, so
+        // the call result was an empty object stub instead of the
+        // dynamic-prop closure's return value.
+        let is_closure = gc_type == crate::gc::GC_TYPE_CLOSURE
+            || *((obj as *const u8).add(12) as *const u32) == crate::closure::CLOSURE_MAGIC;
+        if is_closure {
+            let dyn_val = crate::closure::closure_get_dynamic_prop(obj as usize, method_name);
+            if dyn_val.to_bits() != crate::value::TAG_UNDEFINED {
+                let recv_bits = jsval.bits();
+                let prev_this = IMPLICIT_THIS.with(|c| c.replace(recv_bits));
+                let result =
+                    crate::closure::js_native_call_value(dyn_val, args_ptr, args_len);
+                IMPLICIT_THIS.with(|c| c.set(prev_this));
+                return result;
+            }
+            let null_obj_ptr = &NULL_OBJECT_BYTES as *const NullObjectBytes as *mut u8;
+            return f64::from_bits(JSValue::pointer(null_obj_ptr).bits());
+        }
+
         if gc_type != crate::gc::GC_TYPE_OBJECT {
             // Only accept object_type == 1 (OBJECT_TYPE_REGULAR)
             let object_type = (*obj).object_type;
@@ -5397,13 +5436,6 @@ pub unsafe extern "C" fn js_native_call_method(
                 let null_obj_ptr = &NULL_OBJECT_BYTES as *const NullObjectBytes as *mut u8;
                 return f64::from_bits(JSValue::pointer(null_obj_ptr).bits());
             }
-        }
-
-        // Check for CLOSURE_MAGIC at offset 12 — closures have different layout
-        let type_tag_at_12 = *((obj as *const u8).add(12) as *const u32);
-        if type_tag_at_12 == crate::closure::CLOSURE_MAGIC {
-            let null_obj_ptr = &NULL_OBJECT_BYTES as *const NullObjectBytes as *mut u8;
-            return f64::from_bits(JSValue::pointer(null_obj_ptr).bits());
         }
 
         let keys = (*obj).keys_array;

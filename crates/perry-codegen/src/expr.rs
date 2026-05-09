@@ -3609,6 +3609,24 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             let gc_type_ok = ctx.block().icmp_eq(I8, &gc_type, "2");
             let is_object = ctx.block().and(I1, &is_real_ptr, &gc_type_ok);
 
+            // Issue #618: closures share GC_TYPE_OBJECT but their offset+16
+            // is a capture slot, not `keys_array`. The PIC's keys_val ==
+            // cached_keys check would spuriously hit (per-site cache global
+            // is zero-initialized; capture[0] of a 0-capture wrapper is also
+            // often zero) and the hit path would load garbage from the
+            // capture region. Detect CLOSURE_MAGIC at +12 and force the
+            // PIC to miss for closures so the read routes through
+            // `js_object_get_field_ic_miss` → `js_object_get_field_by_name`,
+            // which dispatches closure dynamic-prop reads via the
+            // `CLOSURE_DYNAMIC_PROPS` side-table.
+            let magic_addr = ctx.block().add(I64, &safe_obj_handle, "12");
+            let magic_ptr = ctx.block().inttoptr(I64, &magic_addr);
+            let magic_val = ctx.block().load(I32, &magic_ptr);
+            // CLOSURE_MAGIC = 0x434C4F53 (4 bytes "CLOS" little-endian).
+            let is_closure = ctx.block().icmp_eq(I32, &magic_val, "1129268819");
+            let not_closure = ctx.block().xor(I1, &is_closure, "true");
+            let is_object = ctx.block().and(I1, &is_object, &not_closure);
+
             // Load obj->keys_array at offset 16 of ObjectHeader.
             let keys_addr = ctx.block().add(I64, &safe_obj_handle, "16");
             let keys_ptr_p = ctx.block().inttoptr(I64, &keys_addr);
