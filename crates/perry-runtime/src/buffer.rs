@@ -674,7 +674,7 @@ pub extern "C" fn js_buffer_to_string_range(
                 let b64 = encode_base64(bytes);
                 js_string_from_bytes(b64.as_ptr(), b64.len() as u32)
             }
-            _ => js_string_from_bytes(data, slice_len as u32),
+            _ => buf_bytes_to_utf8_string(bytes),
         }
     }
 }
@@ -721,11 +721,28 @@ pub extern "C" fn js_buffer_to_string(
                 js_string_from_bytes(b64.as_ptr(), b64.len() as u32)
             }
             _ => {
-                // UTF-8 (default)
-                js_string_from_bytes(data, len as u32)
+                // UTF-8 (default) — Node spec: invalid UTF-8 sequences are
+                // replaced with U+FFFD. Pre-fix this path passed the raw
+                // bytes straight to `js_string_from_bytes`, whose downstream
+                // `compute_utf16_len` ran `str::from_utf8_unchecked`
+                // (UB on non-UTF-8) → SIGSEGV in the multi-byte counter on
+                // random binary buffers. Issue #609.
+                buf_bytes_to_utf8_string(bytes)
             }
         }
     }
+}
+
+/// Build a Perry string (validated UTF-8) from a buffer's raw bytes.
+/// Invalid UTF-8 sequences are replaced with U+FFFD per the WHATWG / Node
+/// `Buffer.toString('utf8')` contract. Issue #609.
+///
+/// `from_utf8_lossy` returns a borrowed `Cow::Borrowed` for valid UTF-8 input
+/// (no allocation), or an owned `Cow::Owned` for invalid input (one
+/// allocation that walks the bytes once).
+fn buf_bytes_to_utf8_string(bytes: &[u8]) -> *mut StringHeader {
+    let cow = String::from_utf8_lossy(bytes);
+    js_string_from_bytes(cow.as_ptr(), cow.len() as u32)
 }
 
 /// Universal `.toString(encoding?)` dispatch used by the LLVM backend's

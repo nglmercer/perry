@@ -70,6 +70,20 @@ pub struct StringHeader {
 // ── UTF-8 ↔ UTF-16 conversion helpers ──────────────────────────────────
 
 /// Count UTF-16 code units for a UTF-8 byte slice. Returns 0 for empty/null.
+///
+/// Defensive against invalid UTF-8 input: `str::from_utf8_unchecked` is UB on
+/// non-UTF-8 bytes and `.encode_utf16().count()` walking via `chars()` reads
+/// past the slice end, surfacing as a SIGSEGV in the multi-byte handler.
+/// Issue #609 hit this when `@perryts/mysql` fell through to
+/// `Buffer.from(String(buf), 'utf8')` for a random-bytes Buffer parameter
+/// — the load-bearing call chain was `Buffer.toString()` →
+/// `js_buffer_to_string` → `js_string_from_bytes` → here.
+///
+/// Caller paths that already validated UTF-8 (codegen string-literal init,
+/// JSON parser, `from_utf8`-fronted runtime helpers) hit the same fast path
+/// they did before. Untrusted callers that hand us raw Buffer bytes now
+/// fall back to a byte-walking WTF-8-shape counter that never reads past
+/// the slice end.
 #[inline]
 fn compute_utf16_len(data: *const u8, byte_len: u32) -> u32 {
     if data.is_null() || byte_len == 0 {
@@ -80,8 +94,10 @@ fn compute_utf16_len(data: *const u8, byte_len: u32) -> u32 {
     if bytes.iter().all(|&b| b < 0x80) {
         return byte_len;
     }
-    let s = unsafe { str::from_utf8_unchecked(bytes) };
-    s.encode_utf16().count() as u32
+    match str::from_utf8(bytes) {
+        Ok(s) => s.encode_utf16().count() as u32,
+        Err(_) => compute_utf16_len_wtf8(bytes),
+    }
 }
 
 /// Convert a UTF-16 code unit index to a UTF-8 byte offset.
