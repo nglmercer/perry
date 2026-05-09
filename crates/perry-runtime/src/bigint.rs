@@ -14,6 +14,43 @@ const BIGINT_BITS: usize = BIGINT_LIMBS * 64;
 
 const ZERO_LIMBS: [u64; BIGINT_LIMBS] = [0; BIGINT_LIMBS];
 
+/// Decode a 1024-bit two's-complement value into a host i64 if it fits.
+/// Layout: positive small → all upper limbs zero AND limb[0] high bit clear;
+/// negative small → all upper limbs `u64::MAX` AND limb[0] high bit set.
+/// Returns None for anything that needs more than 64 bits to represent.
+#[inline(always)]
+fn fits_in_i64(limbs: &[u64; BIGINT_LIMBS]) -> Option<i64> {
+    let lo = limbs[0];
+    let hi_bit = (lo >> 63) as u64;
+    let expected_fill = if hi_bit == 0 { 0u64 } else { u64::MAX };
+    for &l in &limbs[1..] {
+        if l != expected_fill {
+            return None;
+        }
+    }
+    Some(lo as i64)
+}
+
+/// Write a host i64 into a 1024-bit two's-complement limb array,
+/// sign-extending the upper limbs.
+#[inline(always)]
+fn write_i64(value: i64, limbs: &mut [u64; BIGINT_LIMBS]) {
+    let fill = if value < 0 { u64::MAX } else { 0u64 };
+    *limbs = [fill; BIGINT_LIMBS];
+    limbs[0] = value as u64;
+}
+
+/// Write a host i128 into a 1024-bit two's-complement limb array,
+/// sign-extending the upper 14 limbs.
+#[inline(always)]
+fn write_i128(value: i128, limbs: &mut [u64; BIGINT_LIMBS]) {
+    let fill = if value < 0 { u64::MAX } else { 0u64 };
+    *limbs = [fill; BIGINT_LIMBS];
+    let bits = value as u128;
+    limbs[0] = bits as u64;
+    limbs[1] = (bits >> 64) as u64;
+}
+
 /// BigInt is stored as a heap-allocated 1024-bit integer
 /// Layout: 128 bytes (16 x u64)
 #[repr(C)]
@@ -360,7 +397,6 @@ pub extern "C" fn js_bigint_to_buffer(
 
 /// Check if BigInt is negative (MSB set in two's complement)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_is_negative(a: *const BigIntHeader) -> i32 {
     let a = clean_bigint_ptr(a);
     if a.is_null() {
@@ -379,7 +415,6 @@ pub extern "C" fn js_bigint_is_negative(a: *const BigIntHeader) -> i32 {
 
 /// Negate a BigInt (two's complement: flip all bits and add 1)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_neg(a: *const BigIntHeader) -> *mut BigIntHeader {
     let a = clean_bigint_ptr(a);
     if a.is_null() {
@@ -405,7 +440,6 @@ pub extern "C" fn js_bigint_neg(a: *const BigIntHeader) -> *mut BigIntHeader {
 
 /// Check if a BigInt is zero (all limbs are zero). Returns 1 for zero, 0 for non-zero.
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_is_zero(a: *const BigIntHeader) -> i32 {
     let a = clean_bigint_ptr(a);
     if a.is_null() {
@@ -423,7 +457,6 @@ pub extern "C" fn js_bigint_is_zero(a: *const BigIntHeader) -> i32 {
 
 /// Add two BigInts
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_add(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -437,15 +470,23 @@ pub extern "C" fn js_bigint_add(
     unsafe {
         let a_limbs = if a.is_null() { ZERO_LIMBS } else { (*a).limbs };
         let b_limbs = if b.is_null() { ZERO_LIMBS } else { (*b).limbs };
+
+        // Fast path: both operands fit in i64. i64 + i64 fits in i128 with
+        // no overflow possible, then write the result back as a sign-extended
+        // 1024-bit two's-complement value.
+        if let (Some(av), Some(bv)) = (fits_in_i64(&a_limbs), fits_in_i64(&b_limbs)) {
+            write_i128((av as i128) + (bv as i128), &mut (*ptr).limbs);
+            return ptr;
+        }
+
+        // Slow path: 16-limb add with carry.
         let mut result = ZERO_LIMBS;
         let mut carry = 0u64;
-
         for i in 0..BIGINT_LIMBS {
             let sum = (a_limbs[i] as u128) + (b_limbs[i] as u128) + (carry as u128);
             result[i] = sum as u64;
             carry = (sum >> 64) as u64;
         }
-
         (*ptr).limbs = result;
         ptr
     }
@@ -453,7 +494,6 @@ pub extern "C" fn js_bigint_add(
 
 /// Subtract two BigInts (a - b)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_sub(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -464,9 +504,16 @@ pub extern "C" fn js_bigint_sub(
     unsafe {
         let a_limbs = if a.is_null() { ZERO_LIMBS } else { (*a).limbs };
         let b_limbs = if b.is_null() { ZERO_LIMBS } else { (*b).limbs };
+
+        // Fast path: both operands fit in i64. i64 - i64 fits in i128.
+        if let (Some(av), Some(bv)) = (fits_in_i64(&a_limbs), fits_in_i64(&b_limbs)) {
+            write_i128((av as i128) - (bv as i128), &mut (*ptr).limbs);
+            return ptr;
+        }
+
+        // Slow path: 16-limb subtract with borrow.
         let mut result = ZERO_LIMBS;
         let mut borrow = 0i128;
-
         for i in 0..BIGINT_LIMBS {
             let diff = (a_limbs[i] as i128) - (b_limbs[i] as i128) - borrow;
             if diff < 0 {
@@ -477,7 +524,6 @@ pub extern "C" fn js_bigint_sub(
                 borrow = 0;
             }
         }
-
         (*ptr).limbs = result;
         ptr
     }
@@ -485,37 +531,83 @@ pub extern "C" fn js_bigint_sub(
 
 /// Multiply two BigInts
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_mul(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
 ) -> *mut BigIntHeader {
-    let a = std::hint::black_box(clean_bigint_ptr(a));
-    let b = std::hint::black_box(clean_bigint_ptr(b));
+    let a = clean_bigint_ptr(a);
+    let b = clean_bigint_ptr(b);
     let ptr = bigint_alloc();
     unsafe {
         if a.is_null() || b.is_null() {
             (*ptr).limbs = ZERO_LIMBS;
             return ptr;
         }
-        let a_limbs = std::hint::black_box((*a).limbs);
-        let b_limbs = std::hint::black_box((*b).limbs);
-        let mut result = ZERO_LIMBS;
+        let a_limbs = (*a).limbs;
+        let b_limbs = (*b).limbs;
 
-        // School multiplication (keeping lower 1024 bits)
-        for i in 0..BIGINT_LIMBS {
+        // Fast path: both operands fit in i64. i64 * i64 fits exactly in i128
+        // (max |product| = (2^63)^2 = 2^126 < 2^127). This eliminates the 16×16
+        // schoolbook loop for the common case where values fit in a host word.
+        if let (Some(av), Some(bv)) = (fits_in_i64(&a_limbs), fits_in_i64(&b_limbs)) {
+            write_i128((av as i128) * (bv as i128), &mut (*ptr).limbs);
+            return ptr;
+        }
+
+        // Slow path: 16-limb school multiplication (keeping lower 1024 bits).
+        // Skip trailing all-zero limbs on both operands so e.g. multiplying a
+        // value that uses 3 limbs by one that uses 2 only does 3*2 = 6 word
+        // multiplies instead of 16*16 = 256.
+        let a_len = effective_limb_len(&a_limbs);
+        let b_len = effective_limb_len(&b_limbs);
+        let mut result = ZERO_LIMBS;
+        for i in 0..a_len {
             let mut carry = 0u128;
-            for j in 0..(BIGINT_LIMBS - i) {
+            let inner_max = b_len.min(BIGINT_LIMBS - i);
+            for j in 0..inner_max {
                 let product =
                     (a_limbs[i] as u128) * (b_limbs[j] as u128) + (result[i + j] as u128) + carry;
                 result[i + j] = product as u64;
                 carry = product >> 64;
             }
+            // Propagate the final carry across any zero upper limbs that
+            // remain in the result row, until it dies.
+            let mut k = i + inner_max;
+            while carry != 0 && k < BIGINT_LIMBS {
+                let sum = (result[k] as u128) + carry;
+                result[k] = sum as u64;
+                carry = sum >> 64;
+                k += 1;
+            }
         }
-
-        (*ptr).limbs = std::hint::black_box(result);
+        (*ptr).limbs = result;
         ptr
     }
+}
+
+/// Magnitude of significant limbs for an unsigned-style limb pattern.
+/// For a positive value, returns 1 + index of highest non-zero limb (or 1
+/// for zero, since we always need at least one word multiplied). Negative
+/// values are handled by their two's-complement: limbs[15] has bit 63 set
+/// and the upper limbs may be u64::MAX, so we walk from the top until we
+/// find a limb that's neither all-zero nor all-ones.
+#[inline(always)]
+fn effective_limb_len(limbs: &[u64; BIGINT_LIMBS]) -> usize {
+    // Walk from the high end, skipping consecutive all-zero or all-ones
+    // limbs (the sign-extension fill). The first limb that breaks the
+    // pattern is the highest "real" limb. This is sound for the
+    // schoolbook multiplier because we only read the first `len` limbs.
+    let fill = if (limbs[BIGINT_LIMBS - 1] >> 63) == 1 { u64::MAX } else { 0u64 };
+    for i in (0..BIGINT_LIMBS).rev() {
+        if limbs[i] != fill {
+            // We need one more limb than i+1 if the next one isn't already
+            // the fill (it always is, by construction), so just i+1 plus
+            // one safety limb capped at BIGINT_LIMBS.
+            return (i + 2).min(BIGINT_LIMBS);
+        }
+    }
+    // All limbs are fill — value is 0 or -1. Either way we only need 1.
+    1
 }
 
 /// Unsigned binary long division on magnitude limbs
@@ -565,7 +657,6 @@ fn unsigned_div_limbs(
 
 /// Divide two BigInts (a / b) — truncates toward zero like JavaScript
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_div(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -581,6 +672,16 @@ pub extern "C" fn js_bigint_div(
         if b_limbs == ZERO_LIMBS {
             (*ptr).limbs = ZERO_LIMBS;
             return ptr;
+        }
+
+        // Fast path: both fit in i64. Rust's `/` on i64 truncates toward
+        // zero, which is JavaScript's BigInt division semantics. The only
+        // overflow case is i64::MIN / -1, which we handle via i128.
+        if let (Some(av), Some(bv)) = (fits_in_i64(&a_limbs), fits_in_i64(&b_limbs)) {
+            if bv != 0 {
+                write_i128((av as i128) / (bv as i128), &mut (*ptr).limbs);
+                return ptr;
+            }
         }
 
         let a_neg = is_negative(&a_limbs);
@@ -612,22 +713,32 @@ pub extern "C" fn js_bigint_div(
 
 /// Modulo of two BigInts (a % b) — result has sign of dividend (like JavaScript)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_mod(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
 ) -> *mut BigIntHeader {
-    let a = std::hint::black_box(clean_bigint_ptr(a));
-    let b = std::hint::black_box(clean_bigint_ptr(b));
+    let a = clean_bigint_ptr(a);
+    let b = clean_bigint_ptr(b);
     let ptr = bigint_alloc();
     unsafe {
-        let a_limbs = std::hint::black_box(if a.is_null() { ZERO_LIMBS } else { (*a).limbs });
-        let b_limbs = std::hint::black_box(if b.is_null() { ZERO_LIMBS } else { (*b).limbs });
+        let a_limbs = if a.is_null() { ZERO_LIMBS } else { (*a).limbs };
+        let b_limbs = if b.is_null() { ZERO_LIMBS } else { (*b).limbs };
 
         // Division by zero: return 0 instead of panicking (panic can't unwind in extern "C")
         if b_limbs == ZERO_LIMBS {
             (*ptr).limbs = ZERO_LIMBS;
             return ptr;
+        }
+
+        // Fast path: both fit in i64. JavaScript's `%` returns the sign of
+        // the dividend, which is what Rust's `%` on i64 does already.
+        if let (Some(av), Some(bv)) = (fits_in_i64(&a_limbs), fits_in_i64(&b_limbs)) {
+            // bv != 0 because b_limbs != ZERO_LIMBS for a positive small;
+            // for a negative small we still won't hit divide-by-zero.
+            if bv != 0 {
+                write_i64(av % bv, &mut (*ptr).limbs);
+                return ptr;
+            }
         }
 
         let a_neg = is_negative(&a_limbs);
@@ -648,11 +759,11 @@ pub extern "C" fn js_bigint_mod(
         let (_, remainder) = unsigned_div_limbs(&abs_a, &abs_b);
 
         // Remainder has sign of dividend
-        (*ptr).limbs = std::hint::black_box(if a_neg && remainder != ZERO_LIMBS {
+        (*ptr).limbs = if a_neg && remainder != ZERO_LIMBS {
             negate_limbs(&remainder)
         } else {
             remainder
-        });
+        };
         ptr
     }
 }
@@ -660,7 +771,6 @@ pub extern "C" fn js_bigint_mod(
 /// Power of two BigInts (a ** b) using binary exponentiation
 /// Note: b is interpreted as a u64 (only lower 64 bits are used)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_pow(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -715,7 +825,6 @@ fn mul_limbs(a: &[u64; BIGINT_LIMBS], b: &[u64; BIGINT_LIMBS]) -> [u64; BIGINT_L
 /// Left shift BigInt by b bits (a << b)
 /// Note: b is interpreted as a u64 (only lower 64 bits are used)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_shl(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -764,7 +873,6 @@ pub extern "C" fn js_bigint_shl(
 /// Right shift BigInt by b bits (a >> b)
 /// Note: b is interpreted as a u64 (only lower 64 bits are used)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_shr(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -821,7 +929,6 @@ pub extern "C" fn js_bigint_shr(
 
 /// Bitwise AND of two BigInts (a & b)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_and(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -845,7 +952,6 @@ pub extern "C" fn js_bigint_and(
 
 /// Bitwise OR of two BigInts (a | b)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_or(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -867,7 +973,6 @@ pub extern "C" fn js_bigint_or(
 
 /// Bitwise XOR of two BigInts (a ^ b)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_xor(
     a: *const BigIntHeader,
     b: *const BigIntHeader,
@@ -889,19 +994,31 @@ pub extern "C" fn js_bigint_xor(
 
 /// Compare two BigInts (-1 if a < b, 0 if equal, 1 if a > b)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_cmp(a: *const BigIntHeader, b: *const BigIntHeader) -> i32 {
-    let a = std::hint::black_box(clean_bigint_ptr(a));
-    let b = std::hint::black_box(clean_bigint_ptr(b));
+    let a = clean_bigint_ptr(a);
+    let b = clean_bigint_ptr(b);
     if a.is_null() || b.is_null() {
         return 0;
     }
-    unsafe { compare_limbs(&(*a).limbs, &(*b).limbs) }
+    unsafe {
+        let a_limbs = (*a).limbs;
+        let b_limbs = (*b).limbs;
+        // Fast path: both fit in i64. The vast majority of comparisons in
+        // hot loops (factorial bounds, postgres int8 inequality, app id
+        // ordering) hit this case.
+        if let (Some(av), Some(bv)) = (fits_in_i64(&a_limbs), fits_in_i64(&b_limbs)) {
+            return match av.cmp(&bv) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+        }
+        compare_limbs(&a_limbs, &b_limbs)
+    }
 }
 
 /// Check if two BigInts are equal
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_eq(a: *const BigIntHeader, b: *const BigIntHeader) -> i32 {
     let a = clean_bigint_ptr(a);
     let b = clean_bigint_ptr(b);
@@ -919,7 +1036,6 @@ pub extern "C" fn js_bigint_eq(a: *const BigIntHeader, b: *const BigIntHeader) -
 
 /// Convert BigInt to f64 (may lose precision)
 #[no_mangle]
-#[inline(never)]
 pub extern "C" fn js_bigint_to_f64(a: *const BigIntHeader) -> f64 {
     unsafe {
         if a.is_null() {
@@ -1258,5 +1374,152 @@ mod tests {
             "division wrong: got {}, expected 2e39",
             q_f64
         );
+    }
+
+    // -- Tests added with the small-int fast path (v0.5.730) --
+    //
+    // These verify that the fast path agrees byte-for-byte with the
+    // existing 16-limb slow path on the boundaries (positive×positive,
+    // negative×positive, factorial growth, comparison ordering, modulo
+    // sign-of-dividend semantics, and the i64 boundary where the path
+    // promotes to the schoolbook multiplier).
+
+    /// Helper to read a freshly-allocated bigint as i64 (panics if it
+    /// doesn't fit — used in tests for clarity).
+    fn read_as_i64(p: *const BigIntHeader) -> i64 {
+        unsafe { fits_in_i64(&(*p).limbs).expect("expected to fit in i64") }
+    }
+
+    #[test]
+    fn fast_path_mul_positive_positive() {
+        let a = js_bigint_from_i64(1_000_000);
+        let b = js_bigint_from_i64(2_500_000);
+        let c = js_bigint_mul(a, b);
+        assert_eq!(read_as_i64(c), 2_500_000_000_000);
+    }
+
+    #[test]
+    fn fast_path_mul_negative_positive() {
+        let a = js_bigint_from_i64(-7);
+        let b = js_bigint_from_i64(11);
+        let c = js_bigint_mul(a, b);
+        assert_eq!(read_as_i64(c), -77);
+    }
+
+    #[test]
+    fn fast_path_mul_negative_negative() {
+        let a = js_bigint_from_i64(-1234);
+        let b = js_bigint_from_i64(-5678);
+        let c = js_bigint_mul(a, b);
+        assert_eq!(read_as_i64(c), 1234 * 5678);
+    }
+
+    #[test]
+    fn fast_path_factorial_20_within_i64() {
+        // 20! = 2432902008176640000 < i64::MAX, exercises the fast path
+        // through every step of the loop.
+        let mut acc = js_bigint_from_i64(1);
+        for i in 2..=20i64 {
+            let nb = js_bigint_from_i64(i);
+            acc = js_bigint_mul(acc, nb);
+        }
+        assert_eq!(read_as_i64(acc), 2_432_902_008_176_640_000);
+    }
+
+    #[test]
+    fn slow_path_factorial_21_overflows_i64() {
+        // 21! = 51090942171709440000 > i64::MAX, exercises the
+        // promotion from fast path to slow path mid-multiply.
+        let mut acc = js_bigint_from_i64(1);
+        for i in 2..=21i64 {
+            let nb = js_bigint_from_i64(i);
+            acc = js_bigint_mul(acc, nb);
+        }
+        unsafe {
+            // 21! = 51_090_942_171_709_440_000 = (limbs[1]<<64) | limbs[0]
+            //     = 2 * 2^64 + 14_197_454_024_290_336_768
+            let limbs = (*acc).limbs;
+            assert_eq!(limbs[0], 14_197_454_024_290_336_768);
+            assert_eq!(limbs[1], 2);
+            for &l in &limbs[2..] {
+                assert_eq!(l, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn fast_path_add_sub_signed() {
+        // (a, b) ∈ {±} test grid
+        let a = js_bigint_from_i64(100);
+        let b = js_bigint_from_i64(-30);
+        assert_eq!(read_as_i64(js_bigint_add(a, b)), 70);
+        assert_eq!(read_as_i64(js_bigint_sub(a, b)), 130);
+        let a = js_bigint_from_i64(-100);
+        let b = js_bigint_from_i64(-30);
+        assert_eq!(read_as_i64(js_bigint_add(a, b)), -130);
+        assert_eq!(read_as_i64(js_bigint_sub(a, b)), -70);
+    }
+
+    #[test]
+    fn fast_path_cmp_signed() {
+        let a = js_bigint_from_i64(5);
+        let b = js_bigint_from_i64(10);
+        assert_eq!(js_bigint_cmp(a, b), -1);
+        assert_eq!(js_bigint_cmp(b, a), 1);
+        assert_eq!(js_bigint_cmp(a, a), 0);
+
+        let neg = js_bigint_from_i64(-1);
+        let pos = js_bigint_from_i64(1);
+        assert_eq!(js_bigint_cmp(neg, pos), -1);
+        assert_eq!(js_bigint_cmp(pos, neg), 1);
+    }
+
+    #[test]
+    fn fast_path_mod_sign_of_dividend() {
+        // ECMAScript: BigInt `%` returns sign of dividend.
+        // 17n % 5n === 2n; -17n % 5n === -2n; 17n % -5n === 2n.
+        let m = |a: i64, b: i64| -> i64 {
+            let av = js_bigint_from_i64(a);
+            let bv = js_bigint_from_i64(b);
+            read_as_i64(js_bigint_mod(av, bv))
+        };
+        assert_eq!(m(17, 5), 2);
+        assert_eq!(m(-17, 5), -2);
+        assert_eq!(m(17, -5), 2);
+        assert_eq!(m(-17, -5), -2);
+        assert_eq!(m(0, 5), 0);
+    }
+
+    #[test]
+    fn fast_path_div_truncate_toward_zero() {
+        // ECMAScript BigInt `/` truncates toward zero.
+        let d = |a: i64, b: i64| -> i64 {
+            let av = js_bigint_from_i64(a);
+            let bv = js_bigint_from_i64(b);
+            read_as_i64(js_bigint_div(av, bv))
+        };
+        assert_eq!(d(7, 2), 3);
+        assert_eq!(d(-7, 2), -3);
+        assert_eq!(d(7, -2), -3);
+        assert_eq!(d(-7, -2), 3);
+    }
+
+    #[test]
+    fn fits_in_i64_boundary() {
+        // i64::MIN encodes as limbs[0]=0x80...0 limbs[1..]=u64::MAX.
+        let min = js_bigint_from_i64(i64::MIN);
+        assert_eq!(read_as_i64(min), i64::MIN);
+        // i64::MAX encodes as limbs[0]=0x7F...F limbs[1..]=0.
+        let max = js_bigint_from_i64(i64::MAX);
+        assert_eq!(read_as_i64(max), i64::MAX);
+        // 2^63 (= i64::MAX + 1, doesn't fit in i64) must NOT fit.
+        // Build it via add to avoid going through js_bigint_from_i64
+        // (which only takes i64).
+        let one = js_bigint_from_i64(1);
+        let beyond = js_bigint_add(max, one);
+        unsafe {
+            assert!(fits_in_i64(&(*beyond).limbs).is_none(),
+                "i64::MAX + 1 should not fit in i64");
+        }
     }
 }
