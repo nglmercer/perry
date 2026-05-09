@@ -85,6 +85,12 @@ pub fn declare_phase_a_strings(module: &mut LlModule) {
 /// result with `js_nanbox_string`.
 pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_string_concat", I64, &[I64, I64]);
+    // SSO-aware concat: NaN-boxed f64 in, NaN-boxed f64 out. Avoids
+    // the `js_get_string_pointer_unified`-driven SSO materialization
+    // that the legacy `js_string_concat` ABI forced on every concat
+    // with at least one SSO operand. For the SSO+SSO=SSO sub-case
+    // also avoids the result heap allocation.
+    module.declare_function("js_string_concat_box", DOUBLE, &[DOUBLE, DOUBLE]);
     // Dynamic string coercion: takes any NaN-boxed JSValue and returns a
     // raw string handle (`crates/perry-runtime/src/value.rs:813`).
     module.declare_function("js_jsvalue_to_string", I64, &[DOUBLE]);
@@ -634,6 +640,9 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_dynamic_shl", DOUBLE, &[DOUBLE, DOUBLE]);
     module.declare_function("js_dynamic_shr", DOUBLE, &[DOUBLE, DOUBLE]);
     module.declare_function("js_instanceof", DOUBLE, &[DOUBLE, I32]);
+    // v0.5.749: dynamic instanceof — `value instanceof type` where type
+    // is a runtime expression (function arg holding class ref).
+    module.declare_function("js_instanceof_dynamic", DOUBLE, &[DOUBLE, DOUBLE]);
     module.declare_function("js_register_class_extends_error", VOID, &[I32]);
     module.declare_function("js_register_class_id", VOID, &[I32]);
     // Inline-allocator class registration: emitted once per class

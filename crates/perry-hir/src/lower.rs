@@ -7107,7 +7107,29 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
                         "Object".to_string()
                     }
                 };
-                return Ok(Expr::InstanceOf { expr, ty });
+                // v0.5.749: when the right side resolves to a local
+                // variable holding a class ref (e.g. `function is(value,
+                // type) { return value instanceof type; }`), emit a
+                // dynamic-dispatch path that evaluates the class ref at
+                // runtime. Without this, the codegen sees `ty = "type"`
+                // (the param name), can't resolve it as a class, and
+                // falls through to `class_id = 0` — every dynamic
+                // instanceof returns false. Drizzle's `is(value, type)`
+                // chain depends on this. Refs #420 / #618 followup.
+                let ty_expr = if let ast::Expr::Ident(ident) = bin.right.as_ref() {
+                    let name = ident.sym.as_ref();
+                    if ctx.lookup_local(name).is_some() {
+                        match lower_expr(ctx, &bin.right) {
+                            Ok(e) => Some(Box::new(e)),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                return Ok(Expr::InstanceOf { expr, ty, ty_expr });
             }
 
             let left = Box::new(lower_expr(ctx, &bin.left)?);

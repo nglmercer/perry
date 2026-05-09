@@ -132,7 +132,6 @@ where
         | Expr::Await(v)
         | Expr::Delete(v)
         | Expr::Unary { operand: v, .. }
-        | Expr::InstanceOf { expr: v, .. }
         | Expr::PropertyGet { object: v, .. }
         | Expr::PropertyUpdate { object: v, .. }
         | Expr::StaticFieldSet { value: v, .. }
@@ -317,6 +316,18 @@ where
         | Expr::ArrayFlat { array: v }
         | Expr::ArrayToReversed { array: v } => {
             f(v);
+        }
+
+        // v0.5.749: InstanceOf has TWO Expr children (expr + optional
+        // ty_expr) so callers like the inliner / closure-conversion /
+        // monomorph substitution see both. Without this, ty_expr was
+        // invisible to the walker and dynamic-instanceof through inlined
+        // function args returned false.
+        Expr::InstanceOf { expr, ty_expr, .. } => {
+            f(expr);
+            if let Some(t) = ty_expr {
+                f(t);
+            }
         }
 
         // ─── Web Crypto (issue #561) ──────────────────────────────────────
@@ -1256,7 +1267,6 @@ where
         | Expr::Await(v)
         | Expr::Delete(v)
         | Expr::Unary { operand: v, .. }
-        | Expr::InstanceOf { expr: v, .. }
         | Expr::PropertyGet { object: v, .. }
         | Expr::PropertyUpdate { object: v, .. }
         | Expr::StaticFieldSet { value: v, .. }
@@ -1441,6 +1451,18 @@ where
         | Expr::ArrayFlat { array: v }
         | Expr::ArrayToReversed { array: v } => {
             f(v);
+        }
+
+        // v0.5.749: InstanceOf has TWO Expr children (expr + optional
+        // ty_expr) so callers like the inliner / closure-conversion /
+        // monomorph substitution see both. Without this, ty_expr was
+        // invisible to the walker and dynamic-instanceof through inlined
+        // function args returned false.
+        Expr::InstanceOf { expr, ty_expr, .. } => {
+            f(expr);
+            if let Some(t) = ty_expr {
+                f(t);
+            }
         }
 
         // ─── Web Crypto (issue #561) ──────────────────────────────────────

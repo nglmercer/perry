@@ -1098,7 +1098,7 @@ impl JsEmitter {
                 self.output.push_str("void ");
                 self.emit_expr(operand);
             }
-            Expr::InstanceOf { expr, ty } => {
+            Expr::InstanceOf { expr, ty, .. } => {
                 self.output.push('(');
                 self.emit_expr(expr);
                 let _ = write!(self.output, " instanceof {})", ty);

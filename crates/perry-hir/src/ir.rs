@@ -908,6 +908,13 @@ pub enum Expr {
     InstanceOf {
         expr: Box<Expr>,
         ty: String,
+        /// Dynamic type expression — populated when `ty` is a runtime
+        /// value (e.g. a function arg or a local holding a class ref)
+        /// rather than a known compile-time class name. Codegen evaluates
+        /// this expression and dispatches through `js_instanceof_dynamic`,
+        /// which extracts the class_id from the INT32 NaN-tag at runtime.
+        /// Refs #420 / #618 followup.
+        ty_expr: Option<Box<Expr>>,
     },
     /// The 'in' operator: checks if property exists in object
     /// e.g., "prop" in obj or key in obj

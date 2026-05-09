@@ -2873,7 +2873,7 @@ impl WasmModuleEmitter {
                     args_js.join(", ")
                 )
             }
-            Expr::InstanceOf { expr, ty } => {
+            Expr::InstanceOf { expr, ty, .. } => {
                 let e = self.emit_js_expr(expr, locals);
                 // Use the bridge instanceof check
                 format!(
@@ -3462,7 +3462,7 @@ impl WasmModuleEmitter {
                     self.collect_strings_in_expr(a);
                 }
             }
-            Expr::InstanceOf { expr, ty } => {
+            Expr::InstanceOf { expr, ty, .. } => {
                 self.collect_strings_in_expr(expr);
                 self.intern_string(ty);
             }
@@ -7651,7 +7651,7 @@ impl<'a> FuncEmitCtx<'a> {
             }
 
             // --- InstanceOf ---
-            Expr::InstanceOf { expr, ty } => {
+            Expr::InstanceOf { expr, ty, .. } => {
                 self.emit_expr(func, expr);
                 let type_id = self
                     .emitter

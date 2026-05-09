@@ -4157,6 +4157,26 @@ pub extern "C" fn js_object_rest(
     }
 }
 
+/// v0.5.749: dynamic instanceof — `value instanceof type` where the
+/// type is a runtime value (function arg holding a class ref). Extracts
+/// the class_id from the INT32 NaN-tag (top16=0x7FFE) and dispatches to
+/// `js_instanceof`. Returns FALSE for non-class-ref type values (matches
+/// JS spec: `1 instanceof 2` throws, but Perry returns false defensively).
+/// Refs #420 / #618 followup.
+#[no_mangle]
+pub extern "C" fn js_instanceof_dynamic(value: f64, type_ref: f64) -> f64 {
+    const TAG_FALSE: u64 = 0x7FFC_0000_0000_0003;
+    let bits = type_ref.to_bits();
+    let top16 = bits >> 48;
+    if top16 == 0x7FFE {
+        let class_id = (bits & 0xFFFF_FFFF) as u32;
+        if class_id != 0 {
+            return js_instanceof(value, class_id);
+        }
+    }
+    f64::from_bits(TAG_FALSE)
+}
+
 /// Check if a value is an instance of a class with the given class_id
 /// Walks the inheritance chain to check parent classes
 /// Returns NaN-boxed TAG_TRUE / TAG_FALSE so the result identifies as a boolean.

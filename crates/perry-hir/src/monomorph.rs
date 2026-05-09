@@ -1125,9 +1125,12 @@ fn substitute_expr(expr: &Expr, substitutions: &HashMap<String, Type>) -> Expr {
                 .map(|v| Box::new(substitute_expr(v, substitutions))),
             delegate: *delegate,
         },
-        Expr::InstanceOf { expr, ty } => Expr::InstanceOf {
+        Expr::InstanceOf { expr, ty, ty_expr } => Expr::InstanceOf {
             expr: Box::new(substitute_expr(expr, substitutions)),
             ty: ty.clone(),
+            ty_expr: ty_expr
+                .as_ref()
+                .map(|e| Box::new(substitute_expr(e, substitutions))),
         },
 
         // Await

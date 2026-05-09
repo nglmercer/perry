@@ -5836,8 +5836,21 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         // runtime walks the object's class chain and returns a
         // NaN-tagged TAG_TRUE/TAG_FALSE double directly — no
         // conversion needed.
-        Expr::InstanceOf { expr: e, ty } => {
+        Expr::InstanceOf { expr: e, ty, ty_expr } => {
             let v = lower_expr(ctx, e)?;
+            // v0.5.749: dynamic dispatch when the type is a runtime
+            // expression (function arg, local holding a class ref).
+            // The runtime helper `js_instanceof_dynamic` extracts the
+            // class_id from the INT32 NaN-tag and walks the chain.
+            // Refs #420 / #618 followup.
+            if let Some(ty_e) = ty_expr {
+                let ty_v = lower_expr(ctx, ty_e)?;
+                return Ok(ctx.block().call(
+                    DOUBLE,
+                    "js_instanceof_dynamic",
+                    &[(DOUBLE, &v), (DOUBLE, &ty_v)],
+                ));
+            }
             // Built-in Error subclasses have reserved CLASS_ID_* constants
             // in the runtime (see crates/perry-runtime/src/error.rs). Map
             // them by name here so `e instanceof TypeError` works even
