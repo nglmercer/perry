@@ -2975,6 +2975,31 @@ pub extern "C" fn js_object_get_field_by_name(
             }
         }
 
+        // Refs #420 / #618 followup: `instance.constructor` returns the
+        // class ref. Pre-fix this fell through to the keys_array lookup
+        // which never finds "constructor" (the class itself isn't stored
+        // as a field on the instance), and the chain returned undefined.
+        // Drizzle's `is(value, type)` walks `value.constructor[entityKind]`
+        // which depends on this. Spec: every instance's `__proto__.constructor`
+        // points back to the class function. We materialize that lookup
+        // by reading the ObjectHeader's class_id and returning the
+        // INT32-tagged class ref if registered. Unregistered class_id
+        // (e.g. `class C {}` with no methods) still returns undefined
+        // here; pure object literals have class_id=0 and also return
+        // undefined (matches Node behavior — bare object literals don't
+        // get a custom constructor; their .constructor would be Object).
+        if !key.is_null() {
+            let key_ptr = (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
+            let key_len = (*key).byte_len as usize;
+            let key_bytes = std::slice::from_raw_parts(key_ptr, key_len);
+            if key_bytes == b"constructor" {
+                let class_id = (*obj).class_id;
+                if class_id != 0 && is_class_id_registered(class_id) {
+                    let bits = 0x7FFE_0000_0000_0000u64 | (class_id as u64);
+                    return JSValue::from_bits(bits);
+                }
+            }
+        }
 
         let keys = (*obj).keys_array;
 
