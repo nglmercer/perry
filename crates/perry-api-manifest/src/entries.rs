@@ -346,6 +346,12 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("ioredis", "decr", true, None),
     method("ioredis", "expire", true, None),
     method("ioredis", "quit", true, None),
+    // v0.5.707 closes-#605: NATIVE_MODULE_TABLE added connect/disconnect rows
+    // when normalizing the `redis` npm package alias to ioredis dispatch.
+    // Manifest must mirror or `every_dispatch_entry_has_manifest_counterpart`
+    // fails the workspace test build.
+    method("ioredis", "connect", true, None),
+    method("ioredis", "disconnect", true, None),
     method_sig(
         "mongodb",
         "connect",

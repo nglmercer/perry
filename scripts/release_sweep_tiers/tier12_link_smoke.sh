@@ -117,17 +117,26 @@ for entry in "${TARGETS[@]}"; do
         echo "$compile_log" | tail -12 | sed 's/^/    /'
     } >> "$LOG"
 
-    # Did it produce an artifact? Either as a plain file or as <name>.app/.
+    # Did it produce an artifact?
+    #   - plain executable at $artifact (host, macos targets)
+    #   - <name>.app bundle at $artifact.app (older convention)
+    #   - $TIER_DIR/artifact.app — perry's iOS / tvOS / visionOS / watchOS app-bundle
+    #     paths IGNORE the -o suffix and write to a hardcoded `artifact.app`
+    #     in the output directory. Without this branch, the Apple device /
+    #     simulator targets all reported FAIL even when their link succeeded.
     if [[ "$rc" -eq 0 ]] && {
             [[ -f "$artifact" && -s "$artifact" ]] ||
             [[ -d "$artifact.app" ]] ||
+            [[ -d "$TIER_DIR/artifact.app" && -n "$(ls -A "$TIER_DIR/artifact.app" 2>/dev/null)" ]] ||
             [[ -d "$artifact" && -n "$(ls -A "$artifact" 2>/dev/null)" ]]
         }; then
         echo "  PASS (artifact present)" >> "$LOG"
         passed+=1
         passed_targets+=("$target")
-        # Best-effort cleanup: artifacts are large, especially .app bundles
-        rm -rf "$artifact" "$artifact.app"
+        # Best-effort cleanup: artifacts are large, especially .app bundles.
+        # Remove BOTH the suffix-named path and the hardcoded artifact.app
+        # so the next target's check doesn't accidentally see a stale bundle.
+        rm -rf "$artifact" "$artifact.app" "$TIER_DIR/artifact.app"
     else
         # Classify: missing-prerequisite vs perry regression.
         #   - "Could not find libperry_runtime.a" → tier 0 (build_matrix)
@@ -142,6 +151,15 @@ for entry in "${TARGETS[@]}"; do
             echo "  hint: cargo build --release -p perry-runtime -p perry-stdlib --target <triple>" >> "$LOG"
             skipped+=1
             skipped_targets+=("$target reason=runtime-not-prebuilt")
+        elif echo "$compile_log" | grep -qE 'libperry_ui_[a-z0-9_]+\.a not found' 2>/dev/null; then
+            # watchOS / Android force-link the per-target UI staticlib regardless
+            # of whether the user's TS imports perry/ui — see the v0.5.707 #607
+            # fix. That's a precondition (UI lib must be pre-built per target),
+            # not a perry regression on link smoke.
+            echo "  SKIP (per-target UI staticlib not pre-built)" >> "$LOG"
+            echo "  hint: cargo build --release -p perry-ui-<platform> --target <triple>" >> "$LOG"
+            skipped+=1
+            skipped_targets+=("$target reason=ui-staticlib-not-prebuilt")
         elif echo "$compile_log" | grep -qE 'command not found|No such file or directory.*(clang|ld|gcc|ar)|cannot find -l|library not found for' 2>/dev/null; then
             echo "  SKIP (toolchain hole not caught by precondition)" >> "$LOG"
             echo "  hint: tighten precondition for '$target' in tier12_link_smoke.sh" >> "$LOG"
