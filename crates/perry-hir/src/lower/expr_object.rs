@@ -88,11 +88,25 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
                         bail = true;
                         break;
                     }
-                    let (value, ty) = if let Some(func_id) = ctx.lookup_func(&name) {
-                        (Expr::FuncRef(func_id), Type::Any)
-                    } else if let Some(local_id) = ctx.lookup_local(&name) {
+                    // Issue #624: prefer LocalGet over FuncRef when both resolve.
+                    // A function declaration inside a closure (e.g. an IIFE)
+                    // is registered both as a function (functions_index) AND
+                    // as a local Let (because the function body lowers to a
+                    // Closure assigned to a let-bound name). The FuncRef path
+                    // assumes the function id is a top-level user function
+                    // (one with a `__perry_wrap_<name>` wrapper emitted in
+                    // codegen.rs); inner closures don't get a wrapper, so the
+                    // FuncRef-as-value singleton-alloc resolves to the
+                    // `__perry_wrap_perry_unknown_func` fallback (returns
+                    // TAG_UNDEFINED on every call). LocalGet of the let-bound
+                    // closure value produces a real callable NaN-boxed
+                    // pointer, matching JS spec where local bindings shadow
+                    // outer-scope function names.
+                    let (value, ty) = if let Some(local_id) = ctx.lookup_local(&name) {
                         let ty = ctx.lookup_local_type(&name).cloned().unwrap_or(Type::Any);
                         (Expr::LocalGet(local_id), ty)
+                    } else if let Some(func_id) = ctx.lookup_func(&name) {
+                        (Expr::FuncRef(func_id), Type::Any)
                     } else if ctx.lookup_class(&name).is_some() {
                         (Expr::ClassRef(name.clone()), Type::Any)
                     } else {
@@ -145,10 +159,12 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
                     }
                     ast::Prop::Shorthand(ident) => {
                         let name = ident.sym.to_string();
-                        let value = if let Some(func_id) = ctx.lookup_func(&name) {
-                            Expr::FuncRef(func_id)
-                        } else if let Some(local_id) = ctx.lookup_local(&name) {
+                        // Issue #624: same prefer-local order as the closed-shape
+                        // shorthand fold above — see comment there.
+                        let value = if let Some(local_id) = ctx.lookup_local(&name) {
                             Expr::LocalGet(local_id)
+                        } else if let Some(func_id) = ctx.lookup_func(&name) {
+                            Expr::FuncRef(func_id)
                         } else if ctx.lookup_class(&name).is_some() {
                             Expr::ClassRef(name.clone())
                         } else {

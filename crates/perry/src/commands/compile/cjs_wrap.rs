@@ -145,26 +145,173 @@ fn extract_require_specifiers(source: &str) -> Vec<String> {
     specs
 }
 
-/// Extract `exports.X = ...` named-export patterns. Skips `__esModule`
-/// (the interop marker injected by Babel/TypeScript that consumers use to
-/// detect "this is a CJS module pretending to be ESM" — we don't want to
-/// re-export a boolean as if it were a named binding).
+/// Extract named-export patterns from CJS source. Three shapes are matched:
+///
+///   1. `exports.X = ...` and `module.exports.X = ...` — the canonical CJS
+///      named-export form. Skips `__esModule` (the interop marker injected
+///      by Babel/TypeScript that consumers use to detect "this is a CJS
+///      module pretending to be ESM" — we don't want to re-export a boolean
+///      as if it were a named binding).
+///   2. `module.exports = { X, Y, fn: someFn }` — object-literal assignment
+///      to `module.exports`. Issue #624: the synthetic-package shape that
+///      hand-written CJS code typically uses (and that React's transpiled
+///      output occasionally falls back to) was unsupported, so the consumer
+///      `import { X } from "pkg"` link-failed because no named export was
+///      ever extracted.
 fn extract_exports_from_source(source: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=").unwrap();
     let mut names = Vec::new();
-    for cap in re.captures_iter(source) {
+    let push_unique = |names: &mut Vec<String>, name: &str| {
+        if name == "__esModule" {
+            return;
+        }
+        let owned = name.to_string();
+        if !names.contains(&owned) {
+            names.push(owned);
+        }
+    };
+
+    // Shape 1: `exports.X = ...` / `module.exports.X = ...`
+    let dot_re =
+        regex::Regex::new(r"(?:^|[^A-Za-z0-9_$])(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=")
+            .unwrap();
+    for cap in dot_re.captures_iter(source) {
         if let Some(m) = cap.get(1) {
-            let name = m.as_str();
-            if name == "__esModule" {
-                continue;
+            push_unique(&mut names, m.as_str());
+        }
+    }
+
+    // Shape 2: `module.exports = { ... }` — extract every key from the
+    // object literal body. Brace-balanced scan because the body may contain
+    // nested braces (`module.exports = { fn: function() {} }`). Two key
+    // forms are recognized:
+    //   - `name` (shorthand: `{ createContext }` ≡ `{ createContext: createContext }`)
+    //   - `name: <expr>` (explicit: `{ createContext: createContext }` or `{ name: function() {} }`)
+    // String-keyed entries (`"name": …`) and computed-key entries
+    // (`[expr]: …`) are intentionally skipped — those don't surface as ESM
+    // named exports anyway.
+    let bytes = source.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(idx) = source[search_from..].find("module.exports") {
+        let abs = search_from + idx;
+        // Skip past `module.exports`
+        let mut p = abs + "module.exports".len();
+        // Skip whitespace
+        while p < bytes.len() && (bytes[p] == b' ' || bytes[p] == b'\t' || bytes[p] == b'\n') {
+            p += 1;
+        }
+        // Must be `=` (not `.`, `==`, etc.)
+        if p >= bytes.len() || bytes[p] != b'=' {
+            search_from = abs + 1;
+            continue;
+        }
+        // Reject `==` / `===`
+        if p + 1 < bytes.len() && bytes[p + 1] == b'=' {
+            search_from = abs + 1;
+            continue;
+        }
+        p += 1;
+        // Skip whitespace
+        while p < bytes.len() && (bytes[p] == b' ' || bytes[p] == b'\t' || bytes[p] == b'\n') {
+            p += 1;
+        }
+        // Must be `{`
+        if p >= bytes.len() || bytes[p] != b'{' {
+            search_from = abs + 1;
+            continue;
+        }
+        // Brace-balanced scan to find the matching close.
+        let body_start = p + 1;
+        let mut depth: i32 = 1;
+        let mut q = body_start;
+        while q < bytes.len() && depth > 0 {
+            match bytes[q] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
             }
-            let owned = name.to_string();
-            if !names.contains(&owned) {
-                names.push(owned);
+            q += 1;
+        }
+        if depth != 0 {
+            // Unbalanced — bail out, advance and continue scanning.
+            search_from = abs + 1;
+            continue;
+        }
+        let body_end = q - 1; // points at the closing `}`
+        let body = &source[body_start..body_end];
+        extract_object_literal_keys(body, &mut |name| push_unique(&mut names, name));
+        search_from = q;
+    }
+
+    names
+}
+
+/// Extract top-level keys from an object-literal body (the text between
+/// `{` and `}`, exclusive). Skips nested braces / brackets / parens so
+/// `fn: function() { return 1; }` doesn't pull `return` as a key. Calls
+/// `out` with each shorthand or `name:` key encountered at depth 0.
+fn extract_object_literal_keys(body: &str, out: &mut dyn FnMut(&str)) {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    let mut at_entry_start = true;
+    let mut depth: i32 = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'{' | b'[' | b'(' => {
+                depth += 1;
+                at_entry_start = false;
+                i += 1;
+            }
+            b'}' | b']' | b')' => {
+                depth -= 1;
+                i += 1;
+            }
+            b',' if depth == 0 => {
+                at_entry_start = true;
+                i += 1;
+            }
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                i += 1;
+            }
+            _ if depth == 0 && at_entry_start => {
+                // Try to read an identifier at the start of an entry.
+                if (b as char).is_ascii_alphabetic() || b == b'_' || b == b'$' {
+                    let start = i;
+                    while i < bytes.len() {
+                        let c = bytes[i];
+                        if (c as char).is_ascii_alphanumeric() || c == b'_' || c == b'$' {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    let name = &body[start..i];
+                    // Skip whitespace after the name.
+                    let mut j = i;
+                    while j < bytes.len()
+                        && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\n')
+                    {
+                        j += 1;
+                    }
+                    // Accept shorthand (`,` / end-of-body) or explicit key (`:`).
+                    if j == bytes.len() || bytes[j] == b',' || bytes[j] == b':' {
+                        out(name);
+                    }
+                    at_entry_start = false;
+                } else {
+                    // Non-identifier at entry start (e.g. `"key":` string,
+                    // `[expr]:` computed, `...spread`) — skip; not an ESM
+                    // exportable name.
+                    at_entry_start = false;
+                    i += 1;
+                }
+            }
+            _ => {
+                at_entry_start = false;
+                i += 1;
             }
         }
     }
-    names
 }
 
 #[cfg(test)]
@@ -197,6 +344,40 @@ mod tests {
         let src = "exports.foo = 1; exports.bar = function() {}; exports.__esModule = true;";
         let names = extract_exports_from_source(src);
         assert_eq!(names, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn extracts_module_exports_object_literal_shorthand() {
+        // Issue #624: `module.exports = { createContext }`
+        let src = "function createContext(v){return v;}\nmodule.exports = { createContext };";
+        let names = extract_exports_from_source(src);
+        assert_eq!(names, vec!["createContext".to_string()]);
+    }
+
+    #[test]
+    fn extracts_module_exports_object_literal_explicit() {
+        // `module.exports = { foo: foo, bar: function(){} }`
+        let src = "module.exports = { foo: foo, bar: function(){} };";
+        let names = extract_exports_from_source(src);
+        assert_eq!(names, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn extracts_module_exports_dot_form() {
+        // `module.exports.foo = ...`
+        let src = "module.exports.foo = 1; module.exports.bar = 2;";
+        let names = extract_exports_from_source(src);
+        assert_eq!(names, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn extracts_unions_dot_and_object_literal_forms() {
+        let src = "exports.a = 1; module.exports = { b, c };";
+        let names = extract_exports_from_source(src);
+        assert_eq!(
+            names,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 
     #[test]
