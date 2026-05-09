@@ -3330,6 +3330,25 @@ pub extern "C" fn js_object_set_index_polymorphic(obj_handle: i64, idx: f64, val
     );
 }
 
+/// Issue #615 helper — read a `*const StringHeader` as a Rust `String`
+/// for inclusion in TypeError diagnostic messages. Returns `"<unknown>"`
+/// for null / non-UTF-8 / corrupt headers so the throw still fires
+/// rather than panicking on the slow-path edge case.
+unsafe fn key_to_str_for_diag(key: *const crate::StringHeader) -> String {
+    if key.is_null() {
+        return "<unknown>".to_string();
+    }
+    let name_ptr = (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
+    let name_len = (*key).byte_len as usize;
+    if name_len == 0 {
+        return String::new();
+    }
+    let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
+    std::str::from_utf8(name_bytes)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string())
+}
+
 /// Set a field value by its string key name (dynamic property access)
 /// This searches the keys array for a match and sets the corresponding value.
 /// If the key doesn't exist, it adds it to the object.
@@ -3566,9 +3585,11 @@ pub extern "C" fn js_object_set_field_by_name(
 
         // If no keys array exists, create one (adding new key)
         if keys.is_null() {
-            // Frozen or sealed/non-extensible objects reject new keys
+            // Frozen or sealed/non-extensible objects reject new keys.
+            // Issue #615 — strict-mode throw instead of silent return.
             if is_frozen || is_sealed_or_no_extend {
-                return;
+                let key_str = key_to_str_for_diag(key);
+                crate::error::throw_immutable_write(1, &key_str);
             }
             // Create a new keys array with the key
             let new_keys = crate::array::js_array_alloc(4);
@@ -3621,9 +3642,12 @@ pub extern "C" fn js_object_set_field_by_name(
             if key_val.is_string() {
                 let stored_key = key_val.as_string_ptr();
                 if crate::string::js_string_equals(key, stored_key) != 0 {
-                    // Found it - update the field (frozen objects reject writes)
+                    // Found it - update the field. Frozen objects must
+                    // throw a TypeError on writes to existing keys
+                    // (issue #615 — strict-mode behavior, default for TS).
                     if is_frozen {
-                        return;
+                        let key_str = key_to_str_for_diag(key);
+                        crate::error::throw_immutable_write(0, &key_str);
                     }
                     // Accessor short-circuit: if a setter is registered, invoke
                     // it instead of writing the slot. A property with `get` but
@@ -3643,11 +3667,12 @@ pub extern "C" fn js_object_set_field_by_name(
                         }
                     }
                     // Per-property writable check (set by Object.defineProperty / freeze).
+                    // Issue #615 — strict-mode throw on read-only assign.
                     if PROPERTY_ATTRS_IN_USE.with(|c| c.get()) {
                         if let Some(ref k) = incoming_key_str {
                             if let Some(attrs) = get_property_attrs(obj as usize, k) {
                                 if !attrs.writable() {
-                                    return;
+                                    crate::error::throw_immutable_write(0, k);
                                 }
                             }
                         }
@@ -3671,9 +3696,11 @@ pub extern "C" fn js_object_set_field_by_name(
         }
 
         // Key not found - add it to the object.
-        // Frozen/sealed/non-extensible objects reject new keys
+        // Frozen/sealed/non-extensible objects reject new keys.
+        // Issue #615 — strict-mode throw.
         if is_frozen || is_sealed_or_no_extend {
-            return;
+            let key_str = key_to_str_for_diag(key);
+            crate::error::throw_immutable_write(1, &key_str);
         }
         // CRITICAL: The keys_array may be SHARED via SHAPE_CACHE (multiple objects with
         // the same shape hash share the same keys array). We must clone it before mutating

@@ -3208,6 +3208,28 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 {
                     return Ok(ctx.block().load(DOUBLE, &slot));
                 }
+                // Issue #613: when the local is scalar-replaced but the
+                // property doesn't match any of its known fields, return
+                // `undefined` directly. The local's `dummy_slot` doesn't
+                // hold a real ObjectHeader pointer (the heap allocation
+                // was elided), so falling through to either the
+                // runtime helper or the PIC fast path would dereference
+                // garbage and SIGTRAP. This matches JS semantics —
+                // reading a missing field on a closed-shape object
+                // literal must produce `undefined`. The check fires
+                // BEFORE the receiver-class fast path because for an
+                // any-typed local `const obj: any = { host: "S" }`,
+                // `local_types[obj]` is overwritten to the synthetic
+                // `__AnonShape_*` class by `Stmt::Let`'s scalar-
+                // replacement arm, which would otherwise route the
+                // missing-field access through `class_field_global_index`
+                // (None for "port") → method-bind check (None) → the
+                // generic runtime helper that crashes on the dummy slot.
+                if ctx.scalar_replaced.contains_key(id) {
+                    return Ok(double_literal(f64::from_bits(
+                        crate::nanbox::TAG_UNDEFINED,
+                    )));
+                }
                 // Scalar-replaced array literal: `.length` folds to a
                 // compile-time constant. No heap access, no runtime call.
                 if property == "length" {

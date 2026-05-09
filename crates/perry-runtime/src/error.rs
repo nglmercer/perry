@@ -328,3 +328,53 @@ pub extern "C" fn js_throw_type_error_not_a_function(
         crate::exception::js_throw(f64::from_bits(err_value))
     }
 }
+
+/// Issue #615: writes to read-only / frozen / sealed / non-extensible
+/// objects must throw a TypeError under strict mode (per spec). TS files
+/// are strict-by-default, so Perry treats every property write as if
+/// "use strict" were in effect. The runtime call sites in
+/// `js_object_set_field_by_name` (and the index-set helpers) used to
+/// silently `return;` when the freeze/seal/writable check tripped —
+/// matching non-strict-mode JS behavior — but that left
+/// `try { obj.x = 1 } catch { ... }` never firing, breaking
+/// `Object.freeze` / `Object.seal` / `Object.preventExtensions` /
+/// `Object.defineProperty(..., writable:false)` round-trips.
+///
+/// `kind`:
+///   0 → "Cannot assign to read only property '<key>' of object" (writable:false / frozen overwrite)
+///   1 → "Cannot add property '<key>', object is not extensible"  (sealed / preventExtensions / frozen new key)
+///   2 → "Cannot delete property '<key>' of #<Object>"             (sealed / frozen delete)
+#[no_mangle]
+pub extern "C" fn js_throw_type_error_immutable_write(
+    kind: u32,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> ! {
+    let key = if key_ptr.is_null() || key_len == 0 {
+        ""
+    } else {
+        unsafe {
+            let bytes = std::slice::from_raw_parts(key_ptr, key_len);
+            std::str::from_utf8(bytes).unwrap_or("")
+        }
+    };
+    let msg = match kind {
+        0 => format!("Cannot assign to read only property '{}' of object '#<Object>'", key),
+        1 => format!("Cannot add property {}, object is not extensible", key),
+        2 => format!("Cannot delete property '{}' of #<Object>", key),
+        _ => format!("Cannot modify object: '{}'", key),
+    };
+    unsafe {
+        let msg_str = crate::string::js_string_from_bytes(msg.as_ptr(), msg.len() as u32);
+        let err_ptr = js_typeerror_new(msg_str);
+        let err_value = crate::value::JSValue::pointer(err_ptr as *const u8).bits();
+        crate::exception::js_throw(f64::from_bits(err_value))
+    }
+}
+
+/// Convenience wrapper for the runtime — accepts the key as a
+/// Rust `&str` and re-routes through the FFI throw helper above. Not
+/// `#[no_mangle]` because callers are runtime modules, not codegen.
+pub(crate) fn throw_immutable_write(kind: u32, key: &str) -> ! {
+    js_throw_type_error_immutable_write(kind, key.as_ptr(), key.len())
+}
