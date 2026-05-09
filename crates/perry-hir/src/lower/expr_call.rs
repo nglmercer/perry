@@ -3316,18 +3316,30 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         // `js_native_call_method`, which does the runtime
                                         // is_registered_map / is_registered_set check.
                                         let recv_ty = ctx.lookup_local_type(&arr_name);
-                                        let is_map = matches!(
-                                            recv_ty,
-                                            Some(Type::Generic { base, .. }) if base == "Map" || base == "WeakMap"
-                                        );
-                                        let is_set = matches!(
-                                            recv_ty,
-                                            Some(Type::Generic { base, .. }) if base == "Set" || base == "WeakSet"
-                                        );
-                                        let is_known_array = matches!(
-                                            recv_ty,
-                                            Some(Type::Array(_)) | Some(Type::Tuple(_))
-                                        );
+                                        // Issue #542/#543 follow-up: accept `Type::Union` variants
+                                        // containing the target (e.g. `Map<K,V> | undefined` after
+                                        // an `if (!m) return;` narrow). The for-of path in lower.rs
+                                        // already handles Union; the method-call path here did not,
+                                        // so `m.keys()` on an optional-Map fell through to the
+                                        // ArrayKeys fold. Mirrors lower.rs:6196.
+                                        let ty_is_map = |t: &Type| matches!(t, Type::Generic { base, .. } if base == "Map" || base == "WeakMap");
+                                        let ty_is_set = |t: &Type| matches!(t, Type::Generic { base, .. } if base == "Set" || base == "WeakSet");
+                                        let ty_is_array = |t: &Type| matches!(t, Type::Array(_) | Type::Tuple(_));
+                                        let is_map = match &recv_ty {
+                                            Some(t) if ty_is_map(t) => true,
+                                            Some(Type::Union(variants)) => variants.iter().any(ty_is_map),
+                                            _ => false,
+                                        };
+                                        let is_set = match &recv_ty {
+                                            Some(t) if ty_is_set(t) => true,
+                                            Some(Type::Union(variants)) => variants.iter().any(ty_is_set),
+                                            _ => false,
+                                        };
+                                        let is_known_array = match &recv_ty {
+                                            Some(t) if ty_is_array(t) => true,
+                                            Some(Type::Union(variants)) => variants.iter().any(ty_is_array),
+                                            _ => false,
+                                        };
                                         match method_name {
                                             "entries" => {
                                                 if is_map {
