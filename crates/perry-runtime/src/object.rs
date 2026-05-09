@@ -3226,6 +3226,40 @@ pub extern "C" fn js_object_get_field_by_name(
                     }
                 }
             }
+
+            // v0.5.756: method-as-value fallback. If `obj.method` reads via
+            // the runtime path (Any-typed receiver, so the codegen #446
+            // arm at expr.rs:3596 didn't fire), look up the method in the
+            // class vtable chain and return a bound-method closure
+            // (BOUND_METHOD_FUNC_PTR sentinel + (this, name_ptr, name_len)
+            // captures). This makes both `typeof obj.method === "function"`
+            // and `obj.method(args)` work for class methods on Any-typed
+            // receivers — the closure-call dispatch routes through
+            // `js_native_call_method` which walks the same vtable chain.
+            // Refs #446 / drizzle's `(ins as any)._prepare()` chain.
+            if let Ok(name) = std::str::from_utf8(key_bytes) {
+                if lookup_class_method_in_chain(class_id, name).is_some() {
+                    // Allocate a fresh i8 buffer for the method name owned
+                    // by the closure. The keys_array's StringHeader bytes
+                    // could in theory be GC'd if the keys_array is not
+                    // pinned for the closure's lifetime.
+                    let heap_name = {
+                        let layout = std::alloc::Layout::from_size_align(
+                            key_bytes.len().max(1),
+                            1,
+                        )
+                        .unwrap();
+                        let ptr = std::alloc::alloc(layout);
+                        std::ptr::copy_nonoverlapping(key_bytes.as_ptr(), ptr, key_bytes.len());
+                        ptr
+                    };
+                    let this_f64 = f64::from_bits(
+                        crate::value::js_nanbox_pointer(obj as i64).to_bits(),
+                    );
+                    let result = js_class_method_bind(this_f64, heap_name, key_bytes.len());
+                    return JSValue::from_bits(result.to_bits());
+                }
+            }
         }
 
         // Key not found
