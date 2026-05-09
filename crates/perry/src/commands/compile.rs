@@ -2792,6 +2792,21 @@ pub fn run_with_parse_cache(
                                 if exported_func_has_rest.get(&key).copied().unwrap_or(false) {
                                     imported_has_rest.insert(export_name.clone());
                                 }
+                                // Issue #636: namespace-imported vars must
+                                // route through the zero-arg getter at
+                                // call sites (`ns.fn(args)` where `fn` is a
+                                // `let`/`const` binding holding a closure
+                                // — the canonical `export const make = (s)
+                                // => ...` shape). Without this, the codegen
+                                // falls through to the direct-call path
+                                // which treats the getter's return value
+                                // as the call result instead of invoking
+                                // the closure with `args`. Mirrors the
+                                // named-import branch at the var-detection
+                                // arm below.
+                                if exported_var_names.contains(&key) {
+                                    imported_vars.insert(export_name.clone());
+                                }
                                 if let Some(class) = exported_classes.get(&key) {
                                     imported_classes.push(perry_codegen::ImportedClass {
                                         name: class.name.clone(),

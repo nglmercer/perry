@@ -475,6 +475,105 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
         }
     }
 
+    // Issue #636: namespace member call —
+    // `Call { callee: PropertyGet { ExternFuncRef(ns), method }, args }`
+    // where `ns ∈ namespace_imports`. Pre-fix this fell through to the
+    // generic method-dispatch path which lower_expr'd the namespace as
+    // its TAG_TRUE/stub-object value and then did `js_native_call_method`
+    // with `method` against a non-callable receiver — TypeError or
+    // silent 0 return.
+    //
+    // Resolution: route to the source's exported `method`. If `method`
+    // is a var (let/const-bound closure — the canonical
+    // `export const make = (s) => ...` shape), fetch the closure value
+    // via the zero-arg getter `perry_fn_<src>__<method>()` and invoke
+    // through `js_closure_callN`. If it's a function declaration
+    // (`export function make(s)`), call the symbol directly with rest
+    // bundling — same as the existing FuncRef path.
+    if let Expr::PropertyGet { object, property } = callee {
+        if let Expr::ExternFuncRef { name: ns_name, .. } = object.as_ref() {
+            if ctx.namespace_imports.contains(ns_name) {
+                if let Some(source_prefix) =
+                    ctx.import_function_prefixes.get(property).cloned()
+                {
+                    let symbol = format!("perry_fn_{}__{}", source_prefix, property);
+                    if ctx.imported_vars.contains(property) {
+                        // Var-shaped export: fetch closure via zero-arg
+                        // getter, then closure-call with the user args.
+                        ctx.pending_declares
+                            .push((symbol.clone(), DOUBLE, vec![]));
+                        let closure_box = ctx.block().call(DOUBLE, &symbol, &[]);
+                        let mut lowered: Vec<String> = Vec::with_capacity(args.len());
+                        for a in args {
+                            lowered.push(lower_expr(ctx, a)?);
+                        }
+                        if lowered.len() > 16 {
+                            bail!(
+                                "perry-codegen: namespace closure call with {} args (max 16)",
+                                lowered.len()
+                            );
+                        }
+                        let blk = ctx.block();
+                        let closure_handle = unbox_to_i64(blk, &closure_box);
+                        let runtime_fn = format!("js_closure_call{}", lowered.len());
+                        let mut call_args: Vec<(crate::types::LlvmType, &str)> =
+                            vec![(I64, &closure_handle)];
+                        for v in &lowered {
+                            call_args.push((DOUBLE, v.as_str()));
+                        }
+                        return Ok(blk.call(DOUBLE, &runtime_fn, &call_args));
+                    }
+                    // Function-decl-shaped export: direct call with rest bundling.
+                    let declared_count = ctx
+                        .imported_func_param_counts
+                        .get(property)
+                        .copied()
+                        .unwrap_or(args.len());
+                    let has_rest = ctx.imported_func_has_rest.contains(property);
+                    let mut lowered: Vec<String> = Vec::with_capacity(declared_count);
+                    if has_rest {
+                        let fixed_count = declared_count.saturating_sub(1);
+                        for a in args.iter().take(fixed_count) {
+                            lowered.push(lower_expr(ctx, a)?);
+                        }
+                        let rest_count = args.len().saturating_sub(fixed_count);
+                        let cap = (rest_count as u32).to_string();
+                        let mut current =
+                            ctx.block().call(I64, "js_array_alloc", &[(I32, &cap)]);
+                        for a in args.iter().skip(fixed_count) {
+                            let v = lower_expr(ctx, a)?;
+                            let blk = ctx.block();
+                            current = blk.call(
+                                I64,
+                                "js_array_push_f64",
+                                &[(I64, &current), (DOUBLE, &v)],
+                            );
+                        }
+                        let rest_box = nanbox_pointer_inline(ctx.block(), &current);
+                        lowered.push(rest_box);
+                    } else {
+                        for a in args {
+                            lowered.push(lower_expr(ctx, a)?);
+                        }
+                        // Pad missing trailing args with TAG_UNDEFINED.
+                        let undef_lit =
+                            double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED));
+                        while lowered.len() < declared_count {
+                            lowered.push(undef_lit.clone());
+                        }
+                    }
+                    let arg_types: Vec<crate::types::LlvmType> =
+                        std::iter::repeat(DOUBLE).take(lowered.len()).collect();
+                    ctx.pending_declares
+                        .push((symbol.clone(), DOUBLE, arg_types));
+                    let arg_slices: Vec<(crate::types::LlvmType, &str)> =
+                        lowered.iter().map(|s| (DOUBLE, s.as_str())).collect();
+                    return Ok(ctx.block().call(DOUBLE, &symbol, &arg_slices));
+                }
+            }
+        }
+    }
+
     // User function call via FuncRef.
     if let Expr::FuncRef(fid) = callee {
         // (Issue #436 plan #1) Clamp-pattern fast path: when the callee
