@@ -971,6 +971,18 @@ pub(crate) fn is_promise_expr(ctx: &FnCtx<'_>, e: &Expr) -> bool {
             // `Function::is_async` flag is collected into
             // `cross_module.local_async_funcs` at module compile time.
             Expr::FuncRef(fid) => ctx.local_async_funcs.contains(fid),
+            // Issue #633 / #611 followup: call to a local LET-bound
+            // async closure — `const fn = async (...) => ...; fn(...)`.
+            // The let's type is `HirType::Function { is_async: true }`,
+            // recorded in `local_types`. Without this arm, perry's
+            // `.then()` lowering at `lower_call.rs:1188` doesn't
+            // recognize `fn({}).then(cb)` as a Promise receiver and the
+            // .then call falls through to a generic dispatch that
+            // silently drops the callback.
+            Expr::LocalGet(id) => match ctx.local_types.get(id) {
+                Some(HirType::Function(ft)) if ft.is_async => true,
+                _ => false,
+            },
             _ => false,
         },
         _ => false,
