@@ -1052,6 +1052,33 @@ pub extern "C" fn gc_check_trigger_export() {
 /// (RSS ≤70 MB direct path) lands and proves out across the gap +
 /// parity test corpus.
 pub fn gc_collect_minor() -> u64 {
+    // Phase C4b-γ-3: re-entrancy guard. Without this, the evacuation
+    // pass's `arena_alloc_gc_old` can trigger `gc_check_trigger` (via
+    // `arena.alloc`'s slow-path block-fill) DURING the outer collection
+    // cycle. The outer cycle's MARK_SEEDS, CONS_PINNED, and valid_ptrs
+    // are all in indeterminate states mid-evac; a recursive
+    // `gc_collect_minor` clears them, runs its own mark phase from a
+    // mostly-empty C-stack snapshot (we're deep inside the runtime,
+    // very few user pointers reachable), evacuates whatever it can find,
+    // then returns to the outer cycle which proceeds with corrupt
+    // pinning + corrupt seed list. Symptom: bench_evac_heavy's `cache`
+    // local gets evacuated by the inner cycle (un-pinned because the
+    // inner mark_stack_roots can't see it through the deep-runtime
+    // stack), and the outer rewrite walk doesn't update the user's
+    // shadow stack slot to point at the new copy → cache.length reads
+    // garbage from the FORWARDED slot's first 8 bytes thereafter.
+    //
+    // Fix: set GC_FLAG_IN_ALLOC for the entire duration of
+    // gc_collect_minor. `gc_check_trigger` already early-returns when
+    // this bit is set. Any recursive `gc_check_trigger` call from
+    // arena_alloc_gc_old / arena_alloc_gc / gc_malloc inside the
+    // collection sees the bit and bails. The outer cycle's bookkeeping
+    // stays intact.
+    let prev_in_alloc = GC_FLAGS.with(|f| {
+        let prev = f.get();
+        f.set(prev | GC_FLAG_IN_ALLOC);
+        prev & GC_FLAG_IN_ALLOC
+    });
     let start = std::time::Instant::now();
     // MARK_SEEDS persists across GC cycles. Clear before any try_mark
     // call so trace sees only this cycle's freshly-marked headers.
@@ -1186,6 +1213,19 @@ pub fn gc_collect_minor() -> u64 {
         stats.collection_count += 1;
         stats.total_freed_bytes += freed_bytes;
         stats.last_pause_us = elapsed_us;
+    });
+    // Restore IN_ALLOC to its pre-collection state. Usually this clears
+    // the bit (collections fire from contexts where IN_ALLOC was clear);
+    // if the outer caller had it set (e.g., we got here via
+    // `js_gc()` invoked from a runtime function that already held the
+    // flag), preserve their state.
+    GC_FLAGS.with(|f| {
+        let cur = f.get();
+        if prev_in_alloc != 0 {
+            f.set(cur | GC_FLAG_IN_ALLOC);
+        } else {
+            f.set(cur & !GC_FLAG_IN_ALLOC);
+        }
     });
     freed_bytes
 }
