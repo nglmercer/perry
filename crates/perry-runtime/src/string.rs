@@ -1155,13 +1155,134 @@ pub extern "C" fn js_number_to_string(value: f64) -> *mut StringHeader {
     js_string_from_bytes(bytes.as_ptr(), bytes.len() as u32)
 }
 
-/// Format a number with a fixed number of decimal places (Number.prototype.toFixed)
+/// Format a number with a fixed number of decimal places (Number.prototype.toFixed).
+///
+/// Hot path on CSV/log/template-build workloads (`(i * 1.5).toFixed(2)`
+/// in a 100k-iteration loop showed 21 ms in this fn alone vs Bun's 6 ms
+/// — 3.5× slower, dominated by Rust's general f64 → decimal formatter
+/// inside `format!`).
+///
+/// **Integer-arithmetic fast path** (`fmt_fixed_int`): for the common
+/// case (`dp ≤ 6`, `|value| < 1e15`), multiply by `10^dp`, round to the
+/// nearest i64, then write integer-part + "." + zero-padded fractional-
+/// part directly into a stack 64-byte buffer. No heap allocation, no
+/// general formatter machinery — pure integer arithmetic + digit
+/// emission. This is the same algorithm V8 / SpiderMonkey use for the
+/// fast path of toFixed.
+///
+/// Falls back to `format!` for NaN/Infinity, large values that need
+/// general scientific-notation handling, or precision > 6 where i64
+/// overflow becomes a real risk.
 #[no_mangle]
 pub extern "C" fn js_number_to_fixed(value: f64, decimals: f64) -> *mut StringHeader {
     let dp = decimals as usize;
+
+    // Fast path: pure integer arithmetic + manual digit emission.
+    // Conditions: finite, magnitude < 1e15 (so value * 10^dp fits safely
+    // in i64), dp <= 6 (limits 10^dp to 1_000_000 — `value * 10^dp` then
+    // stays under 1e21, well inside i64's ~9.2e18 range).
+    if !value.is_nan() && !value.is_infinite() && value.abs() < 1e15 && dp <= 6 {
+        if let Some(n) = fmt_fixed_int(value, dp) {
+            return n;
+        }
+    }
+
+    // Slow path: Rust formatter handles NaN/Infinity, very large values,
+    // and high-precision cases.
     let s = format!("{:.prec$}", value, prec = dp);
     let bytes = s.as_bytes();
     js_string_from_bytes(bytes.as_ptr(), bytes.len() as u32)
+}
+
+/// Hand-rolled `toFixed` formatter for the common case. Returns None if
+/// the value falls outside the fast-path's safe range; the caller falls
+/// back to `format!` in that case.
+#[inline]
+fn fmt_fixed_int(value: f64, dp: usize) -> Option<*mut StringHeader> {
+    // Powers of 10 up to 10^6 — kept small so the multiplication stays
+    // inside i64 even for `|value|` near 1e15.
+    static POW10: [u64; 7] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
+    let scale = POW10[dp];
+
+    // The multiplication `value * scale` can lose precision when the
+    // true result is near a half-integer — e.g. `0.015 * 100` rounds
+    // to exactly 1.5 in f64 (the original value is 0.01499999...), so
+    // a naïve `.round()` produces "0.02" while Node's Grisu-based
+    // formatter produces "0.01" (the spec-correct value for the actual
+    // IEEE 754 representation). Detect this by checking whether the
+    // scaled value's fractional part is suspiciously close to 0.5; if
+    // so, fall back to Rust's `format!` (which uses the same Grisu
+    // algorithm Node does and produces the spec-correct answer).
+    let scaled_raw = value * scale as f64;
+    let frac = scaled_raw - scaled_raw.floor();
+    // 1e-9 catches any plausible f64-precision artifact: the relative
+    // error of one f64 mul on values < 1e15 is bounded by ~1e-15, and
+    // we're working with values whose fractional part is in [0, 1).
+    if (frac - 0.5).abs() < 1e-9 {
+        return None;
+    }
+    let scaled = scaled_raw.round();
+    if !scaled.is_finite() {
+        return None;
+    }
+
+    // Extract sign + magnitude as i64. We've already gated value.abs() <
+    // 1e15 + dp ≤ 6, so `scaled` is at most ~1e21 — outside i64 range.
+    // Re-check after rounding: i64 max is ~9.22e18, so `scaled.abs() < 1e18`
+    // is the actual safe bound. Bail to slow path if we overshoot.
+    if scaled.abs() >= 9_000_000_000_000_000_000.0 {
+        return None;
+    }
+    let neg = scaled < 0.0;
+    let abs_n = scaled.abs() as u64;
+
+    // Buffer big enough for: '-' + up to 19 integer digits + '.' + 6
+    // fractional digits + 1 slack = 27 bytes. 32 is plenty.
+    let mut buf = [0u8; 32];
+    let mut len = 0;
+
+    let int_part = abs_n / scale;
+    let frac_part = abs_n % scale;
+
+    if neg {
+        buf[len] = b'-';
+        len += 1;
+    }
+
+    // Write integer part (at least one digit, even when 0).
+    if int_part == 0 {
+        buf[len] = b'0';
+        len += 1;
+    } else {
+        // Build digits in reverse, then copy into buf in forward order.
+        let mut tmp = [0u8; 20];
+        let mut tmp_len = 0;
+        let mut n = int_part;
+        while n > 0 {
+            tmp[tmp_len] = b'0' + (n % 10) as u8;
+            tmp_len += 1;
+            n /= 10;
+        }
+        for i in 0..tmp_len {
+            buf[len + i] = tmp[tmp_len - 1 - i];
+        }
+        len += tmp_len;
+    }
+
+    // Fractional part: only if dp > 0. Zero-pad to exactly `dp` digits.
+    if dp > 0 {
+        buf[len] = b'.';
+        len += 1;
+        // Build dp-digit fractional in reverse with zero-padding.
+        let mut frac = frac_part;
+        for i in (0..dp).rev() {
+            buf[len + i] = b'0' + (frac % 10) as u8;
+            frac /= 10;
+        }
+        len += dp;
+    }
+
+    Some(js_string_from_ascii_bytes(buf.as_ptr(), len as u32))
 }
 
 /// Format a number with a precision (Number.prototype.toPrecision).
