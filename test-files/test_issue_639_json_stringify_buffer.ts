@@ -28,3 +28,36 @@ console.log("nested:", JSON.stringify(result));
 
 // Empty buffer
 console.log("empty:", JSON.stringify(Buffer.alloc(0)));
+
+// ──────────────────────────────────────────────────────────────────────
+// Issue #639 followup: method-as-value reads on a Buffer must report
+// `typeof === "function"` so duck-type tests like @perryts/mysql's
+// `isBufferLike(v)` (`typeof v.readUInt8 === 'function' && typeof v.length
+// === 'number'`) pass. Pre-fix every non-`length` read returned undefined
+// and the npm package's prepared-statement encoder fell through to
+// `String(buf)`-as-VAR_STRING, silently corrupting BLOB / BINARY columns.
+
+function isBufferLike(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return false;
+  const anyV = v as { readUInt8?: unknown; length?: unknown };
+  return typeof anyV.readUInt8 === "function" && typeof anyV.length === "number";
+}
+
+const bb = Buffer.from([0xaa, 0xbb]);
+console.log("isBufferLike(Buffer):", isBufferLike(bb));
+console.log("typeof bb.readUInt8:", typeof (bb as any).readUInt8);
+console.log("typeof bb.copy:", typeof (bb as any).copy);
+console.log("typeof bb.toString:", typeof (bb as any).toString);
+console.log("typeof bb.foo:", typeof (bb as any).foo);
+
+// Through an Any-typed function arg (mirrors how the npm package sees it).
+function check(v: any): string {
+  return [
+    typeof v.readUInt8,
+    typeof v.writeUInt8,
+    typeof v.copy,
+    typeof v.length,
+    typeof v.foo,
+  ].join(",");
+}
+console.log("check:", check(bb));

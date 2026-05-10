@@ -2776,6 +2776,47 @@ pub extern "C" fn js_object_get_field_by_name(
                     let b = obj as *const crate::buffer::BufferHeader;
                     return JSValue::number(crate::buffer::js_buffer_length(b) as f64);
                 }
+                // Issue #639 followup: method-as-value reads on a Buffer
+                // (e.g. duck-type tests like `typeof v.readUInt8 === "function"`
+                // in @perryts/mysql's `isBufferLike`) need to return a
+                // bound-method closure so `typeof` reports `"function"` and
+                // a subsequent call routes through `js_native_call_method`'s
+                // existing `dispatch_buffer_method` arm. Pre-fix every
+                // non-length read returned undefined, so duck tests failed
+                // and the encoder fell through to its `String(buf)` fallback —
+                // BLOB params got encoded as VAR_STRING and the INSERT
+                // silently corrupted the binary column.
+                if let Ok(name) = std::str::from_utf8(key_bytes) {
+                    if is_buffer_method_name(name) {
+                        let heap_name = {
+                            let layout = std::alloc::Layout::from_size_align(
+                                key_bytes.len().max(1),
+                                1,
+                            )
+                            .unwrap();
+                            let ptr = std::alloc::alloc(layout);
+                            std::ptr::copy_nonoverlapping(
+                                key_bytes.as_ptr(),
+                                ptr,
+                                key_bytes.len(),
+                            );
+                            ptr
+                        };
+                        // Buffers are stored as raw f64-bitcast pointers
+                        // (NOT NaN-boxed) per CLAUDE.md "Module-level
+                        // variables" — but `js_native_call_method`'s
+                        // buffer arm at line ~5031 strips both raw and
+                        // NaN-boxed payloads via `(bits >> 48) >= 0x7FF8`,
+                        // so wrapping in POINTER_TAG here is equally
+                        // valid and matches `js_class_method_bind`.
+                        let this_f64 = f64::from_bits(
+                            crate::value::js_nanbox_pointer(obj as i64).to_bits(),
+                        );
+                        let result =
+                            js_class_method_bind(this_f64, heap_name, key_bytes.len());
+                        return JSValue::from_bits(result.to_bits());
+                    }
+                }
             }
             return JSValue::undefined();
         }
@@ -5898,6 +5939,97 @@ pub unsafe extern "C" fn js_native_call_method(
 /// is the raw heap pointer (already stripped of NaN-box tags). Routes
 /// the Node-style numeric read/write/search/swap method family through
 /// `crate::buffer` helpers; unknown methods return undefined.
+/// Issue #639 followup: list of method names recognized by `dispatch_buffer_method`.
+/// Used by `js_object_get_field_by_name`'s Buffer arm to decide whether a
+/// non-length property read should synthesize a bound-method closure (so
+/// duck-type tests like `typeof v.readUInt8 === "function"` pass and a
+/// subsequent call dispatches through `js_native_call_method`).
+///
+/// Keep this list aligned with the `match method_name` arms below — every
+/// arm there should be reachable from a method-as-value read.
+pub fn is_buffer_method_name(name: &str) -> bool {
+    matches!(
+        name,
+        "toString"
+            | "slice"
+            | "subarray"
+            | "copy"
+            | "write"
+            | "fill"
+            | "equals"
+            | "compare"
+            | "indexOf"
+            | "lastIndexOf"
+            | "includes"
+            | "at"
+            | "swap16"
+            | "swap32"
+            | "swap64"
+            | "readUInt8"
+            | "readUint8"
+            | "readInt8"
+            | "readUInt16BE"
+            | "readUint16BE"
+            | "readUInt16LE"
+            | "readUint16LE"
+            | "readInt16BE"
+            | "readInt16LE"
+            | "readUInt32BE"
+            | "readUint32BE"
+            | "readUInt32LE"
+            | "readUint32LE"
+            | "readInt32BE"
+            | "readInt32LE"
+            | "readFloatBE"
+            | "readFloatLE"
+            | "readDoubleBE"
+            | "readDoubleLE"
+            | "readBigInt64BE"
+            | "readBigInt64LE"
+            | "readBigUInt64BE"
+            | "readBigUint64BE"
+            | "readBigUInt64LE"
+            | "readBigUint64LE"
+            | "readUIntBE"
+            | "readUintBE"
+            | "readUIntLE"
+            | "readUintLE"
+            | "readIntBE"
+            | "readIntLE"
+            | "writeUInt8"
+            | "writeUint8"
+            | "writeInt8"
+            | "writeUInt16BE"
+            | "writeUint16BE"
+            | "writeUInt16LE"
+            | "writeUint16LE"
+            | "writeInt16BE"
+            | "writeInt16LE"
+            | "writeUInt32BE"
+            | "writeUint32BE"
+            | "writeUInt32LE"
+            | "writeUint32LE"
+            | "writeInt32BE"
+            | "writeInt32LE"
+            | "writeFloatBE"
+            | "writeFloatLE"
+            | "writeDoubleBE"
+            | "writeDoubleLE"
+            | "writeBigInt64BE"
+            | "writeBigInt64LE"
+            | "writeBigUInt64BE"
+            | "writeBigUint64BE"
+            | "writeBigUInt64LE"
+            | "writeBigUint64LE"
+            | "writeUIntBE"
+            | "writeUintBE"
+            | "writeUIntLE"
+            | "writeUintLE"
+            | "writeIntBE"
+            | "writeIntLE"
+    )
+}
+
 pub unsafe fn dispatch_buffer_method(
     addr: usize,
     method_name: &str,
