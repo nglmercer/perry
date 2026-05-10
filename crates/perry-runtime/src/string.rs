@@ -274,7 +274,7 @@ pub extern "C" fn js_string_from_bytes_longlived(data: *const u8, len: u32) -> *
 /// Fast path: create a string from bytes known to be pure ASCII.
 /// Skips the `compute_utf16_len` byte scan — sets utf16_len = byte_len directly.
 #[inline]
-fn js_string_from_ascii_bytes(data: *const u8, len: u32) -> *mut StringHeader {
+pub(crate) fn js_string_from_ascii_bytes(data: *const u8, len: u32) -> *mut StringHeader {
     let total_size = std::mem::size_of::<StringHeader>() + len as usize;
     let raw = string_arena_alloc(total_size);
     let ptr = raw as *mut StringHeader;
@@ -290,6 +290,29 @@ fn js_string_from_ascii_bytes(data: *const u8, len: u32) -> *mut StringHeader {
         }
     }
     ptr
+}
+
+/// Allocate an uninitialised ASCII-typed string of `len` bytes and return
+/// `(header_ptr, data_ptr)`. Caller MUST write all `len` bytes into the data
+/// region before any read (other than `byte_len`) observes them.
+///
+/// Use case: encoders that produce known-ASCII output (hex, base64) where
+/// the caller can write directly into the StringHeader's payload — avoids
+/// an intermediate `Vec<u8>` allocation + a follow-up `copy_nonoverlapping`.
+#[inline]
+pub(crate) fn js_string_alloc_ascii_uninit(len: u32) -> (*mut StringHeader, *mut u8) {
+    let total_size = std::mem::size_of::<StringHeader>() + len as usize;
+    let raw = string_arena_alloc(total_size);
+    let ptr = raw as *mut StringHeader;
+    unsafe {
+        (*ptr).utf16_len = len;
+        (*ptr).byte_len = len;
+        (*ptr).capacity = len;
+        (*ptr).refcount = 0;
+        (*ptr).flags = 0;
+    }
+    let data_ptr = unsafe { (ptr as *mut u8).add(std::mem::size_of::<StringHeader>()) };
+    (ptr, data_ptr)
 }
 
 /// Create a string from raw bytes with extra capacity for future appending
