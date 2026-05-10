@@ -737,11 +737,21 @@ pub fn run_server(port: u16) {
             }
 
             // GET /value/:handle — read current widget value
+            //
+            // Issue #640: distinguish "widget not found / not readable"
+            // (ptr.is_null() → `value: null`) from "widget found with
+            // empty stringValue" (ptr non-null + len=0 → `value: ""`).
+            // Pre-fix the truthiness check `len > 0` collapsed the two
+            // cases, so a TextField that the user had just typed `""`
+            // into (or that was empty after a route swap) was
+            // indistinguishable from a torn-down widget — confounding
+            // bug-triage of issues like the multi-route TextField
+            // probe in the issue's reproducer.
             (Method::Get, p) if p.starts_with("/value/") => match parse_handle(p, "/value/") {
                 Some(handle) => {
                     let mut len: usize = 0;
                     let ptr = unsafe { perry_geisterhand_request_value(handle, &mut len) };
-                    if !ptr.is_null() && len > 0 {
+                    if !ptr.is_null() {
                         let val = unsafe {
                             String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len))
                                 .into_owned()
@@ -752,7 +762,7 @@ pub fn run_server(port: u16) {
                         ok_json(&format!(
                             r#"{{"handle":{},"value":"{}"}}"#,
                             handle,
-                            val.replace('"', "\\\"")
+                            val.replace('\\', "\\\\").replace('"', "\\\"")
                         ))
                     } else {
                         ok_json(&format!(r#"{{"handle":{},"value":null}}"#, handle))

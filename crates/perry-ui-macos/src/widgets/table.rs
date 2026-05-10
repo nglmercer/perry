@@ -89,12 +89,56 @@ define_class!(
             if render_closure == 0.0 {
                 return std::ptr::null_mut();
             }
-            let col: i64 = unsafe { msg_send![table_view, indexOfTableColumn: table_column] };
+            // Issue #556: replace `[table_view indexOfTableColumn:tc]`
+            // with manual iteration over `tableColumns`. The direct
+            // selector dispatch returns false for `respondsToSelector:`
+            // on a real NSTableView in this delivery path (called from
+            // `_addRowViewForVisibleRow`) — objc2 / the runtime then
+            // routes via `___forwarding___`, which retains the
+            // forwarding context object as if it were the receiver
+            // and crashes inside `__retain_OA` on an NSCFString. The
+            // pre-fix string-concat repro from the issue
+            // (`Text("row " + n)`) consistently triggered this; the
+            // array-index counter-example masked it via timing /
+            // allocator-state interaction. Manual iteration through
+            // `tableColumns objectAtIndex:` uses well-known selectors
+            // that always dispatch directly.
+            let col: i64 = unsafe {
+                let columns: *mut AnyObject = msg_send![table_view, tableColumns];
+                if columns.is_null() {
+                    -1
+                } else {
+                    let count: i64 = msg_send![columns, count];
+                    let mut found: i64 = -1;
+                    let mut i: i64 = 0;
+                    while i < count {
+                        let c: *mut AnyObject = msg_send![columns, objectAtIndex: i as usize];
+                        if c == table_column as *const _ as *mut AnyObject {
+                            found = i;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    found
+                }
+            };
             if col < 0 || col >= col_count {
                 return std::ptr::null_mut();
             }
             let render_ptr = unsafe { js_nanbox_get_pointer(render_closure) } as *const u8;
             let child_f64 = unsafe { js_closure_call2(render_ptr, row as f64, col as f64) };
+            // Issue #556: tag-validate before treating the closure
+            // return as a widget handle. The closure SHOULD return a
+            // Widget (POINTER_TAG = 0x7FFD), but if user code
+            // accidentally returns a string or other non-widget value,
+            // `js_nanbox_get_pointer` would happily extract its
+            // pointer bits — which `get_widget` would then index into
+            // WIDGETS, potentially returning a stale/wrong NSView.
+            let bits = child_f64.to_bits();
+            let tag = (bits >> 48) & 0xFFFF;
+            if tag != 0x7FFD {
+                return std::ptr::null_mut();
+            }
             let child_handle = unsafe { js_nanbox_get_pointer(child_f64) };
             if let Some(view) = super::get_widget(child_handle) {
                 Retained::as_ptr(&view) as *mut NSView

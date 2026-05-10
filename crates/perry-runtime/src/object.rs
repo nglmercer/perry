@@ -6393,7 +6393,7 @@ unsafe fn dispatch_native_module_method(
         ("fs", "appendFileSync") => bool_to_f64(crate::fs::js_fs_append_file_sync(arg(0), arg(1))),
         ("fs", "mkdirSync") => bool_to_f64(crate::fs::js_fs_mkdir_sync(arg(0))),
         ("fs", "unlinkSync") => bool_to_f64(crate::fs::js_fs_unlink_sync(arg(0))),
-        ("fs", "readdirSync") => crate::fs::js_fs_readdir_sync(arg(0)),
+        ("fs", "readdirSync") => crate::fs::js_fs_readdir_sync(arg(0), arg(1)),
         ("fs", "isDirectory") => bool_to_f64(crate::fs::js_fs_is_directory(arg(0))),
 
         // ── os module (no args, return string or f64) ──

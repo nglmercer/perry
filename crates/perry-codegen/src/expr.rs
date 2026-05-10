@@ -9960,9 +9960,20 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     // transmuted to f64 (no NaN-box tag). Unbox as i64
                     // and re-NaN-box with POINTER_TAG so downstream
                     // length/index paths see a proper array handle.
+                    // Issue #631: forward optional `options` arg to
+                    // pick up `withFileTypes:true`.
                     let p = lower_expr(ctx, &args[0])?;
+                    let opts = if args.len() >= 2 {
+                        lower_expr(ctx, &args[1])?
+                    } else {
+                        double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
+                    };
                     let blk = ctx.block();
-                    let raw = blk.call(DOUBLE, "js_fs_readdir_sync", &[(DOUBLE, &p)]);
+                    let raw = blk.call(
+                        DOUBLE,
+                        "js_fs_readdir_sync",
+                        &[(DOUBLE, &p), (DOUBLE, &opts)],
+                    );
                     let raw_bits = blk.bitcast_double_to_i64(&raw);
                     Ok(nanbox_pointer_inline(blk, &raw_bits))
                 }

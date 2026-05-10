@@ -465,24 +465,41 @@ pub extern "C" fn perry_geisterhand_pump() {
                 }
             }
             PendingAction::ReadValue { handle } => {
+                // Issue #640: distinguish "widget not found / not a
+                // readable widget" from "widget has empty stringValue".
+                // The platform helper returns ptr=null when the lookup
+                // fails or the widget type isn't readable; ptr != null
+                // (even with len=0) when the lookup succeeded and the
+                // value is the bytes 0..len. Pre-fix both cases were
+                // collapsed to `String::new()` and then the HTTP layer
+                // reported `value: null` for both — a real empty
+                // textfield (post `/type/:handle` with `""`) was
+                // indistinguishable from a torn-down widget. The
+                // sentinel `"\u{0}\u{0}NF"` is impossible to receive
+                // from a real NSTextField (control bytes don't survive
+                // typing) so we use it to flag "not found" through the
+                // existing `Mutex<Option<String>>`.
                 let f = UI_READ_VALUE_FN.load(Ordering::Acquire);
-                let result = if !f.is_null() {
+                let result: String = if !f.is_null() {
                     unsafe {
                         let func: extern "C" fn(i64, *mut usize) -> *mut u8 =
                             std::mem::transmute(f);
                         let mut len: usize = 0;
                         let ptr = func(handle, &mut len);
-                        if !ptr.is_null() && len > 0 {
-                            let s = String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len))
-                                .into_owned();
+                        if ptr.is_null() {
+                            "\u{0}\u{0}NF".to_string()
+                        } else {
+                            // Platform handlers allocate ≥ 1 byte even
+                            // for empty values (see #640) so the ptr
+                            // is always libc::free-able when non-null.
+                            let bytes = std::slice::from_raw_parts(ptr, len);
+                            let s = String::from_utf8_lossy(bytes).into_owned();
                             libc::free(ptr as *mut libc::c_void);
                             s
-                        } else {
-                            String::new()
                         }
                     }
                 } else {
-                    String::new()
+                    "\u{0}\u{0}NF".to_string()
                 };
                 if let Ok(mut r) = VALUE_RESULT.lock() {
                     *r = Some(result);
@@ -578,10 +595,15 @@ pub extern "C" fn perry_geisterhand_get_registry_json(out_len: *mut usize) -> *m
     raw as *mut u8
 }
 
-/// Free a string returned by perry_geisterhand_get_registry_json.
+/// Free a string returned by perry_geisterhand_get_registry_json
+/// or `perry_geisterhand_request_value`. The latter can return a
+/// non-null + len=0 pointer for an empty-but-found value (#640) —
+/// `Box::from_raw` on a 0-length slice is a no-op (the underlying
+/// allocation is `Vec::new().into_boxed_slice()`'s dangling pointer)
+/// and is safe to call.
 #[no_mangle]
 pub extern "C" fn perry_geisterhand_free_string(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() && len > 0 {
+    if !ptr.is_null() {
         unsafe {
             let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len));
         }
@@ -696,17 +718,32 @@ fn request_string_from_main(
     if let Ok(mut r) = requested.lock() {
         *r = false;
     }
+    // Issue #640: treat the `\0\0NF` sentinel from ReadValue as
+    // "not found" → null pointer; everything else (including the
+    // empty string) returns a non-null pointer + len so the HTTP
+    // handler can render `value: ""` distinctly from `value: null`.
+    // Tree / screenshot results never produce the sentinel, so this
+    // handles all current call sites uniformly.
     match string_result {
-        Some(s) if !s.is_empty() => {
+        Some(ref s) if s == "\u{0}\u{0}NF" => {
+            unsafe {
+                *out_len = 0;
+            }
+            std::ptr::null_mut()
+        }
+        Some(s) => {
             let bytes = s.into_bytes();
             let len = bytes.len();
+            // `Vec::new().into_boxed_slice()` returns a non-null
+            // dangling pointer; `Box::from_raw` in
+            // `perry_geisterhand_free_string` drops it as a no-op.
             let raw = Box::into_raw(bytes.into_boxed_slice());
             unsafe {
                 *out_len = len;
             }
             raw as *mut u8
         }
-        _ => {
+        None => {
             unsafe {
                 *out_len = 0;
             }

@@ -83,12 +83,26 @@ pub fn register_widget(view: Retained<NSView>) -> i64 {
 fn alloc_string_result(s: &str, out_len: *mut usize) -> *mut u8 {
     let bytes = s.as_bytes();
     let len = bytes.len();
-    let buf = unsafe { libc::malloc(len) as *mut u8 };
+    // Issue #640: always allocate ≥ 1 byte so the returned pointer is
+    // non-null even for empty strings. The pump-side reader (in
+    // perry-runtime/geisterhand_registry.rs::ReadValue) treats a null
+    // pointer as "widget not found / not readable" and a non-null
+    // pointer (regardless of len) as "found, value is the bytes
+    // 0..len" — so an empty NSTextField now reports `value: ""`
+    // instead of `value: null`. malloc(0) is implementation-defined
+    // (returns either null or a unique non-null pointer); the
+    // explicit `len.max(1)` makes the contract well-defined.
+    let alloc_len = len.max(1);
+    let buf = unsafe { libc::malloc(alloc_len) as *mut u8 };
     if buf.is_null() {
         return std::ptr::null_mut();
     }
+    if len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, len);
+        }
+    }
     unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, len);
         *out_len = len;
     }
     buf

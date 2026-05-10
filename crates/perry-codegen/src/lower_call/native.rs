@@ -984,9 +984,25 @@ pub(crate) fn lower_native_method_call(
     if module == "fs" && object.is_none() {
         match method {
             "readdirSync" if !args.is_empty() => {
+                // Issue #631: forward the optional `options` arg
+                // (e.g. `{withFileTypes:true}`) so the runtime can
+                // return Dirent[] instead of string[]. Pre-fix
+                // codegen dropped the second arg on the floor and
+                // every Node-style `fs.readdirSync(p, {withFileTypes:
+                // true}).filter(e => e.isDirectory())` chain crashed
+                // with `(string).isDirectory is not a function`.
                 let p = lower_expr(ctx, &args[0])?;
+                let opts = if args.len() >= 2 {
+                    lower_expr(ctx, &args[1])?
+                } else {
+                    double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED))
+                };
                 let blk = ctx.block();
-                let raw = blk.call(DOUBLE, "js_fs_readdir_sync", &[(DOUBLE, &p)]);
+                let raw = blk.call(
+                    DOUBLE,
+                    "js_fs_readdir_sync",
+                    &[(DOUBLE, &p), (DOUBLE, &opts)],
+                );
                 let raw_bits = blk.bitcast_double_to_i64(&raw);
                 return Ok(nanbox_pointer_inline(blk, &raw_bits));
             }

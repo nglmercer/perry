@@ -362,8 +362,10 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_fs_mkdir_sync", I32, &[DOUBLE]);
     // fs.unlinkSync(path) — returns i32 status.
     module.declare_function("js_fs_unlink_sync", I32, &[DOUBLE]);
-    // fs.readdirSync(path) — returns NaN-boxed array of string names (f64).
-    module.declare_function("js_fs_readdir_sync", DOUBLE, &[DOUBLE]);
+    // fs.readdirSync(path, options) — returns NaN-boxed array of
+    // strings, or array of Dirent objects when
+    // `options.withFileTypes === true` (issue #631).
+    module.declare_function("js_fs_readdir_sync", DOUBLE, &[DOUBLE, DOUBLE]);
     // fs.statSync(path) — returns a NaN-boxed object with isFile/isDirectory/size fields.
     module.declare_function("js_fs_stat_sync", DOUBLE, &[DOUBLE]);
     // fs.renameSync(from, to) — returns i32 status.

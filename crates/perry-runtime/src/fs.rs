@@ -234,11 +234,73 @@ pub extern "C" fn js_fs_mkdir_sync(path_value: f64) -> i32 {
     }
 }
 
-/// Read directory entries synchronously and return as a JS array of strings.
+// ---------- Dirent object ----------
+//
+// Issue #631: `fs.readdirSync(path, { withFileTypes: true })` returns
+// `Dirent[]` instead of `string[]`. Each Dirent has a `name` field plus
+// `isFile()` / `isDirectory()` / `isSymbolicLink()` predicate methods —
+// same shape as Stats but populated per-entry from the OS directory
+// iterator's file type. Predicate closures capture the pre-computed
+// boolean so calling them is a single-slot read.
+
+unsafe fn build_dirent_object(name: &str, parent_path: &str, is_file: bool, is_dir: bool, is_symlink: bool) -> f64 {
+    use crate::string::js_string_from_bytes;
+    use crate::value::js_nanbox_string;
+
+    // Field slots: name, parentPath, path, isFile, isDirectory, isSymbolicLink.
+    let obj = crate::object::js_object_alloc(0, 6);
+
+    let set = |field: &str, v: f64| {
+        let key = crate::string::js_string_from_bytes(field.as_ptr(), field.len() as u32);
+        crate::object::js_object_set_field_by_name(obj, key, v);
+    };
+
+    let name_ptr = js_string_from_bytes(name.as_ptr(), name.len() as u32);
+    set("name", js_nanbox_string(name_ptr as i64));
+
+    // `parentPath` is the new (Node 20+) name; `path` is the deprecated
+    // alias still used by older code. Set both for compatibility.
+    let pp_ptr = js_string_from_bytes(parent_path.as_ptr(), parent_path.len() as u32);
+    let pp_nan = js_nanbox_string(pp_ptr as i64);
+    set("parentPath", pp_nan);
+    set("path", pp_nan);
+
+    set("isFile", make_stats_predicate(is_file));
+    set("isDirectory", make_stats_predicate(is_dir));
+    set("isSymbolicLink", make_stats_predicate(is_symlink));
+
+    const POINTER_TAG: u64 = 0x7FFD_0000_0000_0000;
+    f64::from_bits(POINTER_TAG | (obj as u64 & 0x0000_FFFF_FFFF_FFFF))
+}
+
+/// Decode a NaN-boxed object's `withFileTypes` field as a boolean.
+/// Returns false when the options arg is undefined / not an object /
+/// the field is absent or falsy.
+unsafe fn options_with_file_types(options_value: f64) -> bool {
+    let bits = options_value.to_bits();
+    let top16 = bits >> 48;
+    // Accept POINTER_TAG (heap object) or raw I64 module-level object
+    // pointer (top16 == 0). undefined / null / number → false.
+    if top16 != 0x7FFD && top16 != 0x0000 {
+        return false;
+    }
+    let obj_ptr = (bits & 0x0000_FFFF_FFFF_FFFF) as *const crate::object::ObjectHeader;
+    if obj_ptr.is_null() {
+        return false;
+    }
+    let key = crate::string::js_string_from_bytes(b"withFileTypes".as_ptr(), 13);
+    let val = crate::object::js_object_get_field_by_name(obj_ptr, key);
+    crate::value::js_is_truthy(f64::from_bits(val.bits())) != 0
+}
+
+/// Read directory entries synchronously. By default returns an array of
+/// string filenames. With `{ withFileTypes: true }` as the second arg,
+/// returns an array of Dirent objects (each with `name`, `parentPath`
+/// and `isFile()` / `isDirectory()` / `isSymbolicLink()` methods),
+/// matching Node's `fs.readdirSync(path, options)` shape (issue #631).
 /// Returns an empty array on error.
-/// Accepts NaN-boxed string path.
 #[no_mangle]
-pub extern "C" fn js_fs_readdir_sync(path_value: f64) -> f64 {
+pub extern "C" fn js_fs_readdir_sync(path_value: f64, options_value: f64) -> f64 {
     use crate::array::{js_array_alloc, js_array_push_f64};
     use crate::string::js_string_from_bytes;
     use crate::value::js_nanbox_string;
@@ -262,24 +324,53 @@ pub extern "C" fn js_fs_readdir_sync(path_value: f64) -> f64 {
             }
         };
 
+        let with_file_types = options_with_file_types(options_value);
+
         match fs::read_dir(path_str) {
             Ok(entries) => {
-                let mut names: Vec<String> = Vec::new();
-                for e in entries.flatten() {
-                    if let Some(name) = e.file_name().to_str() {
-                        names.push(name.to_string());
+                if with_file_types {
+                    // Dirent path: collect (name, file_type) pairs first
+                    // so we can sort by name without losing the type info.
+                    let mut items: Vec<(String, std::fs::FileType)> = Vec::new();
+                    for e in entries.flatten() {
+                        if let Some(name) = e.file_name().to_str() {
+                            if let Ok(ft) = e.file_type() {
+                                items.push((name.to_string(), ft));
+                            }
+                        }
                     }
-                }
-                names.sort();
+                    items.sort_by(|a, b| a.0.cmp(&b.0));
 
-                let mut arr = js_array_alloc(names.len() as u32);
-                for name in &names {
-                    let bytes = name.as_bytes();
-                    let str_ptr = js_string_from_bytes(bytes.as_ptr(), bytes.len() as u32);
-                    let str_f64 = js_nanbox_string(str_ptr as i64);
-                    arr = js_array_push_f64(arr, str_f64);
+                    let mut arr = js_array_alloc(items.len() as u32);
+                    for (name, ft) in &items {
+                        let dirent = build_dirent_object(
+                            name,
+                            path_str,
+                            ft.is_file(),
+                            ft.is_dir(),
+                            ft.is_symlink(),
+                        );
+                        arr = js_array_push_f64(arr, dirent);
+                    }
+                    f64::from_bits(i64::cast_unsigned(arr as i64))
+                } else {
+                    let mut names: Vec<String> = Vec::new();
+                    for e in entries.flatten() {
+                        if let Some(name) = e.file_name().to_str() {
+                            names.push(name.to_string());
+                        }
+                    }
+                    names.sort();
+
+                    let mut arr = js_array_alloc(names.len() as u32);
+                    for name in &names {
+                        let bytes = name.as_bytes();
+                        let str_ptr = js_string_from_bytes(bytes.as_ptr(), bytes.len() as u32);
+                        let str_f64 = js_nanbox_string(str_ptr as i64);
+                        arr = js_array_push_f64(arr, str_f64);
+                    }
+                    f64::from_bits(i64::cast_unsigned(arr as i64))
                 }
-                f64::from_bits(i64::cast_unsigned(arr as i64))
             }
             Err(_) => {
                 let arr = js_array_alloc(0);

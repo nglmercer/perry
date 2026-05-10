@@ -568,12 +568,23 @@ fn hoist_awaits_in_expr_full(expr: &mut Expr, next_id: &mut LocalId, hoisted: &m
 /// object reads it back via a plain load.
 ///
 /// Mechanize the workaround at the HIR level: when the immediate await
-/// operand is one of the two fetch-with-auth built-ins, hoist it into a
-/// fresh let. The await's operand becomes a LocalGet of that let, which
-/// the generator transform plants in the iter-result — matching the
-/// working two-step path. Preserves call ordering (the temp's init runs
-/// in the same sequence point the inline call would have) and is a
-/// no-op for any other await operand.
+/// operand is one of the recognized Promise-producing call shapes, hoist
+/// it into a fresh let. The await's operand becomes a LocalGet of that
+/// let, which the generator transform plants in the iter-result —
+/// matching the working two-step path. Preserves call ordering (the
+/// temp's init runs in the same sequence point the inline call would
+/// have) and is a no-op for any other await operand.
+///
+/// Issue #617 (closed in v0.5.749) covered the two `fetchWithAuth`
+/// built-ins. Issue #644 expands the coverage: cross-compile +
+/// `--enable-js-runtime` exhibits the same inline-await regression on
+/// generic `Expr::Call` and `Expr::Method` operands too. The user's
+/// verified workaround on that pipeline was a mass-replace of
+/// `await X(...)` → `let p = X(...); await p;` for every call site —
+/// which is exactly what this hoist now performs. Hoisting any call
+/// expression is semantically equivalent (the call still runs in the
+/// same sequence point and the await operates on the same Promise);
+/// the only side effect is an extra `LocalGet` in the IR.
 fn hoist_fetch_with_auth_inside_await(
     await_expr: &mut Expr,
     next_id: &mut LocalId,
@@ -582,10 +593,24 @@ fn hoist_fetch_with_auth_inside_await(
     let Expr::Await(inner) = await_expr else {
         return;
     };
-    if !matches!(
+    let should_hoist = matches!(
         inner.as_ref(),
-        Expr::FetchGetWithAuth { .. } | Expr::FetchPostWithAuth { .. }
-    ) {
+        Expr::FetchGetWithAuth { .. }
+            | Expr::FetchPostWithAuth { .. }
+            | Expr::Call { .. }
+            | Expr::CallSpread { .. }
+            | Expr::NativeMethodCall { .. }
+            | Expr::StaticMethodCall { .. }
+            | Expr::SuperMethodCall { .. }
+    );
+    if !should_hoist {
+        return;
+    }
+    // If the operand is already a simple LocalGet (i.e. user wrote the
+    // two-step form themselves, or this hoist already fired for this
+    // operand earlier in the pass), don't re-hoist — that would
+    // introduce a redundant alias and tickle the local-id allocator.
+    if matches!(inner.as_ref(), Expr::LocalGet(_)) {
         return;
     }
     let id = alloc_local(next_id);
