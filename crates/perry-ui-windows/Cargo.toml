@@ -19,6 +19,14 @@ png = "0.17"
 # GTK4 stub. Windows path renders the matrix into a 32bpp DIB and BitBlt's it onto
 # a custom STATIC child window during WM_PAINT.
 qrcodegen = "1.8"
+# WebView2 — issue #658 Phase 2 Windows backend. CoreWebView2 controller
+# parented to a host HWND with sync-pumped init via WebView2's async
+# completion-handler callbacks. WebView2 Runtime ships with Windows 11
+# by default and as a redistributable on Windows 10 1803+.
+# webview2-com 0.34.x is the last release that uses windows 0.58 (matches
+# the rest of perry-ui-windows). 0.35+ moved to windows 0.59+ which would
+# clash with our HWND/PCWSTR types.
+webview2-com = "=0.34"
 
 [features]
 geisterhand = []

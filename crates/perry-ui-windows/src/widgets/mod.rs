@@ -35,6 +35,7 @@ pub mod textfield;
 pub mod toast;
 pub mod toggle;
 pub mod tree_view;
+pub mod webview;
 pub mod vstack;
 pub mod zstack;
 
