@@ -553,6 +553,22 @@ pub fn snapshot_singleton_closures() -> Vec<*mut ClosureHeader> {
 /// `benchmarks/app-patterns/kernels/promise_all_chains.ts`.
 const MAX_CAPTURED_CLOSURE_SLOTS: usize = 64;
 
+/// Per-`func_ptr` cache miss-streak counter for the adaptive bypass.
+/// Closures whose captures change every call (per-call boxes for
+/// `__step` / `__gen_state`, etc.) miss 100% of the time on the
+/// captures-tuple cache; after `CAPTURED_MISS_STREAK_DISABLE` consecutive
+/// misses we mark the `func_ptr` as "cache-disabled" and route it to a
+/// direct `js_closure_alloc + memcpy` with no HashMap touch, no Vec scan,
+/// no Vec::to_vec capture-tuple allocation. A future hit (e.g. if the
+/// workload changes shape and captures stabilise) resets the counter.
+const CAPTURED_MISS_STREAK_DISABLE: u32 = 256;
+const CAPTURED_DISABLED_SENTINEL: u32 = u32::MAX;
+
+thread_local! {
+    static CAPTURED_MISS_STREAK: RefCell<HashMap<usize, u32>> =
+        RefCell::new(HashMap::new());
+}
+
 /// Per-`func_ptr` single-slot cache for closures with captures. When
 /// the same closure literal is created again with the SAME capture
 /// bits, we return the cached closure; otherwise we allocate a fresh
@@ -578,6 +594,29 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         unsafe { std::slice::from_raw_parts(captures_ptr, n) }
     };
 
+    // Adaptive bypass: if this func_ptr has missed the cache N times in
+    // a row, skip the cache entirely. Async-step closures (`__step` /
+    // `next` / `throw` / `__then_v` / `__then_e`) all capture a fresh
+    // box pointer per invocation so they miss 100% of the time; the
+    // bypass turns ~150 ns of cache-lookup overhead per call into a
+    // ~50 ns direct `gc_malloc + memcpy`.
+    let streak = CAPTURED_MISS_STREAK.with(|m| {
+        m.borrow().get(&(func_ptr as usize)).copied().unwrap_or(0)
+    });
+    if streak == CAPTURED_DISABLED_SENTINEL {
+        CLOSURE_CAP_SINGLETON_MISS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let allocated = js_closure_alloc(func_ptr, capture_count);
+        if n > 0 && !captures_ptr.is_null() {
+            unsafe {
+                let dest = (allocated as *mut u8)
+                    .add(std::mem::size_of::<ClosureHeader>())
+                    as *mut u64;
+                std::ptr::copy_nonoverlapping(captures_ptr, dest, n);
+            }
+        }
+        return allocated;
+    }
+
     // Fast path: scan the per-`func_ptr` slot list looking for a
     // matching capture-tuple. We touch only the cached `Vec` (small,
     // bounded by MAX_CAPTURED_CLOSURE_SLOTS). The match check is
@@ -599,6 +638,11 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         None
     }) {
         CLOSURE_CAP_SINGLETON_HIT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Cache hit — reset the streak so a workload that briefly
+        // thrashed then settled into stable captures gets caching back.
+        CAPTURED_MISS_STREAK.with(|m| {
+            m.borrow_mut().insert(func_ptr as usize, 0);
+        });
         return cached;
     }
     CLOSURE_CAP_SINGLETON_MISS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -619,6 +663,18 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         slots.insert(0, (captures_slice.to_vec(), allocated));
         if slots.len() > MAX_CAPTURED_CLOSURE_SLOTS {
             slots.truncate(MAX_CAPTURED_CLOSURE_SLOTS);
+        }
+    });
+    // Bump the miss-streak counter; flip to disabled sentinel when we
+    // hit the threshold.
+    CAPTURED_MISS_STREAK.with(|m| {
+        let mut m = m.borrow_mut();
+        let entry = m.entry(func_ptr as usize).or_insert(0);
+        if *entry < CAPTURED_DISABLED_SENTINEL - 1 {
+            *entry += 1;
+            if *entry >= CAPTURED_MISS_STREAK_DISABLE {
+                *entry = CAPTURED_DISABLED_SENTINEL;
+            }
         }
     });
     allocated
