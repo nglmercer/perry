@@ -3525,13 +3525,37 @@ fn detect_native_instance_creation_with_context(
             method,
             ..
         } => {
-            // Creation functions like mysql.createPool(), mysql.createConnection()
-            let class_name = match method.as_str() {
-                "createPool" => "Pool",
-                "createConnection" => "Connection",
+            // Creation functions like mysql.createPool(), mysql.createConnection().
+            // The mapping is module-aware: `createConnection` returns a different
+            // class shape per module (`net` → Socket, `mysql2` → Connection), and
+            // a method-name-only match silently mis-tags `net.createConnection(...)`
+            // as ("net", "Connection"), which then misses NATIVE_MODULE_TABLE's
+            // `class_filter: Some("Socket")` rows so `s.write(...)` / `s.on(...)`
+            // fall through to the silent "Unknown native method" sentinel and
+            // never reach perry-ext-net's FFI. Closes #647.
+            let class_name = match (module.as_str(), method.as_str()) {
+                ("mysql2" | "mysql2/promise", "createPool") => "Pool",
+                ("mysql2" | "mysql2/promise", "createConnection") => "Connection",
+                ("net", "createConnection" | "connect") => "Socket",
+                ("tls", "connect") => "Socket",
+                ("net", "Socket") => "Socket",
+                ("pg", "connect") => "Client",
+                ("http" | "https", "request" | "get") => "ClientRequest",
+                ("http", "createServer") => "HttpServer",
+                ("https", "createServer") => "HttpsServer",
+                ("http2", "createSecureServer") => "Http2SecureServer",
+                ("node-cron", "schedule") => "CronJob",
+                ("readline", "createInterface") => "Interface",
                 _ => return None,
             };
-            Some((module.clone(), class_name.to_string()))
+            // For ("net", _) / ("tls", _) factories, `s` belongs to net.Socket's
+            // dispatch — register under "net" regardless of which module the
+            // factory call lived in (mirrors lower.rs:5517).
+            let owning_module = match (module.as_str(), method.as_str()) {
+                ("tls", "connect") => "net".to_string(),
+                _ => module.clone(),
+            };
+            Some((owning_module, class_name.to_string()))
         }
         Expr::NativeMethodCall {
             module,
