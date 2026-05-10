@@ -8,6 +8,12 @@
     { code: "ja", label: "日本語" },
     { code: "ko", label: "한국어" },
     { code: "zh-CN", label: "简体中文" },
+    { code: "th", label: "ไทย" },
+    { code: "vi", label: "Tiếng Việt" },
+    { code: "id", label: "Bahasa Indonesia" },
+    { code: "es", label: "Español" },
+    { code: "it", label: "Italiano" },
+    { code: "fr", label: "Français" },
   ];
 
   function detect() {
