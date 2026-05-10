@@ -884,3 +884,119 @@ pub(crate) fn lower_string_concat(
     // Inline NaN-box (STRING_TAG) — concat always returns a real heap ptr.
     Ok(nanbox_string_inline(blk, &result_handle))
 }
+
+/// Cap the per-call part count for the n-way fold. Must match the
+/// runtime's `MAX_PARTS` in `js_string_concat_chain`. 32 covers every
+/// realistic CSV / log-line / template chain in user code.
+const CONCAT_CHAIN_MAX_PARTS: usize = 32;
+
+/// Try to flatten a left-spine of `Binary { Add }` nodes where every Add
+/// has at least one statically-string operand. Returns the parts in
+/// left-to-right (source-order) order. Returns `None` if the chain is
+/// shorter than the existing pairwise fast path's preference, has too
+/// many parts, or contains an Add node where neither side is statically
+/// string (which would risk numeric semantics under JS spec).
+///
+/// Caller passes the OUTERMOST Add's children. If the outermost Add's
+/// left child is itself a string-shaped Add, we recurse into it; right
+/// children are always leaves in our flat representation.
+pub(crate) fn flatten_string_add_chain<'a>(
+    ctx: &FnCtx<'_>,
+    left: &'a Expr,
+    right: &'a Expr,
+) -> Option<Vec<&'a Expr>> {
+    use perry_hir::BinaryOp;
+
+    let mut parts: Vec<&Expr> = Vec::with_capacity(8);
+    parts.push(right);
+
+    // Walk down the left spine. At each step, the current `cur` was the
+    // left child of an Add we already accepted — so we know `cur + ...`
+    // is string-shaped at the level above. We need each Add we descend
+    // INTO to itself be string-shaped (≥1 statically-string operand), so
+    // the entire chain has unambiguous string semantics.
+    let mut cur: &Expr = left;
+    loop {
+        match cur {
+            Expr::Binary {
+                op: BinaryOp::Add,
+                left: l,
+                right: r,
+            } => {
+                let l_str = crate::type_analysis::is_definitely_string_expr(ctx, l);
+                let r_str = crate::type_analysis::is_definitely_string_expr(ctx, r);
+                if !l_str && !r_str {
+                    // Stop the descent — this Add isn't unambiguously
+                    // string-shaped. Treat the entire `cur` subtree as
+                    // one opaque part.
+                    parts.push(cur);
+                    break;
+                }
+                parts.push(r);
+                cur = l;
+                if parts.len() >= CONCAT_CHAIN_MAX_PARTS {
+                    return None;
+                }
+            }
+            _ => {
+                parts.push(cur);
+                break;
+            }
+        }
+    }
+
+    parts.reverse();
+    Some(parts)
+}
+
+/// Lower a flat parts list to a single `js_string_concat_chain` call.
+/// Each part is lowered to its NaN-boxed value, then stored into a
+/// stack-allocated `[CONCAT_CHAIN_MAX_PARTS x double]` buffer; we pass
+/// the base pointer + N to the runtime helper, which produces a single
+/// allocation containing the entire concatenated result.
+///
+/// The buffer is fixed-size (always sized to MAX_PARTS) and hoisted to
+/// the function entry block via `alloca_entry_array`. A non-entry-block
+/// alloca lowers to a runtime `sub %rsp, N` with no matching restore;
+/// inside a loop body that's a stack leak (issue #167 — same shape that
+/// blew up `buf.readInt32BE` in tight loops). Function-entry allocas
+/// run once at prologue and the slot dominates every reachable use.
+/// One per-function buffer is shared across all chain call sites — fine
+/// because each chain call writes its parts and immediately calls into
+/// the runtime helper before any other call site can clobber the slots.
+pub(crate) fn lower_string_concat_chain(
+    ctx: &mut FnCtx<'_>,
+    parts: &[&Expr],
+) -> Result<String> {
+    debug_assert!(parts.len() >= 2);
+    debug_assert!(parts.len() <= CONCAT_CHAIN_MAX_PARTS);
+
+    // Lower each part first (in source order); side effects must fire
+    // left-to-right per JS spec.
+    let mut lowered: Vec<String> = Vec::with_capacity(parts.len());
+    for p in parts {
+        lowered.push(lower_expr(ctx, p)?);
+    }
+
+    let n = lowered.len();
+    // Hoist the buffer to the function entry block. Issue #167.
+    let buf_reg = ctx
+        .func
+        .alloca_entry_array(DOUBLE, CONCAT_CHAIN_MAX_PARTS);
+    let blk = ctx.block();
+    for (i, val) in lowered.iter().enumerate() {
+        let slot = blk.gep(DOUBLE, &buf_reg, &[(I64, &format!("{}", i))]);
+        blk.store(DOUBLE, val, &slot);
+    }
+    // Pass the array's base pointer as i64 (codegen ABI uses i64 for
+    // raw pointer args matching the existing `js_string_concat` shape).
+    let base_i64 = blk.next_reg();
+    blk.emit_raw(format!("{} = ptrtoint ptr {} to i64", base_i64, buf_reg));
+
+    let result_handle = blk.call(
+        I64,
+        "js_string_concat_chain",
+        &[(I64, &base_i64), (I32, &format!("{}", n))],
+    );
+    Ok(nanbox_string_inline(blk, &result_handle))
+}

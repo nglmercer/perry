@@ -732,6 +732,225 @@ pub extern "C" fn js_string_concat_value(
     js_string_concat(prefix, value_str)
 }
 
+/// N-way string concatenation (v0.5.771).
+///
+/// Replaces a left-spine of `Binary { Add }` string-concat nodes with a
+/// single allocation. Pre-fix `id + "," + name + "," + email + "," + score
+/// + "," + ternary + ",2026-05-09"` lowers to nine nested `js_string_concat`
+/// calls — each allocates a fresh StringHeader, copies the accumulating
+/// prefix, then copies the next part. Total work is quadratic in the
+/// number of parts: 9 allocs, ~225 bytes copied per row for the
+/// `string_concat_csv` kernel.
+///
+/// This function does the entire chain in one pass:
+///   1. Walk the parts, recording (data_ptr, byte_len) for strings and
+///      formatting numbers into a small-int cache or per-part stack buffer.
+///   2. Sum the byte lengths.
+///   3. One arena allocation sized to the total.
+///   4. Copy each part's bytes into the destination.
+///
+/// `parts` is an array of `n` NaN-boxed `f64` values. The codegen-side
+/// fold in `Expr::Binary { Add }` flattens left-spines of string-typed
+/// adds and emits this call instead of the pairwise chain.
+///
+/// Returns a fresh shared (refcount=0) StringHeader. Callers NaN-box
+/// with STRING_TAG via the standard `nanbox_string_inline` helper.
+#[no_mangle]
+pub extern "C" fn js_string_concat_chain(
+    parts: *const f64,
+    n: i32,
+) -> *mut StringHeader {
+    // Cap the per-call part count. The codegen-side fold limits chains
+    // to 32; in practice user code rarely exceeds 8-10 (CSV row, log
+    // line, prompt template). The cap keeps the stack arrays bounded so
+    // we don't risk stack overflow on a pathological 10k-element fold.
+    const MAX_PARTS: usize = 32;
+    let n = (n as usize).min(MAX_PARTS);
+    if n == 0 {
+        return crate::string::js_string_from_bytes(b"".as_ptr(), 0);
+    }
+    if parts.is_null() {
+        return crate::string::js_string_from_bytes(b"".as_ptr(), 0);
+    }
+
+    // Per-part scratch buffer for number formatting. 32 bytes is enough
+    // for any f64 string representation (max ~24 chars).
+    let mut num_bufs: [[u8; 32]; MAX_PARTS] = [[0u8; 32]; MAX_PARTS];
+    // For each part: (ptr, len, flags). ptr is either a pointer into
+    // num_bufs[i] (numeric path) or string_data(s) (string path); len
+    // is the byte count; flags carries STRING_FLAG_HAS_LONE_SURROGATES
+    // if the part is a string with that flag set.
+    let mut piece_ptrs: [*const u8; MAX_PARTS] = [std::ptr::null(); MAX_PARTS];
+    let mut piece_lens: [u32; MAX_PARTS] = [0; MAX_PARTS];
+    let mut piece_u16: [u32; MAX_PARTS] = [0; MAX_PARTS];
+    let mut piece_flags: u32 = 0;
+    let mut total_blen: u32 = 0;
+    let mut total_u16: u32 = 0;
+
+    // Slow-path string headers from js_jsvalue_to_string (need to keep
+    // the StringHeader alive for the duration; arena strings stay live
+    // since the GC won't run mid-FFI-call, and we won't trigger more
+    // allocations between formatting and copying).
+    for i in 0..n {
+        let value = unsafe { *parts.add(i) };
+        let bits = value.to_bits();
+        let tag = bits >> 48;
+
+        // STRING_TAG = 0x7FFF — heap string pointer in lower 48 bits.
+        if tag == 0x7FFF {
+            let ptr = (bits & 0x0000_FFFF_FFFF_FFFF) as *const StringHeader;
+            if is_valid_string_ptr(ptr) {
+                let blen = unsafe { (*ptr).byte_len };
+                let u16len = unsafe { (*ptr).utf16_len };
+                let flags = unsafe { (*ptr).flags };
+                if blen > 0 {
+                    piece_ptrs[i] = unsafe {
+                        (ptr as *const u8).add(std::mem::size_of::<StringHeader>())
+                    };
+                    piece_lens[i] = blen;
+                    piece_u16[i] = u16len;
+                    piece_flags |= flags;
+                    total_blen = total_blen.saturating_add(blen);
+                    total_u16 = total_u16.saturating_add(u16len);
+                }
+                continue;
+            }
+        }
+
+        // SHORT_STRING_TAG = 0x7FF9 — payload encoded inline. Materialize
+        // through the slow path (rare in hot loops).
+        if tag == 0x7FF9 {
+            let s = crate::value::js_jsvalue_to_string(value);
+            if is_valid_string_ptr(s) {
+                let blen = unsafe { (*s).byte_len };
+                let u16len = unsafe { (*s).utf16_len };
+                let flags = unsafe { (*s).flags };
+                if blen > 0 {
+                    piece_ptrs[i] = unsafe {
+                        (s as *const u8).add(std::mem::size_of::<StringHeader>())
+                    };
+                    piece_lens[i] = blen;
+                    piece_u16[i] = u16len;
+                    piece_flags |= flags;
+                    total_blen = total_blen.saturating_add(blen);
+                    total_u16 = total_u16.saturating_add(u16len);
+                }
+            }
+            continue;
+        }
+
+        // Plain f64 (no NaN-box tag in upper 16 bits). Format inline.
+        let is_plain_f64 = tag < 0x7FF8 || (tag == 0x7FF8 && (bits & 0x000F_FFFF_FFFF_FFFF) == 0);
+        if is_plain_f64 {
+            let len = format_number_into(value, &mut num_bufs[i]);
+            piece_ptrs[i] = num_bufs[i].as_ptr();
+            piece_lens[i] = len as u32;
+            piece_u16[i] = len as u32; // ASCII for all formatted numbers
+            total_blen = total_blen.saturating_add(len as u32);
+            total_u16 = total_u16.saturating_add(len as u32);
+            continue;
+        }
+
+        // INT32_TAG = 0x7FFE — extract int from lower 32 bits.
+        if tag == 0x7FFE {
+            let v = (bits & 0xFFFF_FFFF) as u32 as i32;
+            let len = if v >= 0 {
+                fast_itoa_u32(v as u32, &mut num_bufs[i])
+            } else {
+                let s = format!("{}", v);
+                let l = s.len().min(32);
+                num_bufs[i][..l].copy_from_slice(&s.as_bytes()[..l]);
+                l
+            };
+            piece_ptrs[i] = num_bufs[i].as_ptr();
+            piece_lens[i] = len as u32;
+            piece_u16[i] = len as u32;
+            total_blen = total_blen.saturating_add(len as u32);
+            total_u16 = total_u16.saturating_add(len as u32);
+            continue;
+        }
+
+        // Anything else (bool, null, undefined, object, etc.) — slow path.
+        let s = crate::value::js_jsvalue_to_string(value);
+        if is_valid_string_ptr(s) {
+            let blen = unsafe { (*s).byte_len };
+            let u16len = unsafe { (*s).utf16_len };
+            let flags = unsafe { (*s).flags };
+            if blen > 0 {
+                piece_ptrs[i] = unsafe {
+                    (s as *const u8).add(std::mem::size_of::<StringHeader>())
+                };
+                piece_lens[i] = blen;
+                piece_u16[i] = u16len;
+                piece_flags |= flags;
+                total_blen = total_blen.saturating_add(blen);
+                total_u16 = total_u16.saturating_add(u16len);
+            }
+        }
+    }
+
+    // Single allocation for the entire result.
+    let total_size = std::mem::size_of::<StringHeader>() + total_blen as usize;
+    let raw = string_arena_alloc(total_size);
+    let ptr = raw as *mut StringHeader;
+
+    unsafe {
+        (*ptr).utf16_len = total_u16;
+        (*ptr).byte_len = total_blen;
+        (*ptr).capacity = total_blen;
+        (*ptr).refcount = 0;
+        (*ptr).flags = piece_flags;
+
+        let mut cursor = (ptr as *mut u8).add(std::mem::size_of::<StringHeader>());
+        for i in 0..n {
+            let l = piece_lens[i] as usize;
+            if l > 0 && !piece_ptrs[i].is_null() {
+                ptr::copy_nonoverlapping(piece_ptrs[i], cursor, l);
+                cursor = cursor.add(l);
+            }
+        }
+
+        ptr
+    }
+}
+
+/// Format an f64 into a 32-byte stack buffer using the fast paths from
+/// `js_string_concat_value` / `js_value_concat_string`. Returns the number
+/// of bytes written.
+#[inline]
+fn format_number_into(value: f64, buf: &mut [u8; 32]) -> usize {
+    if value.fract() == 0.0 && value.abs() < 1e15 && !value.is_nan() && !value.is_infinite() {
+        let n = value as i64;
+        if (0..=999_999_999).contains(&n) {
+            return fast_itoa_u32(n as u32, buf);
+        }
+        let s = format!("{}", n);
+        let len = s.len().min(buf.len());
+        buf[..len].copy_from_slice(&s.as_bytes()[..len]);
+        return len;
+    }
+    if value.is_nan() {
+        buf[..3].copy_from_slice(b"NaN");
+        return 3;
+    }
+    if value.is_infinite() {
+        if value > 0.0 {
+            buf[..8].copy_from_slice(b"Infinity");
+            return 8;
+        }
+        buf[..9].copy_from_slice(b"-Infinity");
+        return 9;
+    }
+    if value == 0.0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let s = format!("{}", value);
+    let len = s.len().min(buf.len());
+    buf[..len].copy_from_slice(&s.as_bytes()[..len]);
+    len
+}
+
 /// Fused value + string concatenation (value on the LEFT, string on the RIGHT).
 /// Handles the `i + "_suffix"` pattern.
 #[no_mangle]

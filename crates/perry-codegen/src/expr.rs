@@ -17,7 +17,8 @@ use crate::function::LlFunction;
 use crate::lower_call::{lower_call, lower_native_method_call, lower_new};
 use crate::lower_conditional::{lower_conditional, lower_logical, lower_truthy};
 use crate::lower_string_method::{
-    lower_string_coerce_concat, lower_string_concat, lower_string_self_append,
+    flatten_string_add_chain, lower_string_coerce_concat, lower_string_concat,
+    lower_string_concat_chain, lower_string_self_append,
 };
 use crate::nanbox::{
     double_literal, BIGINT_TAG_I64, POINTER_MASK_I64, POINTER_TAG_I64, STRING_TAG_I64,
@@ -1334,7 +1335,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 let l_is_str = crate::type_analysis::is_definitely_string_expr(ctx, left);
                 let r_is_str = crate::type_analysis::is_definitely_string_expr(ctx, right);
 
-                // N-way string concat fold (v0.5.769): when this is a
+                // N-way string concat fold (v0.5.771): when this is a
                 // chain of `a + b + c + ...` where every Add node has at
                 // least one statically-string operand, flatten the entire
                 // left-spine and emit a single `js_string_concat_chain`
