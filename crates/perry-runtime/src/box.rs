@@ -16,6 +16,21 @@ pub struct Box {
     pub value: f64,
 }
 
+thread_local! {
+    /// Registry of every active box pointer. GC traces the contained
+    /// f64 value so that NaN-boxed heap pointers stored in boxes (e.g.
+    /// the generator state machine's iter object held in `__iter`'s
+    /// mutable-capture box) keep the referenced heap object alive
+    /// across collections. Without this, captures stored as raw box
+    /// pointers in closure capture slots fail the `valid_ptrs.contains`
+    /// check during `trace_closure` (boxes come from `std::alloc::alloc`
+    /// directly, not the GC arena), so the box pointer is never marked
+    /// AND the f64 value inside is never scanned — heap objects
+    /// referenced only through box-captures can be swept mid-await.
+    pub(crate) static BOX_REGISTRY: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
 /// Allocate a new box with an initial value
 #[no_mangle]
 pub extern "C" fn js_box_alloc(initial_value: f64) -> *mut Box {
@@ -27,8 +42,38 @@ pub extern "C" fn js_box_alloc(initial_value: f64) -> *mut Box {
             return std::ptr::null_mut();
         }
         (*ptr).value = initial_value;
+        BOX_REGISTRY.with(|r| {
+            r.borrow_mut().insert(ptr as usize);
+        });
         ptr
     }
+}
+
+/// GC root scanner: walk every registered box and `mark` the f64
+/// value inside. Heap pointers stored inside boxes (e.g. the generator
+/// state machine's iter object held in a mutable-capture box) must be
+/// kept alive across collections. The box pointer itself is _not_ a
+/// heap value the runtime tracks — `BOX_REGISTRY` is the source of
+/// truth for "every live box right now" — so we use the standard root
+/// scanner protocol: dispatch every stored f64 to `mark` and let the
+/// GC trace into it.
+pub fn scan_box_roots(mark: &mut dyn FnMut(f64)) {
+    BOX_REGISTRY.with(|r| {
+        let r = r.borrow();
+        for &addr in r.iter() {
+            let ptr = addr as *const Box;
+            // Defensive: the registry should only contain valid live
+            // pointers, but if a stale entry slipped through we'd
+            // segfault on the deref. The tight bounds check on the
+            // address (alloc gives 8-aligned pointers in user space)
+            // matches `is_plausible_box_ptr` to keep this a no-op for
+            // any pathological entry.
+            if addr >= 0x1000 && addr < 0x0001_0000_0000_0000 && addr % 8 == 0 {
+                let v = unsafe { (*ptr).value };
+                mark(v);
+            }
+        }
+    });
 }
 
 /// Get the value from a box

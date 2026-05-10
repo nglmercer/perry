@@ -3619,6 +3619,10 @@ pub fn gc_init() {
     gc_register_root_scanner(intern_table_root_scanner);
     gc_register_root_scanner(shadow_stack_root_scanner);
     gc_register_root_scanner(crate::builtins::scan_console_log_singleton_roots);
+    // Box-capture root scanner (mutable closure captures, esp. the
+    // generator state-machine's `__iter` and `__step` boxes that hold
+    // the iter object + step closure across awaits).
+    gc_register_root_scanner(crate::r#box::scan_box_roots);
     #[cfg(feature = "ohos-napi")]
     gc_register_root_scanner(crate::arkts_callbacks::arkts_callbacks_root_scanner);
 }
