@@ -54,6 +54,13 @@ pub extern "C" fn js_perry_tui_run(component: i64) -> f64 {
             break;
         }
 
+        // Reset hook index — ink-shape hooks (useState/useEffect/useMemo/
+        // useRef) bind to a per-frame index, so the slot at position N
+        // is the SAME slot the previous frame's Nth hook saw. Without
+        // this reset the index would grow unboundedly and every render
+        // would allocate fresh state. (#679 Phase 1.)
+        super::hooks::reset_hook_index();
+
         // Call the component to get a fresh widget tree.
         let widget_v = unsafe { js_closure_call0(component_closure) };
         // Unbox the POINTER tag → raw handle (low 48 bits).

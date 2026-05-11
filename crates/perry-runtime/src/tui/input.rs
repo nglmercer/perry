@@ -242,6 +242,12 @@ pub extern "C" fn js_perry_tui_exit() -> f64 {
 /// from the render loop at every frame. Returns the number of bytes
 /// dispatched (mostly for diagnostic — the loop just re-renders if
 /// any state changed in the dispatch).
+///
+/// Special-cases:
+/// - `\x09` (TAB) → calls `focus_next()` from the hooks module, then
+///   re-dispatches the byte to the user handler too. Matches ink: Tab
+///   cycles focus AND the active widget can still observe it.
+/// - `ESC-[Z` (Shift-Tab) → calls `focus_previous()`, then dispatches.
 pub fn drain_input() -> i32 {
     let bytes: Vec<u8> = {
         let mut q = match PENDING_BYTES.lock() {
@@ -254,9 +260,6 @@ pub fn drain_input() -> i32 {
         return 0;
     }
     let handler = INPUT_HANDLER.load(Ordering::Acquire);
-    if handler == 0 {
-        return 0;
-    }
     let mut count: i32 = 0;
     // Group consecutive bytes that look like a single ANSI escape
     // sequence (start-with-ESC, length 1..=8) so arrow keys etc.
@@ -276,11 +279,21 @@ pub fn drain_input() -> i32 {
             i + 1
         };
         let chunk = &bytes[i..chunk_end];
-        let s_ptr = js_string_from_bytes(chunk.as_ptr(), chunk.len() as u32);
-        let arg = f64::from_bits(JSValue::string_ptr(s_ptr).bits());
-        let closure = handler as *const ClosureHeader;
-        unsafe {
-            js_closure_call1(closure, arg);
+
+        // Focus-cycle keys (#679 Phase 3).
+        if chunk == b"\x09" {
+            super::hooks::js_perry_tui_focus_next();
+        } else if chunk == b"\x1b[Z" {
+            super::hooks::js_perry_tui_focus_previous();
+        }
+
+        if handler != 0 {
+            let s_ptr = js_string_from_bytes(chunk.as_ptr(), chunk.len() as u32);
+            let arg = f64::from_bits(JSValue::string_ptr(s_ptr).bits());
+            let closure = handler as *const ClosureHeader;
+            unsafe {
+                js_closure_call1(closure, arg);
+            }
         }
         count += 1;
         i = chunk_end;
@@ -299,12 +312,16 @@ mod tests {
     }
 
     #[test]
-    fn drain_with_no_handler_returns_zero() {
+    fn drain_with_no_handler_still_drains_bytes() {
         reset();
         // Inject a byte via direct push since the reader thread isn't
         // running in tests.
         PENDING_BYTES.lock().unwrap().push(b'a');
-        assert_eq!(drain_input(), 0);
+        // Post-#679 Phase 3: drain_input always counts processed chunks
+        // because the focus-cycle dispatch (Tab/Shift-Tab) runs regardless
+        // of whether a user useInput handler is registered. Returning 1
+        // here matches the new "always drain" contract.
+        assert_eq!(drain_input(), 1);
         // Bytes consumed even when no handler registered.
         assert!(PENDING_BYTES.lock().unwrap().is_empty());
     }

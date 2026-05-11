@@ -45,7 +45,9 @@ benchmarks/suite/assets/
 test-files/test_*
 test-files/test-*
 !test-files/test_*.ts
+!test-files/test_*.tsx
 !test-files/test-*.ts
+!test-files/test-*.tsx
 !test-files/*/
 tests/test_*
 tests/test-*

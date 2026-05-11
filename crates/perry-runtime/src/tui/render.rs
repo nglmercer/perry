@@ -53,6 +53,9 @@ fn sgr_transition(prev: SgrState, next: SgrState, out: &mut Vec<u8>) {
     if next.style.bold() {
         out.extend_from_slice(b";1");
     }
+    if next.style.dim() {
+        out.extend_from_slice(b";2");
+    }
     if next.style.italic() {
         out.extend_from_slice(b";3");
     }
@@ -61,6 +64,9 @@ fn sgr_transition(prev: SgrState, next: SgrState, out: &mut Vec<u8>) {
     }
     if next.style.reverse() {
         out.extend_from_slice(b";7");
+    }
+    if next.style.strikethrough() {
+        out.extend_from_slice(b";9");
     }
     if next.fg != Color::Default {
         out.push(b';');

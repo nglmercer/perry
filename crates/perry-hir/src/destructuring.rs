@@ -12,6 +12,74 @@ use crate::lower::{lower_expr, LoweringContext};
 use crate::lower_patterns::*;
 use crate::lower_types::*;
 
+/// Recognize the ink-shape `useState(initial)` pattern when the
+/// callee is a perry/tui-imported `useState`. Returns a rewritten
+/// HIR expression that calls `useStateTuple` instead — returning a
+/// real `[value, setter]` array — when the pattern matches. Otherwise
+/// returns None and the caller falls back to standard lowering.
+///
+/// Only handles the direct-call shape `useState(x)`. Member-call
+/// shapes `tui.useState(x)` are also recognized when the namespace
+/// resolves to perry/tui.
+fn rewrite_use_state_tuple(ctx: &mut LoweringContext, init: &ast::Expr) -> Option<Expr> {
+    let call = match init {
+        ast::Expr::Call(c) => c,
+        _ => return None,
+    };
+    let (is_use_state, method) = match &call.callee {
+        ast::Callee::Expr(e) => match e.as_ref() {
+            ast::Expr::Ident(id) => {
+                let name = id.sym.as_ref();
+                let m = ctx.lookup_native_module(name);
+                match m {
+                    Some(("perry/tui", Some("useState"))) | Some(("perry/tui", None))
+                        if name == "useState" =>
+                    {
+                        (true, "useStateTuple")
+                    }
+                    _ => (false, ""),
+                }
+            }
+            ast::Expr::Member(m) => {
+                if let (ast::Expr::Ident(obj), ast::MemberProp::Ident(prop)) =
+                    (m.obj.as_ref(), &m.prop)
+                {
+                    if prop.sym.as_ref() == "useState" {
+                        match ctx.lookup_native_module(obj.sym.as_ref()) {
+                            Some(("perry/tui", _)) => (true, "useStateTuple"),
+                            _ => (false, ""),
+                        }
+                    } else {
+                        (false, "")
+                    }
+                } else {
+                    (false, "")
+                }
+            }
+            _ => (false, ""),
+        },
+        _ => return None,
+    };
+    if !is_use_state {
+        return None;
+    }
+    let mut arg_exprs: Vec<Expr> = Vec::new();
+    for a in &call.args {
+        if a.spread.is_some() {
+            // Don't rewrite if user code spreads — let the standard path error/handle.
+            return None;
+        }
+        arg_exprs.push(lower_expr(ctx, &a.expr).ok()?);
+    }
+    Some(Expr::NativeMethodCall {
+        module: "perry/tui".to_string(),
+        class_name: None,
+        object: None,
+        method: method.to_string(),
+        args: arg_exprs,
+    })
+}
+
 /// True iff `e` contains an `ast::Expr::Arrow` or `ast::Expr::Fn` at
 /// any depth. Used by the let-decl pre-registration path (#593) to
 /// extend the issue-#461 self-recursion fix to indirect shapes —
@@ -1230,6 +1298,17 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                             // those calls fall through to dynamic dispatch and
                                             // never reach the runtime FFI. (#358 Phase 2.)
                                             ("perry/tui", "state") => Some("State"),
+                                            // perry/tui ink-shape hooks (#679 Phase 1): the
+                                            // useApp/useStdout/useRef factories each return
+                                            // a singleton handle. .exit()/.write()/.get()
+                                            // etc. dispatch through the class_filter rows
+                                            // in lower_call.rs.
+                                            ("perry/tui", "useApp") => Some("TuiApp"),
+                                            ("perry/tui", "useStdout") => Some("TuiStdout"),
+                                            ("perry/tui", "useRef") => Some("RefBox"),
+                                            ("perry/tui", "useFocusManager") => {
+                                                Some("FocusManager")
+                                            }
                                             _ => None,
                                         };
                                         if let Some(class_name) = class_name {
@@ -1289,6 +1368,31 @@ pub(crate) fn lower_var_decl_with_destructuring(
                                         module_name.clone(),
                                         "State".to_string(),
                                     );
+                                }
+                                // perry/tui ink-shape hooks (#679 Phase 1).
+                                // useApp/useStdout/useRef each return a
+                                // singleton handle whose receiver-methods
+                                // dispatch through the class_filter rows
+                                // ("TuiApp"/"TuiStdout"/"RefBox") added in
+                                // lower_call.rs. Without these registrations
+                                // a call like `app.exit()` falls back to
+                                // dynamic dispatch and the matching FFI
+                                // (js_perry_tui_app_exit) is never invoked.
+                                if module_name == "perry/tui" {
+                                    let class = match method_name.as_str() {
+                                        "useApp" => Some("TuiApp"),
+                                        "useStdout" => Some("TuiStdout"),
+                                        "useRef" => Some("RefBox"),
+                                        "useFocusManager" => Some("FocusManager"),
+                                        _ => None,
+                                    };
+                                    if let Some(cn) = class {
+                                        ctx.register_native_instance(
+                                            name.clone(),
+                                            module_name.clone(),
+                                            cn.to_string(),
+                                        );
+                                    }
                                 }
                                 // node:http / node:https / node:http2 — issue #604
                                 // followup to #577. The module-level decl path
@@ -2026,12 +2130,27 @@ pub(crate) fn lower_var_decl_with_destructuring(
             // Delegate to the recursive pattern binding helper so that all
             // destructuring features (nested patterns, defaults, rest, computed
             // keys) work consistently across all call sites.
-            let init_expr = decl
-                .init
-                .as_ref()
-                .map(|e| lower_expr(ctx, e))
-                .transpose()?
-                .ok_or_else(|| anyhow!("Destructuring requires an initializer"))?;
+
+            // ink-shape useState: `const [v, setV] = useState(0)` (#679 Phase 1).
+            // Rewrite RHS to call useStateTuple which returns a real
+            // [value, setter_closure] 2-element array. Without this, the
+            // regular destructure path indexes a scalar return as if it were
+            // an array — both elements come out undefined.
+            let init_expr = if let (ast::Pat::Array(_), Some(init)) =
+                (&decl.name, decl.init.as_ref())
+            {
+                if let Some(rewritten) = rewrite_use_state_tuple(ctx, init) {
+                    rewritten
+                } else {
+                    lower_expr(ctx, init)?
+                }
+            } else {
+                decl.init
+                    .as_ref()
+                    .map(|e| lower_expr(ctx, e))
+                    .transpose()?
+                    .ok_or_else(|| anyhow!("Destructuring requires an initializer"))?
+            };
             let stmts = lower_pattern_binding(ctx, &decl.name, init_expr, mutable)?;
             result.extend(stmts);
         }

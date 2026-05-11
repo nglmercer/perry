@@ -310,9 +310,21 @@ pub(crate) fn lower_native_method_call(
                         style_bits |= 0b0100;
                     }
                 }
-                "reverse" => {
+                // ink uses "inverse"; #358 used "reverse". Accept both.
+                "reverse" | "inverse" => {
                     if matches!(val, Expr::Bool(true)) {
-                        style_bits |= 0b1000;
+                        style_bits |= 0b0000_1000;
+                    }
+                }
+                // ink-shape parity (#679 Phase 5): dimColor + strikethrough.
+                "dimColor" | "dim" => {
+                    if matches!(val, Expr::Bool(true)) {
+                        style_bits |= 0b0001_0000;
+                    }
+                }
+                "strikethrough" => {
+                    if matches!(val, Expr::Bool(true)) {
+                        style_bits |= 0b0010_0000;
                     }
                 }
                 _ => {}

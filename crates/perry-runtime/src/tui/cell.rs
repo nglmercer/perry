@@ -24,18 +24,20 @@ impl Default for Cell {
     }
 }
 
-/// Bitmask of style flags. Bold/italic/underline/reverse are the four
-/// most commonly emitted SGR attributes; faint/blink/strikethrough are
-/// rarely useful in a TUI and aren't supported by every terminal so we
-/// skip them in v0.1.
+/// Bitmask of style flags. Bold/italic/underline/reverse are the
+/// most commonly emitted SGR attributes; ink users also expect
+/// `dimColor` (SGR 2 / faint) and `strikethrough` (SGR 9).
+/// Added by #679 Phase 5 (ink-shape Text style parity).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Style(pub u8);
 
 impl Style {
-    pub const BOLD: u8 = 0b0001;
-    pub const ITALIC: u8 = 0b0010;
-    pub const UNDERLINE: u8 = 0b0100;
-    pub const REVERSE: u8 = 0b1000;
+    pub const BOLD: u8 = 0b0000_0001;
+    pub const ITALIC: u8 = 0b0000_0010;
+    pub const UNDERLINE: u8 = 0b0000_0100;
+    pub const REVERSE: u8 = 0b0000_1000;
+    pub const DIM: u8 = 0b0001_0000;
+    pub const STRIKETHROUGH: u8 = 0b0010_0000;
 
     pub fn bold(self) -> bool {
         (self.0 & Self::BOLD) != 0
@@ -48,6 +50,12 @@ impl Style {
     }
     pub fn reverse(self) -> bool {
         (self.0 & Self::REVERSE) != 0
+    }
+    pub fn dim(self) -> bool {
+        (self.0 & Self::DIM) != 0
+    }
+    pub fn strikethrough(self) -> bool {
+        (self.0 & Self::STRIKETHROUGH) != 0
     }
 }
 

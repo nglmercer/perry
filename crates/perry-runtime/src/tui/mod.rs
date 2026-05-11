@@ -35,6 +35,7 @@
 pub mod cell;
 pub mod color;
 pub mod ffi;
+pub mod hooks;
 pub mod input;
 pub mod layout;
 pub mod render;
