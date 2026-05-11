@@ -262,6 +262,39 @@ pub extern "C" fn js_array_from_f64(elements: *const f64, count: u32) -> *mut Ar
     arr
 }
 
+/// `Array.from(string)` — split the source string into Unicode codepoints
+/// and emit each as a 1-codepoint string element (matches `[..."hello"]` /
+/// `for (const c of "hello")` semantics). Surrogate pairs in UTF-16 source
+/// space materialize as a single codepoint per ECMA-262 §22.1.5 String
+/// Iterator Records, so `[..."🎉"]` yields a 1-element array (not 2).
+unsafe fn js_array_from_string_codepoints(s: *const crate::string::StringHeader) -> *mut ArrayHeader {
+    if s.is_null() {
+        return js_array_alloc(0);
+    }
+    let byte_len = (*s).byte_len as usize;
+    if byte_len == 0 {
+        return js_array_alloc(0);
+    }
+    let data_ptr = (s as *const u8).add(std::mem::size_of::<crate::string::StringHeader>());
+    let bytes = std::slice::from_raw_parts(data_ptr, byte_len);
+    let src = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return js_array_alloc(0),
+    };
+    // Pre-count to size the result exactly.
+    let cp_count = src.chars().count() as u32;
+    let arr = js_array_alloc(cp_count);
+    (*arr).length = cp_count;
+    let elements = (arr as *mut u8).add(std::mem::size_of::<ArrayHeader>()) as *mut f64;
+    for (i, ch) in src.chars().enumerate() {
+        let mut buf = [0u8; 4];
+        let s_ref = ch.encode_utf8(&mut buf);
+        let s_ptr = crate::string::js_string_from_bytes(s_ref.as_ptr(), s_ref.len() as u32);
+        *elements.add(i) = crate::value::js_nanbox_string(s_ptr as i64);
+    }
+    arr
+}
+
 /// Exact-sized array allocation for array literals `[a, b, c, ...]`.
 ///
 /// Unlike `js_array_alloc`, this does NOT apply `MIN_ARRAY_CAPACITY=16` padding.
@@ -1758,6 +1791,46 @@ pub extern "C" fn js_array_flat(arr: *const ArrayHeader) -> *mut ArrayHeader {
 /// Also handles Sets (via registry check) — converts Set to Array transparently.
 #[no_mangle]
 pub extern "C" fn js_array_clone(src: *const ArrayHeader) -> *mut ArrayHeader {
+    // Strip a NaN-box tag for the registry/string checks below; the
+    // raw_addr path is reused for typed-array / Buffer / string
+    // detection. Plain-pointer call sites already pass a clean ptr.
+    let raw_addr = if !src.is_null() {
+        let bits = src as u64;
+        if (bits >> 48) >= 0x7FF8 {
+            (bits & 0x0000_FFFF_FFFF_FFFF) as usize
+        } else {
+            bits as usize
+        }
+    } else {
+        0
+    };
+
+    // `Array.from(string)` iterates the source by Unicode codepoint
+    // (each codepoint becomes a 1-char string element) per ECMA-262
+    // §23.1.2.1. Pre-fix this fell through to the array memcpy path
+    // and emitted garbage f64s built from the string's underlying
+    // UTF-8 bytes. Detect via the canonical STRING_TAG (top16=0x7FFF)
+    // OR via the GC header's obj_type byte when the receiver arrived
+    // as a raw pointer (e.g. through a typed-Any local).
+    let is_string_src = {
+        let top16 = (src as u64) >> 48;
+        if top16 == 0x7FFF {
+            true
+        } else if raw_addr >= crate::gc::GC_HEADER_SIZE + 0x1000 {
+            unsafe {
+                let hdr = (raw_addr as *const u8).sub(crate::gc::GC_HEADER_SIZE)
+                    as *const crate::gc::GcHeader;
+                (*hdr).obj_type == crate::gc::GC_TYPE_STRING
+            }
+        } else {
+            false
+        }
+    };
+    if is_string_src {
+        let s_ptr = raw_addr as *const crate::string::StringHeader;
+        return unsafe { js_array_from_string_codepoints(s_ptr) };
+    }
+
     // Check if this is actually a Set (type unknown at compile time)
     if !src.is_null() && crate::set::is_registered_set(src as usize) {
         return crate::set::js_set_to_array(src as *const crate::set::SetHeader);
