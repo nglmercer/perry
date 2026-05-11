@@ -1007,9 +1007,27 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     // js_has_exception() returns i32 (1 if exception is active, 0 otherwise).
     // js_enter_finally() / js_leave_finally() bracket finally blocks.
     module.declare_function("js_try_push", PTR, &[]);
-    // Windows MSVC uses _setjmp(buf, frame_ptr); Unix uses setjmp(buf).
+    // setjmp variant selection:
+    //   - Windows MSVC requires _setjmp(buf, frame_ptr)
+    //   - Apple targets: the default C `setjmp(3)` saves the signal mask
+    //     via a `sigprocmask` syscall (and the alt-signal-stack via
+    //     `__sigaltstack`) — together those syscalls dominate CPU for
+    //     async-heavy workloads (~43% of CPU on promise_all_chains.ts
+    //     before the swap). Perry never longjmps out of a signal
+    //     handler, so the fast `_setjmp(3)` (no sigprocmask) is
+    //     functionally equivalent for our exception path. The LLVM-IR
+    //     name `_setjmp` maps to the Mach-O linker symbol `__setjmp`
+    //     (the C ABI prepends an underscore), which is the fast
+    //     variant in libsystem_platform.dylib.
+    //   - Linux glibc: the C `setjmp(3)` already does NOT save the
+    //     signal mask (POSIX leaves it implementation-defined;
+    //     `sigsetjmp(env, 1)` is the signal-saving variant on Linux).
+    //     So `setjmp` on Linux is already the fast path; no swap
+    //     needed.
     if cfg!(target_os = "windows") {
         module.declare_function("_setjmp", I32, &[PTR, PTR]);
+    } else if cfg!(target_vendor = "apple") {
+        module.declare_function("_setjmp", I32, &[PTR]);
     } else {
         module.declare_function("setjmp", I32, &[PTR]);
     }

@@ -240,8 +240,14 @@ impl LlModule {
         }
 
         // Attribute group for setjmp's `returns_twice` marker.
-        // Only emit if setjmp was actually declared in this module.
-        if self.declared_names.contains("setjmp") {
+        // Only emit if setjmp (any variant) was actually declared in
+        // this module. Apple targets declare `_setjmp` (fast variant
+        // without signal-mask save), Windows declares `_setjmp`
+        // (2-arg ABI), Linux declares `setjmp` — all three need
+        // `returns_twice` on the call site.
+        if self.declared_names.contains("setjmp")
+            || self.declared_names.contains("_setjmp")
+        {
             ir.push_str("\nattributes #0 = { returns_twice }\n");
             // Functions that contain a `try` statement are marked with `#1`.
             // `optnone` forces LLVM to skip mem2reg/SROA inside the function,

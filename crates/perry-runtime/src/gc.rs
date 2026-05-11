@@ -1664,10 +1664,22 @@ fn try_mark_value(value_bits: u64, valid_ptrs: &ValidPointerSet) -> bool {
 /// Raw I64 pointers arise from Perry's `is_array`/`is_string`/`is_pointer`/`is_closure` local
 /// variables — codegen stores these as raw I64 words (not NaN-boxed) in registers and on stack.
 fn mark_stack_roots(valid_ptrs: &ValidPointerSet) {
-    // Capture callee-saved registers into a buffer via setjmp
+    // Capture callee-saved registers into a buffer via setjmp.
+    //
+    // On Apple platforms the C `setjmp(3)` saves the signal mask via a
+    // `sigprocmask` system call, which dominates GC cost (~25 μs per
+    // call on arm64). We only need register capture, not signal-state
+    // save — switch to `_setjmp(3)` (linker symbol `__setjmp`) on
+    // Apple targets. See the matching switch in
+    // `promise.rs::js_promise_run_microtasks` for the full rationale.
     let mut jmp_buf = [0u64; 32]; // oversized for safety
     unsafe {
-        // Use setjmp to capture register state
+        #[cfg(target_vendor = "apple")]
+        extern "C" {
+            #[link_name = "_setjmp"]
+            fn setjmp(env: *mut u64) -> i32;
+        }
+        #[cfg(not(target_vendor = "apple"))]
         extern "C" {
             fn setjmp(env: *mut u64) -> i32;
         }

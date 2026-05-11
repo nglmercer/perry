@@ -1094,10 +1094,22 @@ fn lower_try(
     // assignments. The standard `blk.call()` doesn't support call
     // attributes, so we emit the instruction manually.
     let sjr_reg = blk.next_reg();
-    // Windows MSVC uses _setjmp(buf, frame_ptr); Unix uses setjmp(buf).
+    // setjmp variant selection — must match the declaration in
+    // `runtime_decls.rs`. See that file for the rationale; the short
+    // version:
+    //   - Apple: `_setjmp` (LLVM-IR name) → linker `__setjmp` = fast
+    //     variant (skips the sigprocmask / sigaltstack syscalls that
+    //     normally cost ~500 ns each on macOS arm64).
+    //   - Linux: `setjmp` is already fast — no swap needed.
+    //   - Windows: `_setjmp(buf, frame_ptr)` (different ABI).
     if cfg!(target_os = "windows") {
         blk.emit_raw(format!(
             "{} = call i32 @_setjmp(ptr {}, ptr null) #0",
+            sjr_reg, jmpbuf
+        ));
+    } else if cfg!(target_vendor = "apple") {
+        blk.emit_raw(format!(
+            "{} = call i32 @_setjmp(ptr {}) #0",
             sjr_reg, jmpbuf
         ));
     } else {

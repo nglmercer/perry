@@ -467,7 +467,7 @@ pub struct ClosureHeader {
 /// Returns pointer to ClosureHeader
 #[no_mangle]
 pub extern "C" fn js_closure_alloc(func_ptr: *const u8, capture_count: u32) -> *mut ClosureHeader {
-    CLOSURE_ALLOC_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::promise::bump(&CLOSURE_ALLOC_COUNT);
     let actual_count = real_capture_count(capture_count) as usize;
     let captures_size = actual_count * 8; // Each capture is 8 bytes (f64 or i64)
     let total_size = std::mem::size_of::<ClosureHeader>() + captures_size;
@@ -604,7 +604,7 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         m.borrow().get(&(func_ptr as usize)).copied().unwrap_or(0)
     });
     if streak == CAPTURED_DISABLED_SENTINEL {
-        CLOSURE_CAP_SINGLETON_MISS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::promise::bump(&CLOSURE_CAP_SINGLETON_MISS);
         let allocated = js_closure_alloc(func_ptr, capture_count);
         if n > 0 && !captures_ptr.is_null() {
             unsafe {
@@ -637,7 +637,7 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         }
         None
     }) {
-        CLOSURE_CAP_SINGLETON_HIT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::promise::bump(&CLOSURE_CAP_SINGLETON_HIT);
         // Cache hit — reset the streak so a workload that briefly
         // thrashed then settled into stable captures gets caching back.
         CAPTURED_MISS_STREAK.with(|m| {
@@ -645,7 +645,7 @@ pub extern "C" fn js_closure_alloc_with_captures_singleton(
         });
         return cached;
     }
-    CLOSURE_CAP_SINGLETON_MISS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::promise::bump(&CLOSURE_CAP_SINGLETON_MISS);
 
     // Slow path: allocate, populate captures, insert into cache as
     // the most-recent entry. If the slot list is full, drop the

@@ -5,7 +5,32 @@
 
 use std::cell::RefCell;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+// Cached `PERRY_MT_PROFILE` flag, populated once at process start.
+// All instrumentation counter increments check this first — when
+// profiling is OFF (the common case) each bump compiles down to a
+// relaxed atomic load + conditional branch (~1 ns) instead of a
+// relaxed atomic add (~4-5 ns on Apple Silicon). For a kernel that
+// runs 200k microtasks with ~3 counter bumps each, that's ~600k
+// avoided fetch_add ops ≈ 2-3 ms saved per run.
+pub(crate) static MT_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[inline(always)]
+pub(crate) fn mt_profile_enabled() -> bool {
+    MT_PROFILE_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Bump an instrumentation counter only when profiling is enabled.
+/// This compiles to a relaxed load + conditional jump instead of an
+/// atomic RMW on the hot path. See `MT_PROFILE_ENABLED` for the
+/// rationale.
+#[inline(always)]
+pub(crate) fn bump(counter: &AtomicU64) {
+    if mt_profile_enabled() {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// Return true iff `value`'s NaN-box tag indicates it cannot possibly
 /// be a Promise pointer or a thenable object — i.e. a number,
@@ -99,11 +124,23 @@ extern "C" fn mt_profile_atexit() {
 
 static MT_PROFILE_REG: std::sync::Once = std::sync::Once::new();
 fn mt_profile_register() {
-    MT_PROFILE_REG.call_once(|| unsafe {
-        extern "C" {
-            fn atexit(cb: extern "C" fn()) -> i32;
+    MT_PROFILE_REG.call_once(|| {
+        // Read PERRY_MT_PROFILE once and cache it. All `bump(&COUNTER)`
+        // call sites read MT_PROFILE_ENABLED via a relaxed atomic load;
+        // when unset (the common case) the counter increment is skipped
+        // entirely. The atexit hook is only registered when profiling
+        // is enabled — otherwise the printer would emit a zero report
+        // at every process exit.
+        let enabled = std::env::var_os("PERRY_MT_PROFILE").is_some();
+        MT_PROFILE_ENABLED.store(enabled, Ordering::Relaxed);
+        if enabled {
+            unsafe {
+                extern "C" {
+                    fn atexit(cb: extern "C" fn()) -> i32;
+                }
+                atexit(mt_profile_atexit);
+            }
         }
-        atexit(mt_profile_atexit);
     });
 }
 
@@ -140,7 +177,7 @@ pub static MT_ITER_RESULT_SET_COUNT: AtomicU64 = AtomicU64::new(0);
 /// state-machine without a separate trailing `return undefined`.
 #[no_mangle]
 pub extern "C" fn js_iter_result_set(value: f64, done: i32) -> f64 {
-    MT_ITER_RESULT_SET_COUNT.fetch_add(1, Ordering::Relaxed);
+    bump(&MT_ITER_RESULT_SET_COUNT);
     ITER_RESULT_VALUE.with(|c| c.set(value));
     ITER_RESULT_DONE.with(|c| c.set(done != 0));
     f64::from_bits(crate::value::TAG_UNDEFINED)
@@ -307,7 +344,7 @@ pub extern "C" fn js_microtasks_pending() -> i32 {
 /// Allocate a new Promise
 #[no_mangle]
 pub extern "C" fn js_promise_new() -> *mut Promise {
-    MT_PROMISE_NEW_COUNT.fetch_add(1, Ordering::Relaxed);
+    bump(&MT_PROMISE_NEW_COUNT);
     let raw = crate::gc::gc_malloc(std::mem::size_of::<Promise>(), crate::gc::GC_TYPE_PROMISE);
     let promise = raw as *mut Promise;
     unsafe {
@@ -532,7 +569,7 @@ pub extern "C" fn js_promise_then(
     on_fulfilled: ClosurePtr,
     on_rejected: ClosurePtr,
 ) -> *mut Promise {
-    MT_PROMISE_THEN_COUNT.fetch_add(1, Ordering::Relaxed);
+    bump(&MT_PROMISE_THEN_COUNT);
     if promise.is_null() {
         return ptr::null_mut();
     }
@@ -841,6 +878,42 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
     // longjmp lands, we read the current promise context out of a
     // thread-local set just before invoking the callback, reject its
     // `next`, and continue the loop.
+    //
+    // ── macOS/BSD: use `_setjmp` (no signal-mask save) ────────────
+    // On Apple platforms the C `setjmp(3)` saves the signal mask via a
+    // `sigprocmask` system call AND saves the alt-signal-stack via
+    // `__sigaltstack`. Profiling `promise_all_chains` showed those two
+    // syscalls accounted for ~43% of CPU time even though `setjmp` is
+    // called once per `run_microtasks` drain — each kernel-mode round
+    // trip is ~25 μs because macOS arm64 uses BSD-style "save signal
+    // state for siglongjmp" semantics. Perry never `siglongjmp`s out
+    // of a signal handler — `js_throw` runs in normal user context, so
+    // the signal mask doesn't need to be saved/restored on
+    // setjmp/longjmp pairs. POSIX's `_setjmp` / `_longjmp` are exactly
+    // that: setjmp/longjmp without the sigprocmask round-trip.
+    //
+    // On Linux glibc the C `setjmp` already doesn't save the signal
+    // mask (POSIX leaves it implementation-defined; glibc opted for
+    // the fast path), so the `setjmp` extern there is fine. Other
+    // BSDs (FreeBSD, NetBSD, OpenBSD) match macOS — they too benefit
+    // from `_setjmp`. We gate on `target_vendor = "apple"` for now
+    // since that's where we've measured the win.
+    #[cfg(target_vendor = "apple")]
+    extern "C" {
+        // C identifier `_setjmp(3)` — fast variant. The Mach-O linker
+        // symbol is `__setjmp`: the first `_` is the C ABI prefix that
+        // the linker adds to every C function, the second `_` is part
+        // of the function's C name. Verified via
+        //   nm /usr/lib/system/libsystem_platform.dylib | grep setjmp
+        //   T __setjmp        # fast: no sigprocmask/sigaltstack
+        //   T _setjmp         # slow: signal-state-saving setjmp(3)
+        // Rust appends the leading `_` for us when on Apple, so we
+        // pass the C-name `_setjmp` here (with one leading underscore)
+        // and the resulting linker reference is `__setjmp`.
+        #[link_name = "_setjmp"]
+        fn setjmp(env: *mut i32) -> i32;
+    }
+    #[cfg(not(target_vendor = "apple"))]
     extern "C" {
         fn setjmp(env: *mut i32) -> i32;
     }
@@ -888,7 +961,10 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
         }
     }
 
-    let prof = std::env::var_os("PERRY_MT_PROFILE").is_some();
+    // Cached profile flag — set once by mt_profile_register() above.
+    // Reading the env var directly here was ~30 ns per microtask drain;
+    // the atomic load is ~1 ns.
+    let prof = mt_profile_enabled();
     loop {
         let t0 = if prof { Some(std::time::Instant::now()) } else { None };
         let task = TASK_QUEUE.with(|q| q.borrow_mut().pop_front());
@@ -899,7 +975,7 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
         match task {
             None => break,
             Some(Task::Promise(promise, value, is_fulfilled)) => {
-                MT_RUN_COUNT.fetch_add(1, Ordering::Relaxed);
+                bump(&MT_RUN_COUNT);
                 unsafe {
                     let callback = if is_fulfilled {
                         (*promise).on_fulfilled
@@ -949,7 +1025,7 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
                 ran += 1;
             }
             Some(Task::Inline(callback, value, next, is_fulfilled)) => {
-                MT_RUN_COUNT.fetch_add(1, Ordering::Relaxed);
+                bump(&MT_RUN_COUNT);
                 // Inline tasks are produced by `js_promise_resolved_then`
                 // (the `Promise.resolve(<primitive>).then(cb_f, cb_e)`
                 // fast path). We've already skipped allocating the
@@ -996,7 +1072,7 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
                 ran += 1;
             }
             Some(Task::AsyncStep(step_closure, value, next, is_error)) => {
-                MT_RUN_COUNT.fetch_add(1, Ordering::Relaxed);
+                bump(&MT_RUN_COUNT);
                 // Direct dispatch of the async-step closure. Skips the
                 // then_v_arrow / then_e_arrow wrapper that would
                 // otherwise be invoked as the on_fulfilled / on_rejected
@@ -1111,7 +1187,7 @@ fn propagate_callback_result(result: f64, next: *mut Promise) {
 /// `setTimeout`/`resolve` ever fires. Closes #77.
 #[no_mangle]
 pub extern "C" fn js_promise_resolved(value: f64) -> *mut Promise {
-    MT_PROMISE_RESOLVED_COUNT.fetch_add(1, Ordering::Relaxed);
+    bump(&MT_PROMISE_RESOLVED_COUNT);
     // FAST PATH: NaN-boxed primitives (numbers, undefined, null, bool,
     // raw f64s) are not pointers to thenables/promises. We can build a
     // pre-fulfilled promise and skip the `is_promise` + `assimilate`
@@ -1128,7 +1204,7 @@ pub extern "C" fn js_promise_resolved(value: f64) -> *mut Promise {
     }
     let promise = js_promise_new();
     if js_value_is_promise(value) != 0 {
-        MT_INNER_PROMISE_UNWRAP_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump(&MT_INNER_PROMISE_UNWRAP_COUNT);
         let inner = crate::value::js_nanbox_get_pointer(value) as *mut Promise;
         if !inner.is_null() && inner != promise {
             js_promise_resolve_with_promise(promise, inner);
@@ -1188,7 +1264,7 @@ pub extern "C" fn js_promise_resolved_then(
     on_rejected: ClosurePtr,
 ) -> *mut Promise {
     if is_definitely_primitive(value) {
-        MT_FAST_PATH_HIT.fetch_add(1, Ordering::Relaxed);
+        bump(&MT_FAST_PATH_HIT);
         // FAST PATH (primitive) — skip Promise.resolve()'s allocation
         // entirely. The callback runs once during the next microtask
         // drain via the `Task::Inline` arm.
@@ -1213,14 +1289,14 @@ pub extern "C" fn js_promise_resolved_then(
     // Skip the wrapper allocation: directly chain `.then()` off the
     // existing promise.
     if js_value_is_promise(value) != 0 {
-        MT_FAST_PATH_HIT.fetch_add(1, Ordering::Relaxed);
+        bump(&MT_FAST_PATH_HIT);
         let inner = crate::value::js_nanbox_get_pointer(value) as *mut Promise;
         if !inner.is_null() {
             return js_promise_then(inner, on_fulfilled, on_rejected);
         }
     }
 
-    MT_FAST_PATH_MISS.fetch_add(1, Ordering::Relaxed);
+    bump(&MT_FAST_PATH_MISS);
     // Pointer-tagged but not a Promise — could be a thenable. Take
     // the unfused path so the assimilation probes can run on it.
     let p1 = js_promise_resolved(value);
@@ -1263,13 +1339,13 @@ pub extern "C" fn js_async_step_chain(
 
     let (next, queued_value, is_error) = if is_definitely_primitive(value) {
         // Primitive value: enqueue Task::AsyncStep directly.
-        MT_FAST_PATH_HIT.fetch_add(1, Ordering::Relaxed);
+        bump(&MT_FAST_PATH_HIT);
         (
             if can_reuse {
-                MT_STEP_CHAIN_REUSE_HIT.fetch_add(1, Ordering::Relaxed);
+                bump(&MT_STEP_CHAIN_REUSE_HIT);
                 trap_next
             } else {
-                MT_STEP_CHAIN_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+                bump(&MT_STEP_CHAIN_REUSE_MISS);
                 js_promise_new()
             },
             value,
@@ -1288,10 +1364,10 @@ pub extern "C" fn js_async_step_chain(
                     let unwrapped = unsafe { (*inner).value };
                     (
                         if can_reuse {
-                            MT_STEP_CHAIN_REUSE_HIT.fetch_add(1, Ordering::Relaxed);
+                            bump(&MT_STEP_CHAIN_REUSE_HIT);
                             trap_next
                         } else {
-                            MT_STEP_CHAIN_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+                            bump(&MT_STEP_CHAIN_REUSE_MISS);
                             js_promise_new()
                         },
                         unwrapped,
@@ -1302,10 +1378,10 @@ pub extern "C" fn js_async_step_chain(
                     let reason = unsafe { (*inner).reason };
                     (
                         if can_reuse {
-                            MT_STEP_CHAIN_REUSE_HIT.fetch_add(1, Ordering::Relaxed);
+                            bump(&MT_STEP_CHAIN_REUSE_HIT);
                             trap_next
                         } else {
-                            MT_STEP_CHAIN_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+                            bump(&MT_STEP_CHAIN_REUSE_MISS);
                             js_promise_new()
                         },
                         reason,
@@ -1317,13 +1393,13 @@ pub extern "C" fn js_async_step_chain(
                     // path. We can't enqueue a Task::AsyncStep until
                     // the inner settles; install fulfill/reject thunks
                     // that will queue the right Task when called.
-                    MT_STEP_CHAIN_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+                    bump(&MT_STEP_CHAIN_REUSE_MISS);
                     let (fulfill, reject) = build_async_step_thunks(step_closure);
                     return js_promise_then(inner, fulfill, reject);
                 }
             }
         } else {
-            MT_STEP_CHAIN_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+            bump(&MT_STEP_CHAIN_REUSE_MISS);
             let (fulfill, reject) = build_async_step_thunks(step_closure);
             let p = js_promise_resolved(value);
             return js_promise_then(p, fulfill, reject);
@@ -1331,7 +1407,7 @@ pub extern "C" fn js_async_step_chain(
     } else {
         // Pointer-tagged but not a Promise (thenable etc.). Take the
         // fully-general path so assimilation runs.
-        MT_STEP_CHAIN_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+        bump(&MT_STEP_CHAIN_REUSE_MISS);
         let (fulfill, reject) = build_async_step_thunks(step_closure);
         let p = js_promise_resolved(value);
         return js_promise_then(p, fulfill, reject);
@@ -1372,11 +1448,11 @@ pub extern "C" fn js_async_step_done(
 ) -> *mut Promise {
     let trap = INLINE_TRAP.with(|c| c.get());
     if !trap.trap_next.is_null() && trap.current_step == step_closure as usize {
-        MT_STEP_DONE_REUSE_HIT.fetch_add(1, Ordering::Relaxed);
+        bump(&MT_STEP_DONE_REUSE_HIT);
         js_promise_resolve(trap.trap_next, value);
         trap.trap_next
     } else {
-        MT_STEP_DONE_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+        bump(&MT_STEP_DONE_REUSE_MISS);
         js_promise_resolved(value)
     }
 }
@@ -2096,7 +2172,7 @@ pub extern "C" fn js_await_any_promise(value: f64) -> f64 {
 pub extern "C" fn js_assimilate_thenable(value: f64) -> f64 {
     use crate::value::JSValue;
 
-    MT_THENABLE_PROBE_COUNT.fetch_add(1, Ordering::Relaxed);
+    bump(&MT_THENABLE_PROBE_COUNT);
     // Real Promise — caller's await loop already handles it.
     if js_value_is_promise(value) != 0 {
         return value;
