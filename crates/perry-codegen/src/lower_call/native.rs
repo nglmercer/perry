@@ -1837,6 +1837,84 @@ pub(crate) fn lower_native_method_call(
         );
     }
 
+    if module == "array" && method == "push_spread" {
+        // Refs #488 drizzle-sqlite: `arr.push(...src)` shape. Pre-fix
+        // this had no codegen arm — the catch-all at the end of this
+        // function silently lowered receiver + args for side effects and
+        // returned `0.0`. drizzle's `mergeQueries` does
+        // `result.params.push(...query.params)` so SQL queries went out
+        // with empty params and INSERT silently inserted nothing.
+        //
+        // The HIR shape from `expr_call.rs:4810` packs the spread arg as
+        // `args[0]` (the inner spread expression), so we expect exactly
+        // one arg with the source array.
+        if args.len() != 1 {
+            bail!("array.push_spread expects exactly 1 arg, got {}", args.len());
+        }
+        let src_box = lower_expr(ctx, &args[0])?;
+        let arr_box = lower_expr(ctx, recv)?;
+        let blk = ctx.block();
+        let arr_handle = unbox_to_i64(blk, &arr_box);
+        let orig_handle = arr_handle.clone();
+        let src_handle = unbox_to_i64(blk, &src_box);
+        let blk = ctx.block();
+        let new_handle = blk.call(
+            I64,
+            "js_array_push_spread_f64",
+            &[(I64, &arr_handle), (I64, &src_handle)],
+        );
+        let blk = ctx.block();
+        let new_box = nanbox_pointer_inline(blk, &new_handle);
+        // Same write-back-only-if-realloc'd pattern as push_single.
+        let needs_writeback = matches!(recv, Expr::LocalGet(_) | Expr::PropertyGet { .. });
+        if needs_writeback {
+            let blk = ctx.block();
+            let changed = blk.icmp_ne(I64, &new_handle, &orig_handle);
+            let wb_idx = ctx.new_block("arr.push_spread.wb");
+            let merge_idx = ctx.new_block("arr.push_spread.merge");
+            let wb_label = ctx.block_label(wb_idx);
+            let merge_label = ctx.block_label(merge_idx);
+            ctx.block().cond_br(&changed, &wb_label, &merge_label);
+
+            ctx.current_block = wb_idx;
+            match recv {
+                Expr::LocalGet(id) => {
+                    if let Some(slot) = ctx.locals.get(id).cloned() {
+                        ctx.block().store(DOUBLE, &new_box, &slot);
+                    } else if let Some(global_name) = ctx.module_globals.get(id).cloned() {
+                        let g_ref = format!("@{}", global_name);
+                        ctx.block().store(DOUBLE, &new_box, &g_ref);
+                    }
+                }
+                Expr::PropertyGet {
+                    object: obj_expr,
+                    property,
+                } => {
+                    let obj_box = lower_expr(ctx, obj_expr)?;
+                    let key_idx = ctx.strings.intern(property);
+                    let key_handle_global =
+                        format!("@{}", ctx.strings.entry(key_idx).handle_global);
+                    let blk = ctx.block();
+                    let obj_bits = blk.bitcast_double_to_i64(&obj_box);
+                    let obj_handle = blk.and(I64, &obj_bits, POINTER_MASK_I64);
+                    let key_box = blk.load(DOUBLE, &key_handle_global);
+                    let key_bits = blk.bitcast_double_to_i64(&key_box);
+                    let key_raw = blk.and(I64, &key_bits, POINTER_MASK_I64);
+                    blk.call_void(
+                        "js_object_set_field_by_name",
+                        &[(I64, &obj_handle), (I64, &key_raw), (DOUBLE, &new_box)],
+                    );
+                }
+                _ => unreachable!(),
+            }
+            ctx.block().br(&merge_label);
+
+            ctx.current_block = merge_idx;
+        }
+        // Spec: push returns the new length; statement context discards.
+        return Ok(new_box);
+    }
+
     if module == "array" && (method == "push_single" || method == "push") {
         if args.is_empty() {
             bail!("array.push expects ≥1 arg, got 0");

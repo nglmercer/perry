@@ -868,6 +868,43 @@ pub extern "C" fn js_array_push_f64(arr: *mut ArrayHeader, value: f64) -> *mut A
     }
 }
 
+/// Push every element of `source` to the end of `target`, growing as needed.
+/// Returns a pointer to the (possibly reallocated) target. Refs #488
+/// drizzle-sqlite: drizzle's `mergeQueries` does
+/// `result.params.push(...query.params)` which the HIR lowers to
+/// `NativeMethodCall { module: "array", method: "push_spread" }` —
+/// pre-fix, codegen had no arm for `push_spread`, falling through to the
+/// "Unknown native method" catch-all that lowered receiver+args for side
+/// effects and returned the `0.0` sentinel. The push never happened and
+/// SQL queries went out with 0 params, so INSERT silently inserted
+/// nothing and SELECT returned `count=0`. This helper plus the
+/// matching codegen arm in `lower_native_method_call` does the actual
+/// push loop.
+#[no_mangle]
+pub extern "C" fn js_array_push_spread_f64(
+    target: *mut ArrayHeader,
+    source: *const ArrayHeader,
+) -> *mut ArrayHeader {
+    let source = clean_arr_ptr(source);
+    if source.is_null() {
+        return target;
+    }
+    unsafe {
+        let src_len = (*source).length;
+        if src_len == 0 {
+            return target;
+        }
+        let src_elements_ptr =
+            (source as *const u8).add(std::mem::size_of::<ArrayHeader>()) as *const f64;
+        let mut current = target;
+        for i in 0..src_len {
+            let value = *src_elements_ptr.add(i as usize);
+            current = js_array_push_f64(current, value);
+        }
+        current
+    }
+}
+
 /// Pop an element from the end of an array.
 /// Returns the removed element, or `undefined` if the array is empty (per
 /// ECMAScript §23.1.3.21 — `Array.prototype.pop` on an empty array returns
