@@ -17,7 +17,9 @@ use anyhow::Result;
 use perry_types::{LocalId, Type};
 use swc_ecma_ast as ast;
 
-use crate::analysis::{closure_uses_this, collect_assigned_locals_stmt, collect_local_refs_stmt};
+use crate::analysis::{
+    closure_uses_this, collect_assigned_locals_stmt, collect_local_refs_stmt, uses_this_stmt,
+};
 use crate::ir::{EnumValue, Expr, Function, Param, Stmt};
 use crate::lower_decl::lower_block_stmt;
 use crate::lower_patterns::{get_param_default, get_pat_name, is_rest_param};
@@ -531,6 +533,17 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
     captures.sort();
     captures.dedup();
     captures = ctx.filter_module_level_captures(captures);
+    // Refs #488 drizzle-sqlite: when a computed-key object literal
+    // contains `[this.X]: ...` (drizzle's `{ [this.tableName]: true }`
+    // shape from SQLiteSelectQueryBuilderBase ctor), the IIFE wrapper's
+    // body must lexically capture `this` from the enclosing scope —
+    // otherwise `this` inside the body resolves to undefined and the
+    // key expression throws `Cannot read properties of undefined`.
+    // Conservatively scan the deferred body for any `this` references
+    // and set `captures_this` accordingly. Setting unconditionally is
+    // also correctness-safe but adds a small per-call cost for the
+    // common non-this-key cases; the scan keeps the existing fast path.
+    let body_uses_this = body.iter().any(uses_this_stmt);
     let static_obj = Expr::Object(props);
     let closure = Expr::Closure {
         func_id: iife_func_id,
@@ -539,7 +552,7 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
         body,
         captures,
         mutable_captures: Vec::new(),
-        captures_this: false,
+        captures_this: body_uses_this,
         enclosing_class: None,
         is_async: false,
     };
