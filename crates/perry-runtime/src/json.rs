@@ -1530,7 +1530,15 @@ unsafe fn is_object_pointer(ptr: *const u8) -> bool {
         // `js_object_alloc(0, 8)` for 2 actual keys). Both shapes are real
         // objects worth stringifying; just sanity-check both fields are
         // within reasonable bounds.
-        keys_len <= keys_cap && keys_len > 0 && keys_cap < 1000 && field_count < 1000
+        // Previously caps were `< 1000` — any object with 1000+ keys
+        // failed the check and `JSON.stringify` emitted "null". Raised
+        // to 10M which still catches a corrupted ObjectHeader (first-
+        // fields bytes reading as 0x4059... — orders of magnitude
+        // above 10M) but allows realistic object sizes through.
+        keys_len <= keys_cap
+            && keys_len > 0
+            && keys_cap < 10_000_000
+            && field_count < 10_000_000
     } else {
         false
     }
