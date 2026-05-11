@@ -1306,6 +1306,159 @@ object PerryBridge {
         return actv.text?.toString() ?: ""
     }
 
+    // ============================================================
+    // Issue #478 — RichText editor (EditText + SpannableStringBuilder).
+    // ============================================================
+    //
+    // EditText stores its content as a SpannableStringBuilder under the
+    // hood, so every span we apply via toggleBold/toggleItalic/etc.
+    // survives the round-trip back through `Html.toHtml`. Toggle methods
+    // apply the requested style to the active selection (or insertion
+    // point) — matching the macOS NSTextView twin's behavior, where
+    // formatting at an empty cursor sets the "typing attributes" for the
+    // next characters.
+
+    @JvmStatic
+    fun richTextCreate(width: Double, height: Double, callbackKey: Long): EditText {
+        val et = EditText(activity)
+        et.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        et.setSingleLine(false)
+        et.isVerticalScrollBarEnabled = true
+        if (width > 0 || height > 0) {
+            et.layoutParams = FrameLayout.LayoutParams(
+                if (width > 0) width.toInt() else FrameLayout.LayoutParams.MATCH_PARENT,
+                if (height > 0) height.toInt() else FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        if (callbackKey != 0L) {
+            et.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    nativeInvokeCallbackWithString(callbackKey, s?.toString() ?: "")
+                }
+            })
+        }
+        return et
+    }
+
+    @JvmStatic
+    fun richTextSetString(et: EditText, text: String) {
+        uiHandler.post { et.setText(text) }
+    }
+
+    @JvmStatic
+    fun richTextGetString(et: EditText): String {
+        return et.text?.toString() ?: ""
+    }
+
+    @JvmStatic
+    fun richTextSetHtml(et: EditText, html: String) {
+        uiHandler.post {
+            val spanned: android.text.Spanned = if (android.os.Build.VERSION.SDK_INT >= 24) {
+                android.text.Html.fromHtml(html, android.text.Html.FROM_HTML_MODE_COMPACT)
+            } else {
+                @Suppress("DEPRECATION")
+                android.text.Html.fromHtml(html)
+            }
+            et.setText(spanned)
+        }
+    }
+
+    @JvmStatic
+    fun richTextGetHtml(et: EditText): String {
+        val text = et.text ?: return ""
+        val spanned: android.text.Spanned = if (text is android.text.Spanned) {
+            text
+        } else {
+            android.text.SpannableStringBuilder(text)
+        }
+        return if (android.os.Build.VERSION.SDK_INT >= 24) {
+            android.text.Html.toHtml(
+                spanned,
+                android.text.Html.TO_HTML_PARAGRAPH_LINES_CONSECUTIVE
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            android.text.Html.toHtml(spanned)
+        }
+    }
+
+    private fun richTextSelectionRange(et: EditText): IntArray {
+        val start = et.selectionStart.coerceAtLeast(0)
+        val end = et.selectionEnd.coerceAtLeast(start)
+        // Empty selection: format the entire content so the typing-attribute
+        // model maps cleanly even on Android (which lacks NSTextView's
+        // typingAttributes concept).
+        if (start == end) {
+            return intArrayOf(0, et.text?.length ?: 0)
+        }
+        return intArrayOf(start, end)
+    }
+
+    private inline fun <reified T : android.text.style.CharacterStyle> richTextToggleSpan(
+        et: EditText,
+        factory: () -> T,
+        matches: (T) -> Boolean
+    ) {
+        uiHandler.post {
+            val editable = et.text ?: return@post
+            val (start, end) = richTextSelectionRange(et).let { it[0] to it[1] }
+            if (start >= end) return@post
+            val existing = editable.getSpans(start, end, T::class.java).filter(matches)
+            if (existing.isNotEmpty()) {
+                for (sp in existing) {
+                    editable.removeSpan(sp)
+                }
+            } else {
+                editable.setSpan(
+                    factory(),
+                    start,
+                    end,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+    }
+
+    @JvmStatic
+    fun richTextToggleBold(et: EditText) {
+        richTextToggleSpan(
+            et,
+            { android.text.style.StyleSpan(android.graphics.Typeface.BOLD) },
+            { it.style == android.graphics.Typeface.BOLD || it.style == android.graphics.Typeface.BOLD_ITALIC }
+        )
+    }
+
+    @JvmStatic
+    fun richTextToggleItalic(et: EditText) {
+        richTextToggleSpan(
+            et,
+            { android.text.style.StyleSpan(android.graphics.Typeface.ITALIC) },
+            { it.style == android.graphics.Typeface.ITALIC || it.style == android.graphics.Typeface.BOLD_ITALIC }
+        )
+    }
+
+    @JvmStatic
+    fun richTextToggleUnderline(et: EditText) {
+        uiHandler.post {
+            val editable = et.text ?: return@post
+            val (start, end) = richTextSelectionRange(et).let { it[0] to it[1] }
+            if (start >= end) return@post
+            val existing = editable.getSpans(start, end, android.text.style.UnderlineSpan::class.java)
+            if (existing.isNotEmpty()) {
+                for (sp in existing) editable.removeSpan(sp)
+            } else {
+                editable.setSpan(
+                    android.text.style.UnderlineSpan(),
+                    start,
+                    end,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+    }
+
     // --- Native methods ---
 
     @JvmStatic
