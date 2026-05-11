@@ -158,7 +158,21 @@ pub(super) fn wrap_commonjs(source: &str, source_path: &Path) -> String {
     // compile.rs:2505) walks default-import specifiers and forwards the
     // source module's "default"-keyed class into this module's exported_classes
     // under the aliased name. Class identity survives the indirection.
-    let named_reexport_requires = extract_named_exports_from_require(source);
+    // Union of two named-reexport shapes:
+    //   (a) `exports.X = require('Y')` direct-assignment (the v0.5.808 fix).
+    //   (b) `const X = require('./Y'); module.exports = { X, ... }` object-literal
+    //       aggregation — the published shape of `rate-limiter-flexible/index.js`
+    //       and many older npm packages (#665 latest comment). The aggregator's
+    //       entries are shorthand `{ X }` or longhand `{ X: Y }`; for shorthand
+    //       the exported name and the alias name coincide, for longhand we look
+    //       up the RHS as a require alias and emit the export under the
+    //       property name.
+    let mut named_reexport_requires = extract_named_exports_from_require(source);
+    for (name, spec) in extract_object_literal_exports_from_require(source) {
+        if !named_reexport_requires.iter().any(|(n, _)| *n == name) {
+            named_reexport_requires.push((name, spec));
+        }
+    }
     let direct_named_reexports = if named_reexport_requires.is_empty() {
         String::new()
     } else {
@@ -370,6 +384,240 @@ fn extract_named_exports_from_require(source: &str) -> Vec<(String, String)> {
     }
     found.retain(|(n, _)| !disqualified.contains(n));
     found
+}
+
+/// Issue #665 follow-up (object-literal aggregator): detect the published
+/// `rate-limiter-flexible/index.js` shape —
+///
+/// ```js
+/// const RateLimiterMemory = require('./lib/RateLimiterMemory');
+/// const RateLimiterRedis  = require('./lib/RateLimiterRedis');
+/// module.exports = {
+///   RateLimiterMemory,
+///   RateLimiterRedis,
+///   // ...
+/// };
+/// ```
+///
+/// Returns `(exported_name, require_spec)` pairs. Shorthand `{ X }` and longhand
+/// `{ X: Y }` are both supported (for longhand, the RHS identifier is what
+/// gets looked up against the require-alias table). The consumer's `import
+/// { X } from "pkg"` then resolves through the emitted `export { _req_N as X }`
+/// directly to the leaf module's default export — which compile.rs's
+/// Export::Named arm propagates class identity through, so prototype methods
+/// survive the indirection.
+///
+/// Edge cases skipped (left for the `_cjs.X` fallback):
+///   - Computed keys (`[foo]: bar`).
+///   - Spreads (`...obj`).
+///   - Method definitions (`X() { ... }`).
+///   - RHS expressions other than a bare identifier.
+///   - Any case where the alias name doesn't match a `const|let|var X = require(...)`
+///     binding elsewhere in the file.
+///   - Multiple `module.exports = { ... }` assignments — we only inspect the
+///     last one, since later assignments overwrite earlier ones at runtime.
+fn extract_object_literal_exports_from_require(source: &str) -> Vec<(String, String)> {
+    // Locate the LAST `module.exports = {` or `exports = {` (case where the file
+    // reassigns the whole exports object). Anchored at start-of-line. We use
+    // `rfind`-style behavior because later assignments win at runtime.
+    let header_re = regex::Regex::new(
+        r#"(?m)^\s*(?:module\.exports|exports)\s*=\s*\{"#,
+    )
+    .unwrap();
+    let last_match = header_re.find_iter(source).last();
+    let m = match last_match {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    let bytes = source.as_bytes();
+    // The `{` is the last char of the match.
+    let mut p = m.end() - 1;
+    if p >= bytes.len() || bytes[p] != b'{' {
+        return Vec::new();
+    }
+    // Brace-balanced scan to find the matching `}`.
+    let body_start = p + 1;
+    let mut depth: i32 = 1;
+    p = body_start;
+    while p < bytes.len() && depth > 0 {
+        match bytes[p] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b'"' | b'\'' => {
+                let quote = bytes[p];
+                p += 1;
+                while p < bytes.len() && bytes[p] != quote {
+                    if bytes[p] == b'\\' && p + 1 < bytes.len() {
+                        p += 2;
+                        continue;
+                    }
+                    p += 1;
+                }
+            }
+            b'`' => {
+                p += 1;
+                while p < bytes.len() && bytes[p] != b'`' {
+                    if bytes[p] == b'\\' && p + 1 < bytes.len() {
+                        p += 2;
+                        continue;
+                    }
+                    p += 1;
+                }
+            }
+            b'/' if p + 1 < bytes.len() && bytes[p + 1] == b'/' => {
+                p += 2;
+                while p < bytes.len() && bytes[p] != b'\n' {
+                    p += 1;
+                }
+            }
+            b'/' if p + 1 < bytes.len() && bytes[p + 1] == b'*' => {
+                p += 2;
+                while p + 1 < bytes.len() && !(bytes[p] == b'*' && bytes[p + 1] == b'/') {
+                    p += 1;
+                }
+                if p + 1 < bytes.len() {
+                    p += 2;
+                }
+            }
+            _ => {}
+        }
+        if depth == 0 {
+            break;
+        }
+        p += 1;
+    }
+    if depth != 0 || p <= body_start {
+        return Vec::new();
+    }
+    let body = match std::str::from_utf8(&bytes[body_start..p]) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    // Build alias -> spec map from `const|let|var X = require('Y')` bindings.
+    let alias_re = regex::Regex::new(
+        r#"(?m)^\s*(?:var|const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)\s*;?"#,
+    )
+    .unwrap();
+    let mut alias_to_spec: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for cap in alias_re.captures_iter(source) {
+        if let (Some(name), Some(spec)) = (cap.get(1), cap.get(2)) {
+            // First binding wins (matches JS hoisting / shadowing semantics).
+            alias_to_spec
+                .entry(name.as_str().to_string())
+                .or_insert_with(|| spec.as_str().to_string());
+        }
+    }
+    if alias_to_spec.is_empty() {
+        return Vec::new();
+    }
+
+    // Split body into top-level entries (comma-separated, brace-balanced).
+    let mut entries: Vec<String> = Vec::new();
+    let body_bytes = body.as_bytes();
+    let mut entry_start = 0usize;
+    let mut bdepth: i32 = 0;
+    let mut q = 0usize;
+    while q < body_bytes.len() {
+        match body_bytes[q] {
+            b'{' | b'[' | b'(' => bdepth += 1,
+            b'}' | b']' | b')' => bdepth -= 1,
+            b'"' | b'\'' => {
+                let quote = body_bytes[q];
+                q += 1;
+                while q < body_bytes.len() && body_bytes[q] != quote {
+                    if body_bytes[q] == b'\\' && q + 1 < body_bytes.len() {
+                        q += 2;
+                        continue;
+                    }
+                    q += 1;
+                }
+            }
+            b'`' => {
+                q += 1;
+                while q < body_bytes.len() && body_bytes[q] != b'`' {
+                    if body_bytes[q] == b'\\' && q + 1 < body_bytes.len() {
+                        q += 2;
+                        continue;
+                    }
+                    q += 1;
+                }
+            }
+            b'/' if q + 1 < body_bytes.len() && body_bytes[q + 1] == b'/' => {
+                while q < body_bytes.len() && body_bytes[q] != b'\n' {
+                    q += 1;
+                }
+                continue;
+            }
+            b'/' if q + 1 < body_bytes.len() && body_bytes[q + 1] == b'*' => {
+                q += 2;
+                while q + 1 < body_bytes.len()
+                    && !(body_bytes[q] == b'*' && body_bytes[q + 1] == b'/')
+                {
+                    q += 1;
+                }
+                if q + 1 < body_bytes.len() {
+                    q += 2;
+                }
+                continue;
+            }
+            b',' if bdepth == 0 => {
+                let entry = body[entry_start..q].trim().to_string();
+                if !entry.is_empty() {
+                    entries.push(entry);
+                }
+                entry_start = q + 1;
+            }
+            _ => {}
+        }
+        q += 1;
+    }
+    let tail = body[entry_start..].trim().to_string();
+    if !tail.is_empty() {
+        entries.push(tail);
+    }
+
+    // Parse each entry as shorthand `X` or longhand `X: Y` (Y must be a bare ident).
+    let shorthand_re = regex::Regex::new(r#"^[A-Za-z_$][A-Za-z0-9_$]*$"#).unwrap();
+    let longhand_re = regex::Regex::new(
+        r#"^([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)$"#,
+    )
+    .unwrap();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in entries {
+        // Strip trailing line/block comments and the trailing comma we might
+        // have included.
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if shorthand_re.is_match(entry) {
+            if entry == "__esModule" {
+                continue;
+            }
+            if let Some(spec) = alias_to_spec.get(entry) {
+                if seen.insert(entry.to_string()) {
+                    out.push((entry.to_string(), spec.clone()));
+                }
+            }
+        } else if let Some(cap) = longhand_re.captures(entry) {
+            let key = cap.get(1).unwrap().as_str();
+            let val = cap.get(2).unwrap().as_str();
+            if key == "__esModule" {
+                continue;
+            }
+            if let Some(spec) = alias_to_spec.get(val) {
+                if seen.insert(key.to_string()) {
+                    out.push((key.to_string(), spec.clone()));
+                }
+            }
+        }
+        // Anything else (computed keys, spreads, methods, expressions) is
+        // intentionally skipped — those need the `_cjs.X` runtime path.
+    }
+    out
 }
 
 /// Refs #488 drizzle-sqlite: extract `var <alias> = require("<spec>");`
@@ -985,6 +1233,85 @@ mod tests {
         assert!(
             !wrapped.contains("export const RateLimiterMemory = _cjs.RateLimiterMemory;"),
             "should NOT emit _cjs property read for direct-reexport name, got:\n{}",
+            wrapped
+        );
+    }
+
+    #[test]
+    fn extracts_object_literal_aggregator_shorthand() {
+        // Issue #665 latest comment: real rate-limiter-flexible/index.js shape.
+        let src = "const RateLimiterMemory = require('./lib/RateLimiterMemory');\n\
+                   const RateLimiterRedis = require('./lib/RateLimiterRedis');\n\
+                   module.exports = { RateLimiterMemory, RateLimiterRedis };";
+        let got = extract_object_literal_exports_from_require(src);
+        assert_eq!(
+            got,
+            vec![
+                ("RateLimiterMemory".to_string(), "./lib/RateLimiterMemory".to_string()),
+                ("RateLimiterRedis".to_string(), "./lib/RateLimiterRedis".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_object_literal_aggregator_longhand() {
+        let src = "const X = require('./x');\n\
+                   module.exports = { Foo: X };";
+        let got = extract_object_literal_exports_from_require(src);
+        assert_eq!(got, vec![("Foo".to_string(), "./x".to_string())]);
+    }
+
+    #[test]
+    fn extracts_object_literal_aggregator_mixed_with_skipped_entries() {
+        // Computed keys, spreads, methods, and non-alias values are skipped.
+        let src = "const A = require('./a');\n\
+                   const B = require('./b');\n\
+                   const C = makeThing();\n\
+                   module.exports = { A, ...other, [key]: B, fn() {}, B, C, D: A };";
+        let got = extract_object_literal_exports_from_require(src);
+        assert_eq!(
+            got,
+            vec![
+                ("A".to_string(), "./a".to_string()),
+                ("B".to_string(), "./b".to_string()),
+                ("D".to_string(), "./a".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_object_literal_aggregator_when_no_require_aliases() {
+        let src = "module.exports = { foo: 1, bar: 'baz' };";
+        let got = extract_object_literal_exports_from_require(src);
+        assert!(got.is_empty(), "expected empty, got {:?}", got);
+    }
+
+    #[test]
+    fn picks_last_module_exports_object_literal_assignment() {
+        // When the file assigns `module.exports = {...}` twice, the later
+        // assignment wins at runtime — and so does our static analysis.
+        let src = "const A = require('./a');\n\
+                   const B = require('./b');\n\
+                   module.exports = { A };\n\
+                   module.exports = { B };";
+        let got = extract_object_literal_exports_from_require(src);
+        assert_eq!(got, vec![("B".to_string(), "./b".to_string())]);
+    }
+
+    #[test]
+    fn wrap_emits_direct_reexport_for_object_literal_aggregator() {
+        let src = "const RateLimiterMemory = require('./lib/RateLimiterMemory');\n\
+                   const RateLimiterRedis = require('./lib/RateLimiterRedis');\n\
+                   module.exports = { RateLimiterMemory, RateLimiterRedis };";
+        let wrapped = wrap_commonjs(src, &PathBuf::from("/tmp/test.js"));
+        assert!(
+            wrapped.contains("export { _req_0 as RateLimiterMemory };"),
+            "expected direct re-export of RateLimiterMemory, got:\n{}",
+            wrapped
+        );
+        assert!(
+            wrapped.contains("export { _req_1 as RateLimiterRedis };"),
+            "expected direct re-export of RateLimiterRedis, got:\n{}",
             wrapped
         );
     }
