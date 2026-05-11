@@ -1864,8 +1864,57 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
                 }
                 let target_total = max_explicit_arity + 1; // +1 for `this`
                 let undefined_lit = double_literal(f64::from_bits(crate::nanbox::TAG_UNDEFINED));
-                while lowered_args.len() < target_total {
-                    lowered_args.push(undefined_lit.clone());
+                // Issue #672: bundle trailing args into a rest array on the
+                // dynamic-dispatch path too. Mirrors the static-dispatch arm
+                // below — without it, `conn.command("SET","k","v")` on a
+                // `conn: any` (the @perryts/redis case) reached the callee with
+                // `name="SET"`, `args="k"` and the trailing `"v"` silently
+                // dropped, since the LLVM signature only declares N+1 doubles
+                // and any 4th double is just discarded.
+                let mut method_has_rest_dyn = false;
+                let mut method_decl_count_dyn = max_explicit_arity;
+                for (_, fname) in &implementors {
+                    for ((cls, mname), reg_fname) in ctx.methods.iter() {
+                        if reg_fname == fname && mname == property {
+                            let key = (cls.clone(), mname.clone());
+                            if let Some(&true) = ctx.method_has_rest.get(&key) {
+                                method_has_rest_dyn = true;
+                                if let Some(&n) = ctx.method_param_counts.get(&key) {
+                                    method_decl_count_dyn = n;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if method_has_rest_dyn {
+                        break;
+                    }
+                }
+                if method_has_rest_dyn {
+                    let fixed_user = method_decl_count_dyn.saturating_sub(1);
+                    while lowered_args.len() - 1 < fixed_user {
+                        lowered_args.push(undefined_lit.clone());
+                    }
+                    let split_at = 1 + fixed_user;
+                    let rest_count = lowered_args.len().saturating_sub(split_at);
+                    let cap = (rest_count as u32).to_string();
+                    let mut rest_arr =
+                        ctx.block().call(I64, "js_array_alloc", &[(I32, &cap)]);
+                    for v in &lowered_args[split_at..] {
+                        let blk = ctx.block();
+                        rest_arr = blk.call(
+                            I64,
+                            "js_array_push_f64",
+                            &[(I64, &rest_arr), (DOUBLE, v)],
+                        );
+                    }
+                    let rest_box = nanbox_pointer_inline(ctx.block(), &rest_arr);
+                    lowered_args.truncate(split_at);
+                    lowered_args.push(rest_box);
+                } else {
+                    while lowered_args.len() < target_total {
+                        lowered_args.push(undefined_lit.clone());
+                    }
                 }
                 let arg_slices: Vec<(crate::types::LlvmType, &str)> =
                     lowered_args.iter().map(|s| (DOUBLE, s.as_str())).collect();

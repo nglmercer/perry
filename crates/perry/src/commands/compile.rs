@@ -2861,6 +2861,11 @@ pub fn run_with_parse_cache(
                                             .iter()
                                             .map(|m| m.params.len())
                                             .collect(),
+method_has_rest: class
+    .methods
+    .iter()
+    .map(|m| m.params.iter().any(|p| p.is_rest))
+    .collect(),
                                         static_method_names: class
                                             .static_methods
                                             .iter()
@@ -2986,6 +2991,11 @@ pub fn run_with_parse_cache(
                                                 .iter()
                                                 .map(|m| m.params.len())
                                                 .collect(),
+method_has_rest: class
+    .methods
+    .iter()
+    .map(|m| m.params.iter().any(|p| p.is_rest))
+    .collect(),
                                             static_method_names: class
                                                 .static_methods
                                                 .iter()
@@ -3131,6 +3141,11 @@ pub fn run_with_parse_cache(
                                     .iter()
                                     .map(|m| m.params.len())
                                     .collect(),
+                                method_has_rest: class
+                                    .methods
+                                    .iter()
+                                    .map(|m| m.params.iter().any(|p| p.is_rest))
+                                    .collect(),
                                 static_method_names: class
                                     .static_methods
                                     .iter()
@@ -3186,6 +3201,11 @@ pub fn run_with_parse_cache(
                                 .iter()
                                 .map(|m| m.params.len())
                                 .collect(),
+method_has_rest: class
+    .methods
+    .iter()
+    .map(|m| m.params.iter().any(|p| p.is_rest))
+    .collect(),
                             static_method_names: class
                                 .static_methods
                                 .iter()
@@ -3326,6 +3346,11 @@ pub fn run_with_parse_cache(
                                 .iter()
                                 .map(|m| m.params.len())
                                 .collect(),
+method_has_rest: class
+    .methods
+    .iter()
+    .map(|m| m.params.iter().any(|p| p.is_rest))
+    .collect(),
                             static_method_names: class
                                 .static_methods
                                 .iter()
@@ -3606,6 +3631,11 @@ pub fn run_with_parse_cache(
                                 .iter()
                                 .map(|m| m.params.len())
                                 .collect(),
+method_has_rest: class
+    .methods
+    .iter()
+    .map(|m| m.params.iter().any(|p| p.is_rest))
+    .collect(),
                             static_method_names: class
                                 .static_methods
                                 .iter()
@@ -3715,6 +3745,11 @@ pub fn run_with_parse_cache(
                                 .iter()
                                 .map(|m| m.params.len())
                                 .collect(),
+method_has_rest: class
+    .methods
+    .iter()
+    .map(|m| m.params.iter().any(|p| p.is_rest))
+    .collect(),
                             static_method_names: class
                                 .static_methods
                                 .iter()

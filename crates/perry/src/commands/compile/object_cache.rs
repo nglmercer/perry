@@ -683,6 +683,7 @@ mod object_cache_tests {
             constructor_param_count: 1,
             method_names: vec!["bar".into()],
             method_param_counts: vec![0],
+method_has_rest: vec![false],
             static_method_names: vec![],
             getter_names: vec![],
             setter_names: vec![],
@@ -699,6 +700,7 @@ mod object_cache_tests {
             constructor_param_count: 2, // different arity
             method_names: vec!["bar".into()],
             method_param_counts: vec![0],
+method_has_rest: vec![false],
             static_method_names: vec![],
             getter_names: vec![],
             setter_names: vec![],

@@ -232,6 +232,47 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
         }
     }
 
+    // Issue #668: AOT `require(stringLiteral)` from a user TypeScript file
+    // currently lowers to `Call { callee: GlobalGet(0), ... }` (the unknown-ident
+    // sentinel) and explodes at runtime as `TypeError: value is not a function`.
+    // Until we wire up synthetic namespace-imports for `require(literal)`, fail
+    // at compile time with a fix-it pointing at `import ...` so the user finds the
+    // problem on the first build instead of the first prod request.
+    if let ast::Callee::Expr(callee_expr) = &call.callee {
+        if let ast::Expr::Ident(ident) = callee_expr.as_ref() {
+            // Issue #668: only enforce the compile-time error for user-written
+            // source files. Many published packages (e.g. `@perryts/redis`)
+            // deliberately use `require(literal)` inside a method body to break
+            // import cycles; those calls only execute on opt-in code paths and
+            // pre-fix simply returned undefined-and-failed-at-call-time. Failing
+            // them at compile time would refuse to build any consumer of those
+            // packages even if the require'd path is never reached. node_modules
+            // sources keep the legacy behavior (silent fall-through to the
+            // unknown-callee path) until we wire up real `require(literal)`
+            // lowering.
+            if !ctx.is_external_module
+                && ident.sym.as_ref() == "require"
+                && ctx.lookup_local("require").is_none()
+                && ctx.lookup_func("require").is_none()
+                && ctx.lookup_imported_func("require").is_none()
+                && call.args.len() == 1
+                && call.args[0].spread.is_none()
+            {
+                if let ast::Expr::Lit(ast::Lit::Str(s)) = call.args[0].expr.as_ref() {
+                    let spec = s.value.as_str().unwrap_or("");
+                    crate::lower_bail!(
+                        call.span,
+                        "CommonJS `require(\"{}\")` is not supported under `perry compile` \
+                         — use a static `import` instead \
+                         (e.g. `import * as m from \"{}\"` \
+                         or `import {{ x }} from \"{}\"`). Closes #668.",
+                        spec, spec, spec,
+                    );
+                }
+            }
+        }
+    }
+
     let mut args = call
         .args
         .iter()

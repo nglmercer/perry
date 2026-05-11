@@ -199,6 +199,14 @@ pub struct ImportedClass {
     /// source modules that haven't been updated to populate it — codegen
     /// falls back to the old upper bound when the entry is missing.
     pub method_param_counts: Vec<usize>,
+    /// Issue #672: parallel to `method_names`. `true` means the method's
+    /// last declared parameter is `...rest`. Without this, cross-module call
+    /// sites to `c.cmd('a', 'b', 'c')` on `class C { cmd(name, ...args) }`
+    /// would not pack the trailing `'b', 'c'` into a rest array — only the
+    /// home module's `method_has_rest` was populated. Symmetric to #484's
+    /// fix for the freestanding-function path. Empty Vec means "fall through
+    /// to the old behavior (no rest)".
+    pub method_has_rest: Vec<bool>,
     /// Static field names defined on this class. Used to declare the foreign
     /// `@perry_static_<src>__<class>__<field>` global with external linkage
     /// so cross-module `[Parent.Symbol.X] = …` reads/writes resolve to the
@@ -966,6 +974,17 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             method_param_counts.insert((ic.name.clone(), mname.clone()), count);
             if effective_name != ic.name {
                 method_param_counts.insert((effective_name.clone(), mname.clone()), count);
+            }
+            // Issue #672: same propagation for the rest-flag side. Without this,
+            // call sites to imported-class methods with `...rest` parameters
+            // skipped the rest-array packing path, leaving trailing positional
+            // args either dropped or silently spread into the next slot —
+            // `c.cmd("SET", "k", "v")` reached the callee as `args = "k"`.
+            if ic.method_has_rest.get(i).copied().unwrap_or(false) {
+                method_has_rest.insert((ic.name.clone(), mname.clone()), true);
+                if effective_name != ic.name {
+                    method_has_rest.insert((effective_name.clone(), mname.clone()), true);
+                }
             }
         }
     }

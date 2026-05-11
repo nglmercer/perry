@@ -270,6 +270,14 @@ pub struct LoweringContext {
     /// module reports `true` and every imported module reports `false`. Set
     /// by `lower_module_with_class_id_types_seed_and_entry`; default false.
     pub(crate) is_entry_module: bool,
+    /// Issue #668: true when this module was reached via an npm-package import
+    /// (file lives under a `node_modules/` segment in either the canonical or
+    /// the un-canonical resolution path). External libraries are exempt from
+    /// the user-facing `require(literal)` compile error in `lower_call.rs`,
+    /// preserving the legacy fall-through behavior — packages like
+    /// `@perryts/redis` deliberately use `require(literal)` to defer
+    /// cycle-breaking imports inside method bodies that may never execute.
+    pub(crate) is_external_module: bool,
 }
 
 impl LoweringContext {
@@ -350,6 +358,7 @@ impl LoweringContext {
             class_method_return_types: Vec::new(),
             class_captures: Vec::new(),
             is_entry_module: false,
+            is_external_module: false,
         }
     }
 
@@ -1860,9 +1869,37 @@ pub fn lower_module_with_class_id_types_seed_and_entry(
     imported_class_fields: Option<&std::collections::HashMap<String, Vec<(String, Type)>>>,
     is_entry_module: bool,
 ) -> Result<(Module, ClassId)> {
+    lower_module_full(
+        ast_module,
+        name,
+        source_file_path,
+        start_class_id,
+        resolved_types,
+        imported_class_fields,
+        is_entry_module,
+        false,
+    )
+}
+
+/// Issue #668: superset of the `_seed_and_entry` wrapper that also accepts
+/// `is_external_module`. Callers in `crates/perry/src/commands/compile/`
+/// pass `true` when the source file lives under any `node_modules/` segment
+/// so the require-literal compile error in `lower_call.rs` skips library
+/// code (which legitimately uses `require()` for deferred cycle breaks).
+pub fn lower_module_full(
+    ast_module: &ast::Module,
+    name: &str,
+    source_file_path: &str,
+    start_class_id: ClassId,
+    resolved_types: Option<std::collections::HashMap<u32, Type>>,
+    imported_class_fields: Option<&std::collections::HashMap<String, Vec<(String, Type)>>>,
+    is_entry_module: bool,
+    is_external_module: bool,
+) -> Result<(Module, ClassId)> {
     let mut ctx = LoweringContext::with_class_id_start(source_file_path, start_class_id);
     ctx.resolved_types = resolved_types;
     ctx.is_entry_module = is_entry_module;
+    ctx.is_external_module = is_external_module;
     if let Some(seed) = imported_class_fields {
         ctx.seed_imported_class_fields(seed);
     }
@@ -7036,6 +7073,23 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
             } else if name == "Infinity" {
                 // Global Infinity identifier
                 Ok(Expr::Number(f64::INFINITY))
+            } else if name == "__dirname" || name == "__filename" {
+                // Issue #667: CJS-style module locals. Without this fold,
+                // the bare reference falls through to GlobalGet(0) -> 0,
+                // which silently corrupts any path computation built on
+                // path.join(__dirname, ...). Mirrors the import.meta arm
+                // (expr_misc::import_meta_paths) so both surfaces agree.
+                let path = &ctx.source_file_path;
+                let value = if name == "__filename" {
+                    path.clone()
+                } else {
+                    match path.rfind('/') {
+                        Some(i) if i > 0 => path[..i].to_string(),
+                        Some(_) => "/".to_string(),
+                        None => String::new(),
+                    }
+                };
+                Ok(Expr::String(value))
             } else {
                 // GlobalGet(0) is a sentinel: codegen routes by name from the
                 // parent PropertyGet/Call/Member context. Bare uses lower to

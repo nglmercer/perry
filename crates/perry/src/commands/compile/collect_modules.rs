@@ -205,8 +205,19 @@ pub(super) fn collect_modules(
     // entries don't update `entry_canonical`, so their `import.meta.main`
     // correctly resolves to false.
     let is_entry_module = ctx.entry_canonical.as_ref() == Some(&canonical);
+    // Issue #668: external means "module reached via npm package import".
+    // We can't rely on the canonical path containing "/node_modules/" because
+    // bun's pnpm-style installs symlink each package file out to a single
+    // shared copy (e.g. `@perryts/redis` source lives at /Users/.../perry/redis
+    // even when imported as `@perryts/redis`). Project-root containment is
+    // robust against this — user code lives under `project_root`, library
+    // imports canonicalize away from it. Files imported via `/node_modules/`
+    // also keep the legacy fall-through behavior for the same reason.
+    let is_external_module = !canonical.starts_with(&ctx.project_root)
+        || canonical.to_string_lossy().contains("/node_modules/")
+        || entry_path.to_string_lossy().contains("/node_modules/");
     let (mut hir_module, new_next_class_id) =
-        perry_hir::lower_module_with_class_id_types_seed_and_entry(
+        perry_hir::lower_module_full(
             ast_module,
             &module_name,
             &source_file_path,
@@ -214,6 +225,7 @@ pub(super) fn collect_modules(
             resolved_types,
             imported_class_fields,
             is_entry_module,
+            is_external_module,
         )?;
     *next_class_id = new_next_class_id; // Update the global class_id counter
 
