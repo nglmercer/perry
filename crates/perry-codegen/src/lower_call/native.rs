@@ -540,18 +540,30 @@ pub(crate) fn lower_native_method_call(
         ctx.block().store(I64, &parent_handle, &parent_slot);
 
         // Determine which arg is the style-options object and which
-        // is the children array. The classification is structural —
-        // arrays go to children, object-literals go to style.
+        // is the children array.
+        //
+        // 2-arg shape `Box(opts, children)` — first is always style,
+        // second is always children, regardless of whether `children`
+        // is a literal array or a runtime value like `msgs.map(...)`.
+        // The old structural classifier only recognised `Expr::Array`
+        // as children, so `Box(opts, runtimeArr)` silently dropped the
+        // children. (#679 follow-up.)
+        //
+        // 1-arg shape: classify structurally — an Object-shaped
+        // expression is style, anything else is children.
         let mut style_arg: Option<&Expr> = None;
         let mut children_arg: Option<&Expr> = None;
-        for arg in args.iter() {
+        if args.len() >= 2 {
+            style_arg = Some(&args[0]);
+            children_arg = Some(&args[1]);
+        } else if let Some(arg) = args.first() {
             match arg {
                 Expr::Array(_) | Expr::ArraySpread(_) => children_arg = Some(arg),
-                _ => {
-                    if style_arg.is_none() {
-                        style_arg = Some(arg);
-                    }
-                }
+                Expr::Object(_) | Expr::New { .. } => style_arg = Some(arg),
+                // Bare identifier / call / etc. — most TS programs
+                // use this for children, e.g. `Box(rows)` where
+                // `rows = messages.map(…)`. Treat as children.
+                _ => children_arg = Some(arg),
             }
         }
 
@@ -580,7 +592,25 @@ pub(crate) fn lower_native_method_call(
                     );
                 }
             } else {
-                let _ = lower_expr(ctx, children_expr)?;
+                // Non-literal children (e.g. `Box(messages.map(m => Text(m)))`)
+                // — lower to a runtime array pointer + delegate iteration
+                // to `js_perry_tui_box_add_children_array`. Pre-#679-follow-up
+                // this branch dropped the result and the Box ended up empty.
+                let children_box = lower_expr(ctx, children_expr)?;
+                let blk = ctx.block();
+                let children_handle = unbox_to_i64(blk, &children_box);
+                ctx.pending_declares.push((
+                    "js_perry_tui_box_add_children_array".to_string(),
+                    DOUBLE,
+                    vec![I64, I64],
+                ));
+                let blk = ctx.block();
+                let parent_reload = blk.load(I64, &parent_slot);
+                blk.call(
+                    DOUBLE,
+                    "js_perry_tui_box_add_children_array",
+                    &[(I64, &parent_reload), (I64, &children_handle)],
+                );
             }
         }
 

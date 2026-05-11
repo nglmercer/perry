@@ -106,6 +106,43 @@ fn with_box_style_mut(handle: i64, f: impl FnOnce(&mut super::style::BoxStyle)) 
     });
 }
 
+/// `Box(parent).addChildrenFromArray(arr)` — iterate a runtime JS
+/// array of widget handles and add each one as a child of `parent`.
+/// Used when `Box(...)` is called with a non-literal children
+/// expression (e.g. `messages.map(m => Text(m))`) — the codegen's
+/// Box recogniser can't expand the children at compile time, so it
+/// emits one call to this helper instead.
+///
+/// `children_array` is the unboxed `*mut ArrayHeader` pointer (i64).
+/// Elements are NaN-boxed POINTER widget handles (as f64); we unbox
+/// each to its raw i64 widget handle before calling `box_add_child`.
+/// (#679 follow-up: pre-fix Box(map_result) silently produced an
+/// empty container.)
+#[no_mangle]
+pub extern "C" fn js_perry_tui_box_add_children_array(
+    parent: i64,
+    children_array: i64,
+) -> f64 {
+    const TAG_UNDEFINED: u64 = 0x7FFC_0000_0000_0001;
+    if children_array == 0 {
+        return f64::from_bits(TAG_UNDEFINED);
+    }
+    let len = crate::array::js_array_get_length(children_array);
+    for i in 0..len {
+        let child_f64 = crate::array::js_array_get_element_f64(children_array, i);
+        // Children are NaN-boxed POINTER widget handles. Unbox by
+        // stripping the high 16 bits of the NaN-box tag to recover
+        // the raw i64 widget handle. (Same pattern run.rs uses to
+        // extract a Widget handle from the component's return.)
+        let bits = child_f64.to_bits();
+        let child_handle = (bits & 0x0000_FFFF_FFFF_FFFF) as i64;
+        if child_handle != 0 {
+            super::tree::box_add_child(parent, child_handle);
+        }
+    }
+    f64::from_bits(TAG_UNDEFINED)
+}
+
 /// `Box.flexDirection = "row" | "column"` — emitted by the codegen
 /// when a Box style object includes `flexDirection`.
 #[no_mangle]
