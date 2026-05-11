@@ -1440,6 +1440,191 @@ object PerryBridge {
     }
 
     // ============================================================
+    // Issue #474 — Chart widget (custom View.onDraw, 3 chart kinds).
+    // ============================================================
+    //
+    // Kotlin owns the data; Rust just pushes points and asks for redraws
+    // (`postInvalidate`). kind: 0=line, 1=bar, 2=pie. PerryChartView keeps
+    // its own MutableList<Pair<String,Double>> and renders directly in
+    // onDraw — no graphing library dep.
+
+    private class PerryChartView(
+        context: Context,
+        var kind: Int
+    ) : View(context) {
+        val points: MutableList<Pair<String, Double>> = mutableListOf()
+        var title: String = ""
+
+        private val barFillPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF4287F5.toInt()
+            style = android.graphics.Paint.Style.FILL
+        }
+        private val linePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF4287F5.toInt()
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 4f
+        }
+        private val pointPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF1B5FB8.toInt()
+            style = android.graphics.Paint.Style.FILL
+        }
+        private val axisPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF888888.toInt()
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        private val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF222222.toInt()
+            textSize = 24f
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+        private val titlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF222222.toInt()
+            textSize = 32f
+            textAlign = android.graphics.Paint.Align.CENTER
+            isFakeBoldText = true
+        }
+        private val pieColors = intArrayOf(
+            0xFF4287F5.toInt(), 0xFFE54545.toInt(), 0xFF34A853.toInt(),
+            0xFFFBBC05.toInt(), 0xFF9C27B0.toInt(), 0xFF00ACC1.toInt(),
+            0xFFFF7043.toInt(), 0xFF8D6E63.toInt()
+        )
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val titleHeight = if (title.isNotEmpty()) 48f else 0f
+            if (title.isNotEmpty()) {
+                canvas.drawText(title, w / 2f, 36f, titlePaint)
+            }
+            if (points.isEmpty()) return
+
+            when (kind) {
+                0 -> drawLine(canvas, w, h, titleHeight)
+                1 -> drawBar(canvas, w, h, titleHeight)
+                2 -> drawPie(canvas, w, h, titleHeight)
+                else -> drawBar(canvas, w, h, titleHeight)
+            }
+        }
+
+        private fun drawBar(canvas: android.graphics.Canvas, w: Float, h: Float, top: Float) {
+            val padL = 48f; val padR = 16f; val padB = 48f; val padT = top + 16f
+            val plotW = w - padL - padR
+            val plotH = h - padT - padB
+            if (plotW <= 0 || plotH <= 0) return
+            val maxV = points.maxOf { it.second }.coerceAtLeast(1e-9)
+            val barWidth = plotW / points.size * 0.7f
+            val step = plotW / points.size
+            // axis
+            canvas.drawLine(padL, h - padB, w - padR, h - padB, axisPaint)
+            for ((i, pt) in points.withIndex()) {
+                val cx = padL + step * (i + 0.5f)
+                val barH = (pt.second / maxV * plotH).toFloat()
+                val left = cx - barWidth / 2f
+                val top0 = (h - padB) - barH
+                canvas.drawRect(left, top0, left + barWidth, h - padB, barFillPaint)
+                canvas.drawText(pt.first, cx, h - padB + 28f, labelPaint)
+            }
+        }
+
+        private fun drawLine(canvas: android.graphics.Canvas, w: Float, h: Float, top: Float) {
+            val padL = 48f; val padR = 16f; val padB = 48f; val padT = top + 16f
+            val plotW = w - padL - padR
+            val plotH = h - padT - padB
+            if (plotW <= 0 || plotH <= 0) return
+            val maxV = points.maxOf { it.second }.coerceAtLeast(1e-9)
+            val step = if (points.size <= 1) 0f else plotW / (points.size - 1)
+            canvas.drawLine(padL, h - padB, w - padR, h - padB, axisPaint)
+            val path = android.graphics.Path()
+            for ((i, pt) in points.withIndex()) {
+                val cx = padL + step * i
+                val cy = (h - padB) - (pt.second / maxV * plotH).toFloat()
+                if (i == 0) path.moveTo(cx, cy) else path.lineTo(cx, cy)
+            }
+            canvas.drawPath(path, linePaint)
+            for ((i, pt) in points.withIndex()) {
+                val cx = padL + step * i
+                val cy = (h - padB) - (pt.second / maxV * plotH).toFloat()
+                canvas.drawCircle(cx, cy, 6f, pointPaint)
+                canvas.drawText(pt.first, cx, h - padB + 28f, labelPaint)
+            }
+        }
+
+        private fun drawPie(canvas: android.graphics.Canvas, w: Float, h: Float, top: Float) {
+            val sum = points.sumOf { it.second }
+            if (sum <= 0) return
+            val padT = top + 16f
+            val plotW = w
+            val plotH = h - padT - 16f
+            val r = (Math.min(plotW, plotH) / 2f - 16f).coerceAtLeast(8f)
+            val cx = w / 2f
+            val cy = padT + plotH / 2f
+            val rect = android.graphics.RectF(cx - r, cy - r, cx + r, cy + r)
+            val slicePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.FILL
+            }
+            var startAngle = -90f
+            for ((i, pt) in points.withIndex()) {
+                val sweep = (pt.second / sum * 360.0).toFloat()
+                slicePaint.color = pieColors[i % pieColors.size]
+                canvas.drawArc(rect, startAngle, sweep, true, slicePaint)
+                startAngle += sweep
+            }
+            // simple legend bottom-left
+            var ly = padT + 16f
+            for ((i, pt) in points.withIndex()) {
+                slicePaint.color = pieColors[i % pieColors.size]
+                canvas.drawRect(16f, ly - 16f, 36f, ly, slicePaint)
+                canvas.drawText(pt.first, 80f, ly, labelPaint.apply {
+                    textAlign = android.graphics.Paint.Align.LEFT
+                })
+                ly += 28f
+            }
+            labelPaint.textAlign = android.graphics.Paint.Align.CENTER
+        }
+    }
+
+    @JvmStatic
+    fun chartCreate(kind: Long, width: Double, height: Double): View {
+        val v = PerryChartView(activity, kind.toInt())
+        if (width > 0 || height > 0) {
+            v.layoutParams = FrameLayout.LayoutParams(
+                if (width > 0) width.toInt() else FrameLayout.LayoutParams.MATCH_PARENT,
+                if (height > 0) height.toInt() else FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        return v
+    }
+
+    @JvmStatic
+    fun chartAddDataPoint(v: View, label: String, value: Double) {
+        val chart = v as? PerryChartView ?: return
+        uiHandler.post {
+            chart.points.add(label to value)
+            chart.invalidate()
+        }
+    }
+
+    @JvmStatic
+    fun chartClearData(v: View) {
+        val chart = v as? PerryChartView ?: return
+        uiHandler.post {
+            chart.points.clear()
+            chart.invalidate()
+        }
+    }
+
+    @JvmStatic
+    fun chartSetTitle(v: View, title: String) {
+        val chart = v as? PerryChartView ?: return
+        uiHandler.post {
+            chart.title = title
+            chart.invalidate()
+        }
+    }
+
+    // ============================================================
     // Issue #480 — TreeView (flat ListView with depth-aware adapter).
     // ============================================================
     //
