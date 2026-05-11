@@ -45,6 +45,12 @@ pub static MT_FAST_PATH_MISS: AtomicU64 = AtomicU64::new(0);
 /// (or fresh `js_promise_new`) call would have done.
 pub static MT_STEP_CHAIN_REUSE_HIT: AtomicU64 = AtomicU64::new(0);
 pub static MT_STEP_CHAIN_REUSE_MISS: AtomicU64 = AtomicU64::new(0);
+/// Counter: per-async-fn `js_async_step_done` invocations that reused
+/// the in-flight `next` Promise (via INLINE_TRAP_NEXT) and so skipped
+/// the `js_promise_resolved` allocation the equivalent
+/// `Promise.resolve(value)` would have done.
+pub static MT_STEP_DONE_REUSE_HIT: AtomicU64 = AtomicU64::new(0);
+pub static MT_STEP_DONE_REUSE_MISS: AtomicU64 = AtomicU64::new(0);
 
 extern "C" fn mt_profile_atexit() {
     if std::env::var_os("PERRY_MT_PROFILE").is_none() {
@@ -83,6 +89,11 @@ extern "C" fn mt_profile_atexit() {
         "[mt-profile] step_chain_reuse: hit={} miss={}",
         MT_STEP_CHAIN_REUSE_HIT.load(Ordering::Relaxed),
         MT_STEP_CHAIN_REUSE_MISS.load(Ordering::Relaxed),
+    );
+    eprintln!(
+        "[mt-profile] step_done_reuse: hit={} miss={}",
+        MT_STEP_DONE_REUSE_HIT.load(Ordering::Relaxed),
+        MT_STEP_DONE_REUSE_MISS.load(Ordering::Relaxed),
     );
 }
 
@@ -1334,6 +1345,39 @@ pub extern "C" fn js_async_step_chain(
     });
     crate::event_pump::js_notify_main_thread();
     next
+}
+
+/// Done-case companion to `js_async_step_chain`. Replaces the
+/// `Promise.resolve(value)` allocation in the state-machine terminal
+/// branch when step is dispatched from inside the microtask runner.
+///
+/// Fast path (steady state): INLINE_TRAP_NEXT is non-null (runner
+/// stashed it before calling step) and CURRENT_STEP_CLOSURE matches
+/// `step_closure` (proves we're resolving for THIS step, not an
+/// outer activation we'd corrupt). Resolve `trap_next` with `value`
+/// in-place and return it; step returns the same Promise to the
+/// runner which fires the self-chain check and skips the propagate
+/// hop. Net effect: zero new Promise allocations on the done path.
+///
+/// Slow path: trap_next is null (initial entry to a no-await async
+/// function) or step_closure doesn't match (nested async-fn call,
+/// where the outer activation's `next` must NOT be settled here).
+/// Fall back to `js_promise_resolved(value)`.
+#[no_mangle]
+pub extern "C" fn js_async_step_done(
+    value: f64,
+    step_closure: ClosurePtr,
+) -> *mut Promise {
+    let trap_next = INLINE_TRAP_NEXT.with(|c| c.get());
+    let cur_step = CURRENT_STEP_CLOSURE.with(|c| c.get());
+    if !trap_next.is_null() && cur_step == step_closure as usize {
+        MT_STEP_DONE_REUSE_HIT.fetch_add(1, Ordering::Relaxed);
+        js_promise_resolve(trap_next, value);
+        trap_next
+    } else {
+        MT_STEP_DONE_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
+        js_promise_resolved(value)
+    }
 }
 
 // Thread-local single-slot cache for async-step thunks. Keyed by the

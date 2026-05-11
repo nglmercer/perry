@@ -8024,6 +8024,30 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             Ok(nanbox_pointer_inline(blk, &promise_handle))
         }
 
+        // -------- Optimized async-step done (perf hot path) --------
+        // Equivalent to `Promise.resolve(value)` at the state-machine
+        // terminal position, but reuses the in-flight `next` Promise
+        // (stashed in INLINE_TRAP_NEXT by the microtask runner) when
+        // step is being dispatched. Saves one fresh Promise alloc per
+        // async function call. Gated by step_closure matching
+        // CURRENT_STEP_CLOSURE so nested async-fn calls can't accidentally
+        // resolve the outer activation's `next`.
+        Expr::AsyncStepDone {
+            value,
+            step_closure,
+        } => {
+            let value_box = lower_expr(ctx, value)?;
+            let step_box = lower_expr(ctx, step_closure)?;
+            let blk = ctx.block();
+            let step_handle = unbox_to_i64(blk, &step_box);
+            let promise_handle = blk.call(
+                I64,
+                "js_async_step_done",
+                &[(DOUBLE, &value_box), (I64, &step_handle)],
+            );
+            Ok(nanbox_pointer_inline(blk, &promise_handle))
+        }
+
         // -------- Object.getOwnPropertyNames(obj) --------
         // Returns ALL own keys (including non-enumerable ones from
         // defineProperty), unlike Object.keys which skips them.

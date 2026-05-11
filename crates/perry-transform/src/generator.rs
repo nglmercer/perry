@@ -1669,9 +1669,14 @@ fn build_async_step_driver_direct(
         },
         Stmt::If {
             condition: Expr::IterResultGetDone,
-            then_branch: vec![Stmt::Return(Some(promise_resolve(
-                Expr::IterResultGetValue,
-            )))],
+            // Optimized: AsyncStepDone reuses INLINE_TRAP_NEXT instead
+            // of allocating a fresh `Promise.resolve(value)` Promise.
+            // Saves one js_promise_resolved alloc per async function
+            // call (50k/run on promise_all_chains).
+            then_branch: vec![Stmt::Return(Some(Expr::AsyncStepDone {
+                value: Box::new(Expr::IterResultGetValue),
+                step_closure: Box::new(Expr::LocalGet(step_id)),
+            }))],
             else_branch: None,
         },
         Stmt::Return(Some(Expr::AsyncStepChain {

@@ -731,6 +731,13 @@ where
             f(value);
             f(step_closure);
         }
+        Expr::AsyncStepDone {
+            value,
+            step_closure,
+        } => {
+            f(value);
+            f(step_closure);
+        }
 
         // ─── Buffer family ───────────────────────────────────────────────
         Expr::BufferFrom { data, encoding } => {
@@ -1866,6 +1873,13 @@ where
             f(replacement);
         }
         Expr::AsyncStepChain {
+            value,
+            step_closure,
+        } => {
+            f(value);
+            f(step_closure);
+        }
+        Expr::AsyncStepDone {
             value,
             step_closure,
         } => {

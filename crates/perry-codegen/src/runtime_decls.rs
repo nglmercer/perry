@@ -2307,6 +2307,11 @@ pub fn declare_stdlib_ffi(module: &mut LlModule) {
     // the async-step driver by carrying `step_closure` directly
     // through the task queue.
     module.declare_function("js_async_step_chain", I64, &[DOUBLE, I64]);
+    // Optimized async-step done: replaces `Promise.resolve(value)` in
+    // the state-machine terminal branch by reusing the in-flight `next`
+    // Promise (INLINE_TRAP_NEXT) when called from inside the microtask
+    // runner dispatching this same step closure.
+    module.declare_function("js_async_step_done", I64, &[DOUBLE, I64]);
 
     // ========== Slugify ==========
     module.declare_function("js_slugify", I64, &[I64]);

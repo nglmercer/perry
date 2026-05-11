@@ -1304,6 +1304,20 @@ pub enum Expr {
         step_closure: Box<Expr>,
     },
 
+    /// Optimized done-case for the async-step driver: equivalent to
+    /// `Promise.resolve(value)` at the position where the state machine
+    /// terminates. Saves the per-call fulfilled-Promise allocation when
+    /// step is invoked from inside the microtask runner — the runner has
+    /// stashed the in-flight `next` Promise in `INLINE_TRAP_NEXT` and
+    /// step's return is checked against `next` for a self-chain skip.
+    /// When INLINE_TRAP_NEXT is null (initial entry / no-await async
+    /// function), the helper falls back to a fresh `js_promise_resolved`.
+    /// Only emitted by `build_async_step_driver_direct`.
+    AsyncStepDone {
+        value: Box<Expr>,
+        step_closure: Box<Expr>,
+    },
+
     // Crypto operations
     CryptoRandomBytes(Box<Expr>), // crypto.randomBytes(size) -> string (hex)
     CryptoRandomUUID,             // crypto.randomUUID() -> string
