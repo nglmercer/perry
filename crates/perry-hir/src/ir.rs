@@ -481,6 +481,15 @@ pub struct Import {
     pub module_kind: ModuleKind,
     /// Resolved absolute path to the module file (if available)
     pub resolved_path: Option<String>,
+    /// True if the WHOLE import is type-only (`import type * as X`,
+    /// `import type { Foo } from "..."`). Type-only imports are erased at
+    /// runtime — they MUST NOT participate in module init order
+    /// (refs #680). Pre-tracking they were treated like value imports,
+    /// creating phantom init-order edges that flipped real cycles in the
+    /// topological sort. Per-specifier type-only (`import { type Foo,
+    /// bar }`) is still tracked because the same declaration also has
+    /// value specifiers — only the whole-decl flag is runtime-meaningless.
+    pub type_only: bool,
 }
 
 /// Import specifier

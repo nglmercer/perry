@@ -383,6 +383,7 @@ pub fn inline_functions(
                     is_native: false,
                     module_kind: perry_hir::ModuleKind::NativeCompiled,
                     resolved_path: Some(path),
+                    type_only: false,
                 });
             }
         }
