@@ -139,12 +139,52 @@ pub(super) fn wrap_commonjs(source: &str, source_path: &Path) -> String {
             .join("\n")
     };
 
+    // Issue #665 follow-up: detect `(?:module\.)?exports\.X = require('Y')`
+    // patterns and forward them as direct ESM re-exports of `Y`'s default
+    // export. This preserves class identity through index-file aggregators
+    // (the rate-limiter-flexible / older-npm shape: an index.js whose only
+    // body is a series of `module.exports.RateLimiterMemory =
+    // require('./lib/RateLimiterMemory')` lines).
+    //
+    // Pre-fix the consumer's `import { RateLimiterMemory } from "pkg"` resolved
+    // to `export const RateLimiterMemory = _cjs.RateLimiterMemory;` — a
+    // runtime property read on the IIFE result. HIR can't see through that
+    // read to the class declaration in the required file, so `new
+    // RateLimiterMemory(...)` produced an empty object with no methods.
+    //
+    // Emitting `export { _req_N as RateLimiterMemory };` makes the named
+    // export an alias of the default import from `./lib/RateLimiterMemory`,
+    // and the compile.rs class propagation (Export::Named arm at
+    // compile.rs:2505) walks default-import specifiers and forwards the
+    // source module's "default"-keyed class into this module's exported_classes
+    // under the aliased name. Class identity survives the indirection.
+    let named_reexport_requires = extract_named_exports_from_require(source);
+    let direct_named_reexports = if named_reexport_requires.is_empty() {
+        String::new()
+    } else {
+        named_reexport_requires
+            .iter()
+            .filter_map(|(name, spec)| {
+                require_specs
+                    .iter()
+                    .position(|s| s == spec)
+                    .map(|n| format!("export {{ _req_{} as {} }};", n, name))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let named_reexport_names: Vec<String> = named_reexport_requires
+        .iter()
+        .map(|(n, _)| n.clone())
+        .collect();
+
     let named_export_decls = if named_exports.is_empty() {
         String::new()
     } else {
         named_exports
             .iter()
             .filter(|n| !hoisted_class_names.contains(n))
+            .filter(|n| !named_reexport_names.contains(n))
             .map(|n| format!("export const {} = _cjs.{};", n, n))
             .collect::<Vec<_>>()
             .join("\n")
@@ -234,6 +274,7 @@ const _cjs = (function() {{
 
 {default_export_decl}
 {direct_class_exports}
+{direct_named_reexports}
 {named_export_decls}
 "#
     );
@@ -269,6 +310,65 @@ fn extract_single_module_exports_assignment(source: &str) -> Option<String> {
             None => found = Some(rhs.to_string()),
         }
     }
+    found
+}
+
+/// Issue #665 follow-up: detect `(?:module\.)?exports\.NAME = require('SPEC')`
+/// patterns and return `(name, spec)` pairs. Order is preserved and duplicates
+/// (same NAME) are dropped on the first occurrence. If the same NAME also
+/// appears with a non-`require(...)` RHS anywhere else in the source, the
+/// pair is dropped — we don't want to forward a name that the file later
+/// reassigns to a non-default-import value.
+///
+/// Matches both `exports.X = require('Y')` and `module.exports.X = require('Y')`.
+/// Skips `__esModule` (the Babel/tsc interop marker; never user-meaningful).
+fn extract_named_exports_from_require(source: &str) -> Vec<(String, String)> {
+    let require_re = regex::Regex::new(
+        r#"(?m)^\s*(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)\s*;?\s*$"#,
+    )
+    .unwrap();
+    // Any non-require assignment to the same `exports.X` should disqualify
+    // the direct-reexport: the file is doing something more interesting and
+    // we'd be skipping that runtime value if we routed through the import.
+    let other_re = regex::Regex::new(
+        r#"(?m)^\s*(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(.+?)\s*;?\s*$"#,
+    )
+    .unwrap();
+
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut seen_names: Vec<String> = Vec::new();
+    for cap in require_re.captures_iter(source) {
+        if let (Some(name), Some(spec)) = (cap.get(1), cap.get(2)) {
+            let name = name.as_str().to_string();
+            if name == "__esModule" {
+                continue;
+            }
+            if seen_names.contains(&name) {
+                continue;
+            }
+            seen_names.push(name.clone());
+            found.push((name, spec.as_str().to_string()));
+        }
+    }
+    if found.is_empty() {
+        return found;
+    }
+    // Filter out any name that ALSO appears with a non-require RHS. Walk the
+    // looser regex; if a name we matched has an RHS that doesn't start with
+    // `require(`, drop the pair.
+    let mut disqualified: Vec<String> = Vec::new();
+    for cap in other_re.captures_iter(source) {
+        if let (Some(name), Some(rhs)) = (cap.get(1), cap.get(2)) {
+            let name = name.as_str();
+            if seen_names.iter().any(|n| n == name) {
+                let rhs = rhs.as_str().trim();
+                if !rhs.starts_with("require") {
+                    disqualified.push(name.to_string());
+                }
+            }
+        }
+    }
+    found.retain(|(n, _)| !disqualified.contains(n));
     found
 }
 
@@ -836,5 +936,53 @@ mod tests {
         let src = "module.exports = makeThing();";
         let wrapped = wrap_commonjs(src, &PathBuf::from("/tmp/test.js"));
         assert!(wrapped.contains("export default _cjs;"));
+    }
+
+    #[test]
+    fn extracts_named_exports_from_require_basic() {
+        // Issue #665 follow-up: rate-limiter-flexible-shaped index.js
+        let src = "module.exports.RateLimiterMemory = require('./lib/RateLimiterMemory');\nmodule.exports.Foo = require('./lib/Foo');";
+        let got = extract_named_exports_from_require(src);
+        assert_eq!(
+            got,
+            vec![
+                ("RateLimiterMemory".to_string(), "./lib/RateLimiterMemory".to_string()),
+                ("Foo".to_string(), "./lib/Foo".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_named_exports_from_require_bare_exports_dot() {
+        let src = "exports.Bar = require('./bar');";
+        let got = extract_named_exports_from_require(src);
+        assert_eq!(got, vec![("Bar".to_string(), "./bar".to_string())]);
+    }
+
+    #[test]
+    fn skips_named_export_when_name_has_non_require_assignment() {
+        // If the file ALSO does something else with the same name, route
+        // through the IIFE (via `_cjs.X`) so the file's runtime semantics win.
+        let src = "exports.X = require('./x');\nexports.X = wrap(exports.X);";
+        let got = extract_named_exports_from_require(src);
+        assert!(got.is_empty(), "expected empty, got {:?}", got);
+    }
+
+    #[test]
+    fn wrap_emits_direct_reexport_for_module_exports_dot_require() {
+        // Issue #665 follow-up: rate-limiter-flexible-shaped index.js
+        let src = "module.exports.RateLimiterMemory = require('./lib/RateLimiterMemory');";
+        let wrapped = wrap_commonjs(src, &PathBuf::from("/tmp/test.js"));
+        assert!(
+            wrapped.contains("export { _req_0 as RateLimiterMemory };"),
+            "expected direct re-export, got:\n{}",
+            wrapped
+        );
+        // And does NOT emit the property-read form for the same name.
+        assert!(
+            !wrapped.contains("export const RateLimiterMemory = _cjs.RateLimiterMemory;"),
+            "should NOT emit _cjs property read for direct-reexport name, got:\n{}",
+            wrapped
+        );
     }
 }

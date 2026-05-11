@@ -2,6 +2,30 @@
 
 Detailed changelog for Perry. See CLAUDE.md for concise summaries.
 
+## v0.5.808 — refs #665 — `(?:module\.)?exports\.X = require('Y')` index aggregators forward class identity
+
+Closes the remaining symptom from issue #665's last comment: named-imports of CJS classes from packages whose `index.js` is a series of `module.exports.X = require('./lib/X')` lines (rate-limiter-flexible, many older npm packages). Pre-fix the consumer's `import { RateLimiterMemory } from "rate-limiter-flexible"` resolved to `export const RateLimiterMemory = _cjs.RateLimiterMemory;` — a runtime property read on the IIFE result. HIR can't see through that read to the class declaration in the required file, so `new RateLimiterMemory(...)` produced an empty object with no methods (`typeof limiter.consume === "undefined"`, `Object.keys(limiter) === ""`).
+
+**Fix** in `crates/perry/src/commands/compile/cjs_wrap.rs`: add `extract_named_exports_from_require()` to detect the `(?:module\.)?exports\.NAME = require('SPEC')` shape and emit `export { _req_N as NAME };` directly (instead of `export const NAME = _cjs.NAME;`). The compile.rs class propagation arm at `Export::Named` then walks the default-import specifier, looks up the source module's `"default"`-keyed entry in `exported_classes`, and forwards the class into the index module's `exported_classes` under the aliased name. Class identity survives the indirection.
+
+**Defensive**: if the same `exports.X = ...` appears with a non-`require(...)` RHS elsewhere in the file, the pair is dropped — those files want the IIFE's runtime semantics. Already-hoisted-class names also win over the new direct re-export (the existing #652 path keeps its precedence).
+
+**Validation**: minimal reproducer matching rate-limiter-flexible's index.js shape (single-class default + named aggregator):
+```
+node_modules/my-pkg/index.js:    module.exports.Child = require('./lib/Child');
+                                 module.exports.Base = require('./lib/Base');
+node_modules/my-pkg/lib/Child.js: class Child extends Base {...} module.exports = Child;
+node_modules/my-pkg/lib/Base.js:  class Base {...} module.exports = Base;
+main.ts:                         import { Child, Base } from "my-pkg";
+                                 new Child({...}).greetChild("hi")
+```
+Pre-fix: `typeof c.greetChild === "undefined"`; `Object.keys(c) === ""`.
+Post-fix: `typeof c.greetChild === "function"`; `c.greetChild("hi") === "child:hi"`; `c.greetBase("hi") === "base:hi"`; `instanceof Base === true`; `instanceof Child === true`.
+
+**Out of scope**: cross-module `super()` constructor body field initialization (parent's `this.X = ...` doesn't take effect on subclass instances when subclass lives in another file) is a separate pre-existing limitation, not introduced or addressed by this change.
+
+**Unit tests** added in cjs_wrap.rs: `extracts_named_exports_from_require_basic`, `extracts_named_exports_from_require_bare_exports_dot`, `skips_named_export_when_name_has_non_require_assignment`, `wrap_emits_direct_reexport_for_module_exports_dot_require`.
+
 ## v0.5.807 — fix(hir,codegen,compile): closes #680 — type-only imports flipped topo cycles + flat namespace-member map collided
 
 Two coordinated fixes for the init-order disasters Effect's `import {} from "effect"` exposed once #671 cleared the keySet throw at HashMap.ts__init.
