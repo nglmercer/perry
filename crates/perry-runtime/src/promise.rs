@@ -251,42 +251,43 @@ thread_local! {
     static TASK_QUEUE: RefCell<std::collections::VecDeque<Task>>
         = const { RefCell::new(std::collections::VecDeque::new()) };
 
-    /// The `next` Promise of the currently-dispatching `Task::Inline` /
-    /// `Task::AsyncStep` microtask, or null when no inline-style task
-    /// is on the call stack. Set by the runner just before calling the
-    /// task's callback and cleared just after.
+    /// Packed `(trap_next, current_step)` for the currently-dispatching
+    /// inline-style microtask. Single TLS cell so the hot-path readers
+    /// (`js_async_step_chain` / `js_async_step_done`) and writers
+    /// (runner's `Task::Inline` / `Task::AsyncStep` arms) issue ONE
+    /// `.with()` call instead of two. Each `.with()` on x86_64/aarch64
+    /// macOS is ~10 ns through `__tls_get_addr` / mrs reads; the hot
+    /// path used to do 2 reads in `js_async_step_chain` and 4 writes
+    /// per Task::AsyncStep — packing cuts both in half.
     ///
-    /// Two purposes (single TLS, two readers):
+    /// **Throw-trap routing.** If the callback throws and unwinds
+    /// through the runner's outer `setjmp`, the trap reads `trap_next`
+    /// to know which `next` Promise to reject with the exception.
     ///
-    /// 1. **Throw-trap routing.** If the callback throws and unwinds
-    ///    through the runner's outer `setjmp`, the trap reads this slot
-    ///    to know which `next` Promise to reject with the exception.
-    ///
-    /// 2. **Async-step Promise reuse.** When the callback is an
-    ///    async-step body and it calls `js_async_step_chain` for the
-    ///    next await, the chain helper reuses this `next` instead of
-    ///    allocating a fresh Promise per await — same pointer goes
-    ///    onto the next `Task::AsyncStep`, and the runner detects the
-    ///    self-chain marker (`result == next`) to skip the
-    ///    propagate hop. Eliminates ~1 Promise alloc + 1
-    ///    `js_promise_resolve_with_promise` call per await on the
-    ///    primitive-value steady-state path.
-    pub(crate) static INLINE_TRAP_NEXT: std::cell::Cell<*mut Promise>
-        = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    /// **Async-step Promise reuse.** When the callback is an
+    /// async-step body and it calls `js_async_step_chain`, the chain
+    /// helper reuses `trap_next` instead of allocating a fresh Promise
+    /// per await — gated by `current_step` matching the step closure
+    /// passed in (proves the call came from the SAME async function
+    /// activation, not a NESTED one whose own `next` shouldn't be
+    /// collapsed onto its parent's).
+    pub(crate) static INLINE_TRAP: std::cell::Cell<InlineTrap>
+        = const { std::cell::Cell::new(InlineTrap { trap_next: std::ptr::null_mut(), current_step: 0 }) };
+}
 
-    /// The step closure currently being dispatched by the runner's
-    /// `Task::AsyncStep` arm. Read by `js_async_step_chain` to gate
-    /// the INLINE_TRAP_NEXT reuse path: only when the step closure
-    /// passed to AsyncStepChain matches this slot do we reuse — that
-    /// proves the call came from the SAME async function whose `next`
-    /// the runner has stashed, not from a NESTED async function call
-    /// that happens to run inside the parent's microtask. Without
-    /// this guard, a nested `await` inside `main_step → unit() →
-    /// step_unit_body → AsyncStepChain` would reuse `main_next` and
-    /// return it as `unit()`'s Promise — collapsing all of `Promise.
-    /// all([unit(), unit(), ...])`'s inputs onto a single Promise.
-    pub(crate) static CURRENT_STEP_CLOSURE: std::cell::Cell<usize>
-        = const { std::cell::Cell::new(0) };
+/// Packed thread-local state for the inline-microtask trap. See
+/// `INLINE_TRAP` for the lifecycle and gating discussion.
+#[derive(Copy, Clone)]
+pub(crate) struct InlineTrap {
+    pub trap_next: *mut Promise,
+    pub current_step: usize,
+}
+
+impl InlineTrap {
+    #[inline(always)]
+    const fn empty() -> Self {
+        InlineTrap { trap_next: std::ptr::null_mut(), current_step: 0 }
+    }
 }
 
 /// Returns 1 iff the current thread's microtask queue has at least one
@@ -879,9 +880,9 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
             }
             ran += 1;
         } else {
-            let inline_next = INLINE_TRAP_NEXT.with(|c| c.replace(std::ptr::null_mut()));
-            if !inline_next.is_null() {
-                js_promise_reject(inline_next, exc);
+            let prev = INLINE_TRAP.with(|c| c.replace(InlineTrap::empty()));
+            if !prev.trap_next.is_null() {
+                js_promise_reject(prev.trap_next, exc);
                 ran += 1;
             }
         }
@@ -973,7 +974,7 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
                 // valid `*mut Promise`. This is rarely hit (only on
                 // user-throw inside the inline callback) and we can
                 // afford the alloc on the slow path.
-                INLINE_TRAP_NEXT.with(|c| c.set(next));
+                INLINE_TRAP.with(|c| c.set(InlineTrap { trap_next: next, current_step: 0 }));
 
                 let t1 = if prof { Some(std::time::Instant::now()) } else { None };
                 let result = unsafe { crate::closure::js_closure_call1(callback, value) };
@@ -982,7 +983,7 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
                         .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 }
 
-                INLINE_TRAP_NEXT.with(|c| c.set(std::ptr::null_mut()));
+                INLINE_TRAP.with(|c| c.set(InlineTrap::empty()));
 
                 let t2 = if prof { Some(std::time::Instant::now()) } else { None };
                 if !next.is_null() {
@@ -1014,15 +1015,17 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
                     ran += 1;
                     continue;
                 }
-                INLINE_TRAP_NEXT.with(|c| c.set(next));
-                // Identify the step closure currently being dispatched
-                // so a recursive `js_async_step_chain` call from inside
-                // step body — which receives this same step closure as
-                // its arg — can reuse `next` (same closure means same
-                // async function activation; nested calls into other
-                // async functions pass a DIFFERENT step closure and
-                // miss this gate, so they alloc their own next).
-                CURRENT_STEP_CLOSURE.with(|c| c.set(step_closure as usize));
+                // Stash both trap_next + current_step in a single TLS
+                // write so the hot path doesn't pay two `.with()` calls
+                // per microtask. `current_step` gates the
+                // `js_async_step_chain` / `js_async_step_done` reuse
+                // path: nested async-fn calls pass a DIFFERENT step
+                // closure → fail the gate → alloc their own next, so
+                // their settlement can't collapse onto the parent's.
+                INLINE_TRAP.with(|c| c.set(InlineTrap {
+                    trap_next: next,
+                    current_step: step_closure as usize,
+                }));
 
                 let t1 = if prof { Some(std::time::Instant::now()) } else { None };
                 let is_error_bits = if is_error {
@@ -1038,8 +1041,7 @@ pub extern "C" fn js_promise_run_microtasks() -> i32 {
                         .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 }
 
-                INLINE_TRAP_NEXT.with(|c| c.set(std::ptr::null_mut()));
-                CURRENT_STEP_CLOSURE.with(|c| c.set(0));
+                INLINE_TRAP.with(|c| c.set(InlineTrap::empty()));
 
                 let t2 = if prof { Some(std::time::Instant::now()) } else { None };
                 // Self-chain marker: when `js_async_step_chain` reused
@@ -1246,18 +1248,18 @@ pub extern "C" fn js_async_step_chain(
 ) -> *mut Promise {
     // Reuse predicate. `next` reuse is sound only when AsyncStepChain
     // is being called from the body of the SAME step closure that the
-    // runner is currently dispatching. Two readers of INLINE_TRAP_NEXT
-    // pose risk:
+    // runner is currently dispatching. Two readers of INLINE_TRAP pose
+    // risk:
     //   - A nested `await` where step body's __next runs user TS that
     //     calls another async fn whose outer wrapper invokes its own
     //     step. That inner step's AsyncStepChain receives a DIFFERENT
     //     step closure → fails the gate → allocates a fresh Promise
     //     that becomes the inner async fn's user-facing return value.
     //   - The very first call from the outer wrapper (no microtask
-    //     active yet) → INLINE_TRAP_NEXT is null → fails the gate.
-    let trap_next = INLINE_TRAP_NEXT.with(|c| c.get());
-    let cur_step = CURRENT_STEP_CLOSURE.with(|c| c.get());
-    let can_reuse = !trap_next.is_null() && cur_step == step_closure as usize;
+    //     active yet) → INLINE_TRAP is empty → fails the gate.
+    let trap = INLINE_TRAP.with(|c| c.get());
+    let can_reuse = !trap.trap_next.is_null() && trap.current_step == step_closure as usize;
+    let trap_next = trap.trap_next;
 
     let (next, queued_value, is_error) = if is_definitely_primitive(value) {
         // Primitive value: enqueue Task::AsyncStep directly.
@@ -1368,12 +1370,11 @@ pub extern "C" fn js_async_step_done(
     value: f64,
     step_closure: ClosurePtr,
 ) -> *mut Promise {
-    let trap_next = INLINE_TRAP_NEXT.with(|c| c.get());
-    let cur_step = CURRENT_STEP_CLOSURE.with(|c| c.get());
-    if !trap_next.is_null() && cur_step == step_closure as usize {
+    let trap = INLINE_TRAP.with(|c| c.get());
+    if !trap.trap_next.is_null() && trap.current_step == step_closure as usize {
         MT_STEP_DONE_REUSE_HIT.fetch_add(1, Ordering::Relaxed);
-        js_promise_resolve(trap_next, value);
-        trap_next
+        js_promise_resolve(trap.trap_next, value);
+        trap.trap_next
     } else {
         MT_STEP_DONE_REUSE_MISS.fetch_add(1, Ordering::Relaxed);
         js_promise_resolved(value)
