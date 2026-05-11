@@ -2605,12 +2605,20 @@ pub extern "C" fn js_object_values(obj: *const ObjectHeader) -> *mut ArrayHeader
         return crate::array::js_array_alloc(0);
     }
     unsafe {
-        let field_count = (*obj).field_count as usize;
-        let result = crate::array::js_array_alloc(field_count as u32);
+        // Iterate up to keys_len (logical property count), not
+        // field_count — same fix as Object.entries above. Without
+        // this, objects with overflow fields silently returned only
+        // their first 8 values.
+        let keys = (*obj).keys_array;
+        let count = if !keys.is_null() {
+            crate::array::js_array_length(keys) as usize
+        } else {
+            (*obj).field_count as usize
+        };
+        let result = crate::array::js_array_alloc(count as u32);
 
-        for i in 0..field_count {
+        for i in 0..count {
             let value = js_object_get_field(obj as *mut ObjectHeader, i as u32);
-            // Store the raw f64 bits (which may be NaN-boxed)
             crate::array::js_array_push_f64(result, f64::from_bits(value.bits()));
         }
 
@@ -2627,23 +2635,38 @@ pub extern "C" fn js_object_entries(obj: *const ObjectHeader) -> *mut ArrayHeade
     }
     unsafe {
         let keys = (*obj).keys_array;
-        let field_count = (*obj).field_count as usize;
-        let result = crate::array::js_array_alloc(field_count as u32);
+        // Iterate up to keys_len (the logical property count), not
+        // field_count. Parser-built and dict-built objects with ≥9
+        // fields cap field_count at the inline alloc_limit (8) and
+        // store overflow values in OVERFLOW_FIELDS — for those,
+        // field_count under-counts the actual property count by N-8.
+        // Without this fix, `Object.entries(obj)` on a 50-key dict
+        // returned only the first 8 entries (silent data loss).
+        // Mirrors the same fix in `js_object_keys` and the
+        // `actual_fields = keys_len` line in `json.rs::stringify_object`.
+        let count = if !keys.is_null() {
+            crate::array::js_array_length(keys) as usize
+        } else {
+            (*obj).field_count as usize
+        };
+        let result = crate::array::js_array_alloc(count as u32);
 
-        for i in 0..field_count {
+        for i in 0..count {
             // Create a pair array [key, value]
             let pair = crate::array::js_array_alloc(2);
 
-            // Get the key (from keys array if available)
+            // Get the key (from keys array — already validated non-null
+            // when count came from there).
             if !keys.is_null() && (i as u32) < crate::array::js_array_length(keys) {
                 let key = crate::array::js_array_get_f64(keys, i as u32);
                 crate::array::js_array_push_f64(pair, key);
             } else {
-                // No key available, use empty string
                 crate::array::js_array_push_f64(pair, 0.0);
             }
 
-            // Get the value
+            // Read the value. `js_object_get_field` handles the
+            // inline-vs-overflow split internally (inline if
+            // i < field_count, overflow_get otherwise).
             let value = js_object_get_field(obj as *mut ObjectHeader, i as u32);
             crate::array::js_array_push_f64(pair, f64::from_bits(value.bits()));
 
