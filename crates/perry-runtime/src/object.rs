@@ -7562,6 +7562,10 @@ unsafe fn get_native_module_constant(
             "errno" => Some(create_sub_namespace("os.constants.errno")),
             "priority" => Some(create_sub_namespace("os.constants.priority")),
             "dlopen" => Some(create_sub_namespace("os.constants.dlopen")),
+            // Top-level libuv constant — sits directly on `os.constants`, not
+            // inside one of the nested tables. Node's UDP socket impl uses it
+            // for `SO_REUSEADDR`. Value is the published libuv flag (4).
+            "UV_UDP_REUSEADDR" => Some(4.0),
             _ => None,
         },
         "os.constants.signals" => os_signal_const(property),

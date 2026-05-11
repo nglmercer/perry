@@ -1627,17 +1627,23 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             let method_name = method_ident.sym.as_ref();
                             match method_name {
                                 "join" => {
-                                    if args.len() >= 2 {
-                                        let mut iter = args.into_iter();
-                                        let mut result = iter.next().unwrap();
-                                        for next_arg in iter {
-                                            result = Expr::PathJoin(
-                                                Box::new(result),
-                                                Box::new(next_arg),
-                                            );
-                                        }
-                                        return Ok(result);
+                                    if args.is_empty() {
+                                        return Ok(Expr::String(".".to_string()));
                                     }
+                                    if args.len() == 1 {
+                                        return Ok(Expr::PathNormalize(Box::new(
+                                            args.into_iter().next().unwrap(),
+                                        )));
+                                    }
+                                    let mut iter = args.into_iter();
+                                    let mut result = iter.next().unwrap();
+                                    for next_arg in iter {
+                                        result = Expr::PathJoin(
+                                            Box::new(result),
+                                            Box::new(next_arg),
+                                        );
+                                    }
+                                    return Ok(result);
                                 }
                                 "dirname" => {
                                     if !args.is_empty() {
@@ -5345,15 +5351,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                     if module_name == "path" {
                         match func_name {
                             "join" => {
-                                if args.len() >= 2 {
-                                    let mut iter = args.into_iter();
-                                    let mut result = iter.next().unwrap();
-                                    for next_arg in iter {
-                                        result =
-                                            Expr::PathJoin(Box::new(result), Box::new(next_arg));
-                                    }
-                                    return Ok(result);
+                                if args.is_empty() {
+                                    return Ok(Expr::String(".".to_string()));
                                 }
+                                if args.len() == 1 {
+                                    return Ok(Expr::PathNormalize(Box::new(
+                                        args.into_iter().next().unwrap(),
+                                    )));
+                                }
+                                let mut iter = args.into_iter();
+                                let mut result = iter.next().unwrap();
+                                for next_arg in iter {
+                                    result =
+                                        Expr::PathJoin(Box::new(result), Box::new(next_arg));
+                                }
+                                return Ok(result);
                             }
                             "dirname" => {
                                 if !args.is_empty() {
