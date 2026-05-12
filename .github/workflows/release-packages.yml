@@ -27,7 +27,11 @@ jobs:
   # ---------------------------------------------------------------------------
   await-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Job-level timeout must match the bash `deadline=$(( SECONDS + 90 * 60 ))`
+    # below. v0.5.876 bumped the bash deadline to 90 but missed this — the
+    # job got cancelled at the 60-min wall on v0.5.878 even though macOS
+    # doc-tests succeeded 2 minutes later. Both must move together.
+    timeout-minutes: 90
     steps:
       - name: Wait for Tests + Simulator Tests (iOS) to pass
         env:
