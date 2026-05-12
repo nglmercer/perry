@@ -169,6 +169,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Cache cargo registry + target/ per (matrix.target, Cargo.lock).
+      # First run on a target is still a cold build, but every subsequent
+      # release-tag on the same Cargo.lock reuses the compiled crates —
+      # webkit6/gstreamer/swc/etc. dominate cold cargo and recompile takes
+      # 10-15 min per matrix entry. Cache hit drops that to ~30s.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ matrix.target }}"
+
       # Closes #394: Homebrew bottle was missing libperry_ui_ios.a so
       # `perry compile foo.ts -o app --target ios[-simulator]` failed at link
       # with `perry/ui imported but libperry_ui_ios.a not found`. Both macOS
