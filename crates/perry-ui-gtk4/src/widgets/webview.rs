@@ -144,7 +144,7 @@ fn install_signal_handlers(handle: i64, webview: &webkit6::WebView) {
             Some(d) => d,
             None => return false,
         };
-        let action = match action_decision.navigation_action() {
+        let mut action = match action_decision.navigation_action() {
             Some(a) => a,
             None => return false,
         };
@@ -320,9 +320,11 @@ pub fn clear_cookies(handle: i64) {
                 // COOKIES bitflag + duration 0 = "all cookies since epoch".
                 if let Some(dm) = session.website_data_manager() {
                     let cancellable: Option<&gtk4::gio::Cancellable> = None;
+                    // glib::TimeSpan is microseconds. 0 = "from epoch" =
+                    // clear all cookies regardless of age.
                     dm.clear(
                         webkit6::WebsiteDataTypes::COOKIES,
-                        std::time::Duration::ZERO,
+                        gtk4::glib::TimeSpan::from_seconds(0),
                         cancellable,
                         |_| {},
                     );
