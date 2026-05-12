@@ -68,6 +68,17 @@ pub struct LoweringContext {
     /// avoiding the creation of shadow fields that cause later index shift bugs after
     /// inheritance resolution in codegen.
     pub(crate) class_field_names: Vec<(String, Vec<String>)>,
+    /// Issue #665 (sixth pass): per-class set of getter+setter property names.
+    /// Used by the "infer fields from ctor body `this.x = ...`" pass to avoid
+    /// mis-categorising a setter assignment as an own data field — the
+    /// rate-limiter-flexible `set points(v)` / `this.points = opts.points`
+    /// shape, where the bare-`this` field-detection block in
+    /// `lower_class_decl` would otherwise allocate an `Object.keys`-visible
+    /// `points` slot that shadows the inherited getter at runtime.
+    /// Populated alongside `register_class_field_names`; looked up via
+    /// `lookup_class_accessor_names` and walked across the parent chain when
+    /// processing a subclass's ctor body.
+    pub(crate) class_accessor_names: Vec<(String, Vec<String>)>,
     /// Issue #562: class name → `(module, class)` tuple from
     /// `native_extends`. Populated when lowering each class, consumed by
     /// `destructuring.rs` to register `let x = new SubclassOfStream()`
@@ -303,6 +314,7 @@ impl LoweringContext {
             classes: Vec::new(),
             class_statics: Vec::new(),
             class_field_names: Vec::new(),
+            class_accessor_names: Vec::new(),
             class_native_extends: Vec::new(),
             class_field_types: Vec::new(),
             enums: Vec::new(),
@@ -624,6 +636,37 @@ impl LoweringContext {
     /// Look up the list of instance field names declared on a class (NOT including inherited).
     pub(crate) fn lookup_class_field_names(&self, class_name: &str) -> Option<&[String]> {
         self.class_field_names
+            .iter()
+            .find(|(n, _)| n == class_name)
+            .map(|(_, f)| f.as_slice())
+    }
+
+    /// Issue #665: register the getter+setter property names for a class.
+    /// Mirrors `register_class_field_names`; consumed by the ctor-body
+    /// field-detection pass to skip names that are accessors. Stored as the
+    /// own+inherited union so a child lookup sees the full chain in one hop.
+    pub(crate) fn register_class_accessor_names(
+        &mut self,
+        class_name: String,
+        accessor_names: Vec<String>,
+    ) {
+        if let Some(entry) = self
+            .class_accessor_names
+            .iter_mut()
+            .find(|(n, _)| *n == class_name)
+        {
+            entry.1 = accessor_names;
+        } else {
+            self.class_accessor_names.push((class_name, accessor_names));
+        }
+    }
+
+    /// Look up the accessor (getter+setter) property names registered for a
+    /// class. The stored list includes inherited accessors (mirroring how
+    /// `class_field_names` stores the own+inherited union), so callers do
+    /// not need to walk the parent chain themselves.
+    pub(crate) fn lookup_class_accessor_names(&self, class_name: &str) -> Option<&[String]> {
+        self.class_accessor_names
             .iter()
             .find(|(n, _)| n == class_name)
             .map(|(_, f)| f.as_slice())
