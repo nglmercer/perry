@@ -24,11 +24,22 @@ cd "$REPO_ROOT"
 cargo build --release \
     -p perry -p perry-runtime -p perry-stdlib -p perry-doc-tests
 
-# Disable per-test auto-optimize. With this set, `perry compile`
-# short-circuits the cargo-rebuild step in `build_optimized_libs` and
-# uses the prebuilt libs above. Saves ~30-200s per doc-test that would
-# otherwise trigger a feature-set-specialized cargo rebuild.
-export PERRY_NO_AUTO_OPTIMIZE=1
+# Disable per-test auto-optimize for HOST runs only. With this set,
+# `perry compile` short-circuits the cargo-rebuild step in
+# `build_optimized_libs` and uses the prebuilt libs above. Saves
+# ~30-200s per doc-test that would otherwise trigger a
+# feature-set-specialized cargo rebuild.
+#
+# For `--xcompile-only` runs (iOS / tvOS / web / wasm), the
+# auto-optimize cargo-rebuild is the ONLY thing that produces
+# `target/<triple>/release/libperry_runtime.a` for the cross-target,
+# since the workflow's prebuild step only builds the host target.
+# Skipping it would cause `Error: Could not find libperry_runtime.a
+# (for target "ios-simulator")` etc., so the env var stays unset on
+# xcompile invocations.
+if [[ "$*" != *"--xcompile-only"* ]]; then
+    export PERRY_NO_AUTO_OPTIMIZE=1
+fi
 
 REPORT_DIR="$REPO_ROOT/docs/examples/_reports"
 mkdir -p "$REPORT_DIR"
