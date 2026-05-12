@@ -7920,19 +7920,17 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
                 return Ok(result);
             }
 
-            // General case: desugar to `tag(stringsArray, ...exprs)`
-            // The strings array uses each quasi's COOKED value (with escapes
-            // processed). Per spec it should also have a `.raw` property, but
-            // most user code doesn't read it; if a test exercises that we can
-            // upgrade to a wrapper object later.
+            // General case: desugar to `tag(stringsArray, ...exprs)`. The
+            // strings array carries the cooked text (escapes processed) AS
+            // the array elements AND the raw text (escapes preserved) via
+            // a thread-local side table populated at the call site —
+            // `TaggedTemplateStrings` codegen emits both arrays + a
+            // `js_tagged_template_register_raw` call so `strings.raw` reads
+            // can resolve via the matching `Expr::TemplateRaw` fold below.
             let cooked_strings: Vec<Expr> = tpl
                 .quasis
                 .iter()
                 .map(|q| {
-                    // Each quasi has both `raw` and an optional `cooked` form;
-                    // prefer `cooked` so escapes like `\n` are processed.
-                    // `cooked` is a `Wtf8Atom` whose `as_str()` returns `Option<&str>`
-                    // (None when the original source had non-UTF8 bytes — falls back to raw).
                     let cooked_owned: Option<String> = q
                         .cooked
                         .as_ref()
@@ -7941,7 +7939,15 @@ pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<
                     Expr::String(s)
                 })
                 .collect();
-            let strings_array = Expr::Array(cooked_strings);
+            let raw_strings: Vec<String> = tpl
+                .quasis
+                .iter()
+                .map(|q| q.raw.as_ref().to_string())
+                .collect();
+            let strings_array = Expr::TaggedTemplateStrings {
+                cooked: cooked_strings,
+                raw: raw_strings,
+            };
 
             let mut call_args: Vec<Expr> = Vec::with_capacity(tpl.exprs.len() + 1);
             call_args.push(strings_array);
