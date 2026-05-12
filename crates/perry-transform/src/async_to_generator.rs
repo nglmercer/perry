@@ -874,9 +874,16 @@ fn strip_in_stmt(stmt: &mut Stmt, non_promise: &mut HashSet<LocalId>) {
         }
         Stmt::Expr(e) | Stmt::Throw(e) => strip_in_expr(e, non_promise),
         Stmt::Return(Some(e)) => strip_in_expr(e, non_promise),
-        Stmt::Return(None) | Stmt::Break | Stmt::Continue
-        | Stmt::LabeledBreak(_) | Stmt::LabeledContinue(_) => {}
-        Stmt::If { condition, then_branch, else_branch } => {
+        Stmt::Return(None)
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::LabeledBreak(_)
+        | Stmt::LabeledContinue(_) => {}
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             strip_in_expr(condition, non_promise);
             strip_in_stmts(then_branch, non_promise);
             if let Some(eb) = else_branch {
@@ -887,7 +894,12 @@ fn strip_in_stmt(stmt: &mut Stmt, non_promise: &mut HashSet<LocalId>) {
             strip_in_expr(condition, non_promise);
             strip_in_stmts(body, non_promise);
         }
-        Stmt::For { init, condition, update, body } => {
+        Stmt::For {
+            init,
+            condition,
+            update,
+            body,
+        } => {
             if let Some(init_stmt) = init {
                 strip_in_stmt(init_stmt, non_promise);
             }
@@ -899,7 +911,11 @@ fn strip_in_stmt(stmt: &mut Stmt, non_promise: &mut HashSet<LocalId>) {
             }
             strip_in_stmts(body, non_promise);
         }
-        Stmt::Try { body, catch, finally } => {
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+        } => {
             strip_in_stmts(body, non_promise);
             if let Some(c) = catch {
                 strip_in_stmts(&mut c.body, non_promise);
@@ -909,7 +925,10 @@ fn strip_in_stmt(stmt: &mut Stmt, non_promise: &mut HashSet<LocalId>) {
             }
         }
         Stmt::Labeled { body, .. } => strip_in_stmt(body, non_promise),
-        Stmt::Switch { discriminant, cases } => {
+        Stmt::Switch {
+            discriminant,
+            cases,
+        } => {
             strip_in_expr(discriminant, non_promise);
             for case in cases {
                 if let Some(c) = &mut case.test {
@@ -939,11 +958,15 @@ fn strip_in_expr(expr: &mut Expr, non_promise: &HashSet<LocalId>) {
 }
 
 fn try_strip_promise_resolve(expr: &Expr, non_promise: &HashSet<LocalId>) -> Option<Expr> {
-    let Expr::Call { callee, args, .. } = expr else { return None; };
+    let Expr::Call { callee, args, .. } = expr else {
+        return None;
+    };
     if args.len() != 1 {
         return None;
     }
-    let Expr::PropertyGet { object, property } = callee.as_ref() else { return None; };
+    let Expr::PropertyGet { object, property } = callee.as_ref() else {
+        return None;
+    };
     if property != "resolve" {
         return None;
     }
@@ -961,23 +984,24 @@ fn try_strip_promise_resolve(expr: &Expr, non_promise: &HashSet<LocalId>) -> Opt
 
 fn is_non_promise_expr(expr: &Expr, non_promise: &HashSet<LocalId>) -> bool {
     match expr {
-        Expr::Number(_) | Expr::Integer(_) | Expr::String(_) | Expr::Bool(_)
-        | Expr::Undefined | Expr::Null => true,
+        Expr::Number(_)
+        | Expr::Integer(_)
+        | Expr::String(_)
+        | Expr::Bool(_)
+        | Expr::Undefined
+        | Expr::Null => true,
         Expr::LocalGet(id) => non_promise.contains(id),
         Expr::Binary { left, right, .. } => {
-            is_non_promise_expr(left, non_promise)
-                && is_non_promise_expr(right, non_promise)
+            is_non_promise_expr(left, non_promise) && is_non_promise_expr(right, non_promise)
         }
         Expr::Unary { operand, .. } => is_non_promise_expr(operand, non_promise),
         Expr::Compare { left, right, .. } => {
-            is_non_promise_expr(left, non_promise)
-                && is_non_promise_expr(right, non_promise)
+            is_non_promise_expr(left, non_promise) && is_non_promise_expr(right, non_promise)
         }
         Expr::Logical { left, right, .. } => {
             // Logical && / || / ?? return one of the operands. If both are
             // non-Promise, the result is non-Promise.
-            is_non_promise_expr(left, non_promise)
-                && is_non_promise_expr(right, non_promise)
+            is_non_promise_expr(left, non_promise) && is_non_promise_expr(right, non_promise)
         }
         // `await X` for non-Promise X resolves to X itself (1 microtask hop),
         // so the result is non-Promise. The peephole above handles the
@@ -989,8 +1013,14 @@ fn is_non_promise_expr(expr: &Expr, non_promise: &HashSet<LocalId>) -> bool {
 
 fn is_non_promise_type(ty: &Type) -> bool {
     match ty {
-        Type::Number | Type::Int32 | Type::Boolean | Type::String
-        | Type::Void | Type::Null | Type::BigInt | Type::Symbol => true,
+        Type::Number
+        | Type::Int32
+        | Type::Boolean
+        | Type::String
+        | Type::Void
+        | Type::Null
+        | Type::BigInt
+        | Type::Symbol => true,
         Type::Promise(_) => false,
         // Any/Unknown could carry a Promise at runtime.
         // Object/Function could be a thenable. Named/Generic could resolve
