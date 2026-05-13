@@ -169,6 +169,12 @@ pub fn compute_object_cache_key(
     // serve the previously-cached non-fast-math `.o` and the flag would
     // appear to do nothing.
     h.field("fmath", if opts.fast_math { "1" } else { "0" });
+    h.field("app_version", &opts.app_metadata.version);
+    h.field(
+        "app_build_number",
+        &opts.app_metadata.build_number.to_string(),
+    );
+    h.field("app_bundle_id", &opts.app_metadata.bundle_id);
 
     // Ordered lists (order is significant — topological init, FFI index,
     // bundled extension order, etc.)
@@ -556,6 +562,7 @@ mod object_cache_tests {
             native_library_functions: Vec::new(),
             i18n_table: None,
             fast_math: false,
+            app_metadata: perry_codegen::AppMetadata::default(),
         }
     }
 
