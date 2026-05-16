@@ -20,6 +20,12 @@
     "category": "bug-open",
     "reason": "#807 harness for AsyncLocalStorage propagation through await/microtask/timer and async_hooks.createHook lifecycle. Today's Perry: sync nested run() works (sections 1, 6, 7) but the store evaporates when crossing an await boundary into a separately-named async fn (sections 2/3) and through queueMicrotask/setTimeout (sections 4/5). createHook returns undefined (section 8). Tracks #788 (AsyncLocalStorage real tracking) and #789 (async_hooks lifecycle); each section flips to PASS independently as those land."
   },
+  "test_harness_class_mixins": {
+    "issue": "806",
+    "added": "2026-05-16",
+    "category": "bug-stale",
+    "reason": "#806 harness for `class X extends Fn(...)<...>` patterns. Two sub-cases surface real Perry gaps today: (1) bare-factory subclass loses the base's field initializer (`bare.kind: undefined` vs Node's `bare.kind: bare`); (2) chained mixin `WithA(WithB(WithC(Base)))` throws `TypeError: value is not a function` at construction. Captured-factory + Effect double-call shapes pass post-#740 — the harness verifies that survives. Linked to #321 umbrella; will flip to PASS as each sub-case lands."
+  },
   "test_gap_array_methods": {
     "issue": null,
     "added": "2026-05-15",
