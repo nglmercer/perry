@@ -1487,7 +1487,6 @@ mod parse_float_tests {
 /// Marked `#[inline]` so the bitcode-link path can inline + DCE the
 /// branches when the input type is statically known.
 #[no_mangle]
-#[inline]
 pub extern "C" fn js_number_coerce(value: f64) -> f64 {
     let jsval = JSValue::from_bits(value.to_bits());
 
@@ -2835,9 +2834,7 @@ pub extern "C" fn js_drain_queued_microtasks() {
                 QUEUED_MICROTASK_PREV_CONTEXTS.with(|stack| {
                     stack.borrow_mut().push(previous);
                 });
-                unsafe {
-                    js_closure_call0(cb as *const crate::closure::ClosureHeader);
-                }
+                js_closure_call0(cb as *const crate::closure::ClosureHeader);
                 QUEUED_MICROTASK_PREV_CONTEXTS.with(|stack| {
                     if let Some(previous) = stack.borrow_mut().pop() {
                         crate::async_context::restore_context(previous);
