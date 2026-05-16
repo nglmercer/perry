@@ -700,7 +700,13 @@ jobs:
           mkdir -p "${PKG}/etc/perry"
           echo "/usr/lib/perry" > "${PKG}/etc/perry/lib-path"
 
-          dpkg-deb --build "${PKG}"
+          # `-Zxz -z9` overrides dpkg-deb's default (zstd on noble) with
+          # xz level 9. xz consistently 15-25% smaller than zstd on the
+          # libperry_*.a archive bodies. v0.5.921's arm64 .deb was
+          # 100.76 MB with zstd — under-100-MB push limit by 0.76 MB.
+          # xz pulls it well clear. Users decompress at install time; xz
+          # is supported by every dpkg version Perry's apt repo targets.
+          dpkg-deb --build -Zxz -z9 "${PKG}"
 
       - name: Upload .deb as release asset
         env:
