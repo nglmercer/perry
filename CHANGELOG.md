@@ -2,6 +2,47 @@
 
 Detailed changelog for Perry. See CLAUDE.md for concise summaries.
 
+## v0.5.962 — fix(stdlib): #921 — `await fetch(...)` silently exited before resolution
+
+**Symptom.** A binary that `await`s any `perry-stdlib::common::async_bridge::spawn(...)`-backed binding (`fetch`, `ioredis`, `zlib`, `ws`, `net`, `bcrypt`, `http`) exits silently with code 0 between the spawn and the eventual `queue_promise_resolution`. The awaiter's Promise is never settled. From the issue body:
+
+```
+[bg-refresh] Refreshing user 2/10: 7ba959e7-...
+[bg-refresh] Starting refresh for user 7ba959e7-...
+<— process exits here, no error from any catch block —>
+Server listening on http://0.0.0.0:3004
+```
+
+Production service `gscmaster-api` (Fastify + Perry) crashed every 30 minutes for 7 days (330 PM2 restarts). The cron called `refreshAllUsers()` which `await`ed `fetch(googleOAuthURL)` for one user whose `refresh_token` had been revoked (401 `invalid_grant`). The 401 path's `throw new Error("refresh failed: " + r.status + " " + txt)` should have surfaced through the outer `try/catch` around the `await`, but instead the process died clean. PM2 restarted, the cron re-fired 30 min later, same user, same crash. The first stable repro:
+
+```ts
+async function main() {
+  const r = await fetch("https://httpbin.org/status/401");
+  console.log("status:", r.status);  // never prints — process exits silently
+}
+main();
+```
+
+**Root cause.** Two-step race between codegen's event-loop bootstrap and the tokio fetch worker:
+
+1. Entry-module init calls `main()` (top-level fire-and-forget).
+2. `main()` hits `await fetch(...)` — `js_fetch_get` allocates a fresh `Promise`, `async_bridge::spawn(future)` schedules the network roundtrip on a tokio worker, and `js_fetch_get` returns the Promise pointer.
+3. Codegen's async lowering yields control back to the entry-module init from the current step.
+4. The entry-module init finishes (the top-level call site was just `main();` — no `await`), so codegen drops into the event-loop bootstrap.
+5. The event-loop's `js_stdlib_has_active_handles()` check (`crates/perry-codegen/src/codegen.rs:4879`) reads `PENDING_RESOLUTIONS` (empty), `PENDING_DEFERRED` (empty), `EXT_BLOCKING_TASKS_INFLIGHT` (0 — `async_bridge::spawn` never bumped it), WS / NET / HTTP / readline (none). All zero → loop exits clean.
+6. The tokio worker eventually finishes the fetch and calls `queue_promise_resolution(...)`, but no one is listening anymore — the process has already exited.
+
+`perry_ffi_spawn_blocking` (used by external `perry-ext-*` wrapper crates) has bumped `EXT_BLOCKING_TASKS_INFLIGHT` for the closure lifetime since #591, exactly to plug this race. `async_bridge::spawn` / `spawn_for_promise` / `spawn_for_promise_deferred` — the in-tree wrappers used by `fetch.rs`, `ioredis.rs`, `bcrypt.rs`, `zlib.rs`, `ws.rs`, `net/mod.rs`, `http.rs` — just hadn't been wired through the same gate.
+
+**Fix.** `crates/perry-stdlib/src/common/async_bridge.rs` — wrap the spawned future in an `async move { future.await; EXT_BLOCKING_TASKS_INFLIGHT.fetch_sub(1, AcqRel); js_notify_main_thread(); }` shim and `fetch_add(1, AcqRel)` synchronously before `RUNTIME.spawn`. Applies to all three helpers (`spawn`, `spawn_for_promise`, `spawn_for_promise_deferred`). The `js_notify_main_thread()` at the tail covers the niche case where the future resolves without going through `queue_promise_resolution` — flipping the active-handle gate so the event loop re-evaluates.
+
+This makes the event-loop active-handle check pessimistically wait for the future to finish (or to queue its resolution and decrement INFLIGHT). Same mechanism that already worked for external wrapper crates — just unified across both paths.
+
+**Validation.**
+
+- New test `test-files/test_issue_921_throw_across_await.ts` exercises `await fetch(...)` against `httpbin.org/status/401` inside an async function whose caller has `try/catch` around the await + a `throw new Error("refresh failed: " + r.status)` across the await boundary. Pre-fix the process exited silently with no `result:` line; post-fix it prints `result: caught:refresh failed: 401`.
+- Spot-checked existing async paths still pass: `test_gap_async_advanced.ts`, `test_gap_closures.ts`, `test_edge_promises.ts`, `test_parity_argon2.ts` (covers `spawn_for_promise`).
+
 ## v0.5.961 — fix(codegen+hir): dayjs `format("YYYY-MM")` returned `292278994-08` instead of `2024-01`
 
 **Symptom.** `dayjs("2024-01-02").format("YYYY-MM")` printed `292278994-08` under Perry vs. `2024-01` under Node. dayjs technically passed the smoke (no exception), but every formatted year/month was garbage.

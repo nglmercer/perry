@@ -154,13 +154,56 @@ pub fn runtime() -> &'static Runtime {
     &RUNTIME
 }
 
-/// Spawn an async task on the global runtime
+/// Spawn an async task on the global runtime.
+///
+/// Issue #921: bump `EXT_BLOCKING_TASKS_INFLIGHT` for the lifetime of
+/// the future so `js_stdlib_has_active_handles()` keeps the codegen-
+/// emitted event loop alive while the task is running.
+///
+/// Without the bump, the race window is:
+///
+/// 1. `main()` is async, calls `await fetch(...)` (or any other
+///    `spawn(...)`-backed binding) — `js_fetch_*` returns a fresh
+///    Promise and `spawn(future)` schedules the network roundtrip
+///    on a tokio worker.
+/// 2. Codegen's async lowering returns from the current step,
+///    yielding control back to the entry-module init.
+/// 3. The entry-module init finishes (top-level `main()` was
+///    fire-and-forget), so codegen drops into its event-loop
+///    bootstrap.
+/// 4. The event loop's `js_stdlib_has_active_handles()` check sees
+///    `PENDING_RESOLUTIONS` empty, no WS / NET / HTTP / readline,
+///    no `EXT_BLOCKING_TASKS_INFLIGHT` increment from `spawn(...)`,
+///    so it returns 0.
+/// 5. The loop exits cleanly (exit code 0). The tokio worker
+///    eventually queues its resolution, but no one is listening
+///    anymore.
+///
+/// User-visible symptom: `await fetch(...)` silently exits the
+/// process with no JS error and no stderr from the network
+/// callback. Production hosts (PM2, systemd) interpret the clean
+/// exit as a crash and restart the binary.
+///
+/// Bumping INFLIGHT around the spawned future fixes this by making
+/// the event-loop active-handle check pessimistically wait for the
+/// future to finish (or queue its resolution and decrement INFLIGHT).
+/// Same mechanism `perry_ffi_spawn_blocking` already uses for
+/// external wrapper crates (#591); fetch / ioredis / zlib / etc.
+/// just hadn't been wired through it yet.
 pub fn spawn<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
     ensure_pump_registered();
-    RUNTIME.spawn(future);
+    EXT_BLOCKING_TASKS_INFLIGHT.fetch_add(1, Ordering::AcqRel);
+    RUNTIME.spawn(async move {
+        future.await;
+        EXT_BLOCKING_TASKS_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+        // Notify in case the future resolved without going through
+        // `queue_promise_resolution` — flip the active-handle gate
+        // so the loop re-evaluates.
+        perry_runtime::event_pump::js_notify_main_thread();
+    });
 }
 
 /// Block on an async task (use sparingly, mainly for initialization)
@@ -543,6 +586,11 @@ where
     // See `pin_promise_for_native_resolution` for the full rationale.
     pin_promise_for_native_resolution(ptr);
 
+    // Issue #921: same race-window mitigation as the plain
+    // `spawn()` above — bump INFLIGHT for the lifetime of the
+    // future so the event loop's `js_stdlib_has_active_handles`
+    // check stays truthy until the resolution is queued.
+    EXT_BLOCKING_TASKS_INFLIGHT.fetch_add(1, Ordering::AcqRel);
     RUNTIME.spawn(async move {
         match future.await {
             Ok(result_bits) => {
@@ -560,6 +608,8 @@ where
                 });
             }
         }
+        EXT_BLOCKING_TASKS_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+        perry_runtime::event_pump::js_notify_main_thread();
     });
 }
 
@@ -592,6 +642,9 @@ where
     // Issue #859: pin the promise BEFORE crossing the tokio boundary.
     pin_promise_for_native_resolution(ptr);
 
+    // Issue #921: same race-window mitigation as `spawn_for_promise`
+    // above — bump INFLIGHT for the lifetime of the future.
+    EXT_BLOCKING_TASKS_INFLIGHT.fetch_add(1, Ordering::AcqRel);
     RUNTIME.spawn(async move {
         match future.await {
             Ok(data) => {
@@ -610,5 +663,7 @@ where
                 });
             }
         }
+        EXT_BLOCKING_TASKS_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+        perry_runtime::event_pump::js_notify_main_thread();
     });
 }

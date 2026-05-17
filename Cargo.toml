@@ -190,7 +190,7 @@ opt-level = "s"       # Optimize for size in stdlib
 opt-level = 3
 
 [workspace.package]
-version = "0.5.961"
+version = "0.5.962"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/PerryTS/perry"
