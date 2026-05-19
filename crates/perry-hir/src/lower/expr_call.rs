@@ -21,7 +21,8 @@ use swc_ecma_ast as ast;
 use crate::ir::*;
 use crate::lower_patterns::{
     detect_native_instance_expr, pre_scan_fastify_handler_params,
-    pre_scan_node_http_create_server_params, pre_scan_node_http_upgrade_params,
+    pre_scan_node_http_client_callback_params, pre_scan_node_http_create_server_params,
+    pre_scan_node_http_upgrade_params,
 };
 use crate::lower_types::extract_ts_type_with_ctx;
 
@@ -196,6 +197,21 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
     if let Some((req_name, res_name)) = pre_scan_node_http_create_server_params(ctx, call) {
         ctx.register_native_instance(req_name, "http".to_string(), "IncomingMessage".to_string());
         ctx.register_native_instance(res_name, "http".to_string(), "ServerResponse".to_string());
+    }
+
+    // Issue #1124 followup — `http.get(url, (res) => …)` /
+    // `http.request(opts, (res) => …)` / `https.{get,request}`.
+    // Register the `res` arrow param as a `("http",
+    // "IncomingMessage")` native instance BEFORE the arrow body is
+    // lowered, so `res.on('data', cb)` / `res.on('end', cb)` inside
+    // the callback dispatch through NATIVE_MODULE_TABLE's
+    // class_filter = Some("IncomingMessage") rows (which call
+    // `js_node_http_im_on` — the same dispatcher the server-side
+    // request handler's `req.on(...)` uses, which fans out to
+    // perry-ext-http's `js_http_on` for client-side IncomingMessage
+    // handles too via the cross-module on-listener path).
+    if let Some(res_name) = pre_scan_node_http_client_callback_params(ctx, call) {
+        ctx.register_native_instance(res_name, "http".to_string(), "IncomingMessage".to_string());
     }
 
     // Issue #577 Phase 4 — `httpServer.on('upgrade', (req, wsId, head) => …)`
@@ -6512,6 +6528,44 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                             }
                             _ => {} // Fall through
                         }
+                    }
+                }
+
+                // Issue #1123 — `import { createServer } from "node:net";
+                // createServer(handler)` (named-import form). Pre-fix this
+                // fell through to the generic `Expr::NativeMethodCall`
+                // arm right below, and the LLVM codegen's
+                // `lower_native_method_call` had no `("net", "createServer")`
+                // row in `NATIVE_MODULE_TABLE` (unlike the http sibling at
+                // `lower_call.rs:10620`), so the call dropped through every
+                // path and returned `TAG_UNDEFINED`. Synthesize the same
+                // `Expr::NetCreateServer` node the dotted form
+                // (`net.createServer(...)`) produces at sites 1899 / 3393,
+                // so both forms converge on the new codegen arm in
+                // `crates/perry-codegen/src/expr.rs` (the `Expr::FetchPostWithAuth`
+                // neighbor, added in the same fix). `createServer` accepts
+                // either `(listener)` or `(options, listener)`; mirror the
+                // dotted-form positional handling: 1 arg → listener-only,
+                // 2+ args → first is options, second is listener.
+                if let Some((module_name, Some(method_name))) = ctx.lookup_native_module(func_name)
+                {
+                    if module_name == "net" && method_name == "createServer" {
+                        let (options, connection_listener) = if args.len() >= 2 {
+                            let mut args_iter = args.into_iter();
+                            let opts = args_iter.next().map(Box::new);
+                            let listener = args_iter.next().map(Box::new);
+                            (opts, listener)
+                        } else {
+                            // 0 or 1 args — treat the single arg (if any) as
+                            // the connection listener. Matches Node's
+                            // `net.createServer(connectionListener)` shorthand.
+                            let listener = args.into_iter().next().map(Box::new);
+                            (None, listener)
+                        };
+                        return Ok(Expr::NetCreateServer {
+                            options,
+                            connection_listener,
+                        });
                     }
                 }
 
