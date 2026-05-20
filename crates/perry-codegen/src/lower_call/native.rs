@@ -1303,6 +1303,37 @@ pub(crate) fn lower_native_method_call(
         return Ok(body_d);
     }
 
+    // Lazy variant of the above — emitted by state_desugar's NavStack
+    // rewrite. `builder` is a zero-arg closure (NaN-boxed) that, when
+    // invoked, constructs and returns the route body widget. The runtime
+    // calls it lazily on first activation, so heavy screens don't pre-build
+    // at App() time. Signature: (host_i64, synth_id_d, name_d, builder_d).
+    if module == "perry/ui" && method == "__navstack_register_lazy_route" && object.is_none() {
+        if args.len() != 4 {
+            return Ok(double_literal(f64::from_bits(0x7FFC_0000_0000_0001)));
+        }
+        let host_d = lower_expr(ctx, &args[0])?;
+        let host_i64 = unbox_to_i64(ctx.block(), &host_d);
+        let synth_id_d = lower_expr(ctx, &args[1])?;
+        let name_d = lower_expr(ctx, &args[2])?;
+        let builder_d = lower_expr(ctx, &args[3])?;
+        ctx.pending_declares.push((
+            "js_navstack_register_lazy_route".to_string(),
+            crate::types::VOID,
+            vec![I64, DOUBLE, DOUBLE, DOUBLE],
+        ));
+        ctx.block().call_void(
+            "js_navstack_register_lazy_route",
+            &[
+                (I64, &host_i64),
+                (DOUBLE, &synth_id_d),
+                (DOUBLE, &name_d),
+                (DOUBLE, &builder_d),
+            ],
+        );
+        return Ok(double_literal(f64::from_bits(0x7FFC_0000_0000_0001)));
+    }
+
     // perry/arkts: HarmonyOS Phase 2 v2 callback bridge. Synthetic module
     // injected by the harvest pass (`compile.rs::emit_index_ets`) — never
     // user-authored. `registerCallback(idx, closure)` lowers to a call to

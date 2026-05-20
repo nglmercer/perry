@@ -289,7 +289,19 @@ pub extern "C" fn js_state_set(id_handle: f64, value: f64) {
 #[derive(Clone)]
 struct NavRoute {
     name: String,
+    /// Widget handle. 0 until the route's body has been built. Eager
+    /// `js_navstack_register_route` callers set this at registration time.
+    /// Lazy `js_navstack_register_lazy_route` callers leave it as 0 until
+    /// the route is first activated.
     handle: i64,
+    /// NaN-boxed builder closure for lazy routes. `None` once the route
+    /// has been built (or for eager routes that were registered with a
+    /// concrete widget handle from the start).
+    builder: Option<f64>,
+    /// NavStack host widget handle. Lazy routes need this to addChild the
+    /// body widget once built. Eager routes don't use it (they're added
+    /// to the host at codegen time inside the rewrite IIFE).
+    host: i64,
 }
 
 static NAVSTACK_REGISTRY: Mutex<Option<std::collections::HashMap<String, Vec<NavRoute>>>> =
@@ -299,8 +311,17 @@ static NAVSTACK_REGISTRY: Mutex<Option<std::collections::HashMap<String, Vec<Nav
 /// main thread (calls AppKit's `NSView.isHidden = ...` etc.).
 pub type SetWidgetHiddenHandler = extern "C" fn(widget_handle: i64, hidden: i32);
 
+/// Widget add-child handler signature. Needed for lazy route mounting —
+/// the first time a route is activated, the runtime invokes its builder
+/// to get a widget handle and then must add that widget to the NavStack
+/// host. Like `SetWidgetHiddenHandler`, this is registered by the platform
+/// UI crate at startup so we don't take a hard cross-crate link dep.
+pub type WidgetAddChildHandler = extern "C" fn(parent_handle: i64, child_handle: i64);
+
 #[cfg(not(feature = "ohos-napi"))]
 static SET_WIDGET_HIDDEN_HANDLER: AtomicPtr<()> = AtomicPtr::new(null_mut());
+#[cfg(not(feature = "ohos-napi"))]
+static WIDGET_ADD_CHILD_HANDLER: AtomicPtr<()> = AtomicPtr::new(null_mut());
 
 #[cfg(not(feature = "ohos-napi"))]
 #[no_mangle]
@@ -312,31 +333,80 @@ pub extern "C" fn js_register_widget_hidden_handler(f: SetWidgetHiddenHandler) {
     // handler only registers later, inside `app_run`. Without this
     // drain, every "hide non-active route" call from the build-time
     // pass silently no-op'd against a null handler, leaving every route
-    // body visible and overlapping (#612).
-    let routes_snapshot: Option<Vec<(String, Vec<NavRoute>)>> = {
+    // body visible and overlapping (#612). The lazy registration path
+    // (`js_navstack_register_lazy_route`) defers widget construction to
+    // activation time, so the snapshot we re-walk here mostly already
+    // matches `current_str` (only built routes have handles). We still
+    // try to build the matching route now if it's lazy and unbuilt.
+    let snapshot_ids: Vec<String> = {
         let guard = match NAVSTACK_REGISTRY.lock() {
             Ok(g) => g,
             Err(_) => return,
         };
-        guard.as_ref().map(|m| {
-            m.iter()
-                .map(|(synth_id, rs)| (synth_id.clone(), rs.clone()))
-                .collect()
-        })
+        guard
+            .as_ref()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
     };
-    if let Some(routes_by_id) = routes_snapshot {
-        for (synth_id, routes) in routes_by_id {
-            let current_value = with_state_values(|m| m.get(&synth_id).copied());
-            let Some(value_f64) = current_value else {
-                continue;
+    for synth_id in snapshot_ids {
+        let Some(value_f64) = with_state_values(|m| m.get(&synth_id).copied()) else {
+            continue;
+        };
+        let current_str = decode_jsvalue_string(value_f64);
+        ensure_active_route_built(&synth_id, &current_str);
+        let routes_snapshot: Vec<NavRoute> = {
+            let guard = match NAVSTACK_REGISTRY.lock() {
+                Ok(g) => g,
+                Err(_) => continue,
             };
-            let current_str = decode_jsvalue_string(value_f64);
-            for route in routes {
-                let hidden = if route.name == current_str { 0 } else { 1 };
-                f(route.handle, hidden);
+            match guard.as_ref().and_then(|m| m.get(&synth_id)) {
+                Some(v) => v.clone(),
+                None => continue,
             }
+        };
+        for route in routes_snapshot {
+            if route.handle == 0 {
+                continue; // Lazy + still unbuilt: nothing to toggle yet.
+            }
+            let hidden = if route.name == current_str { 0 } else { 1 };
+            f(route.handle, hidden);
         }
     }
+}
+
+/// Register the platform UI crate's `widget_add_child` thunk. Mirrors
+/// `js_register_widget_hidden_handler` — the runtime can't take a hard
+/// link dep on perry-ui-*, so the UI crate calls this at `app_run`
+/// startup. Also drains pending lazy routes so registration order
+/// between add_child and hidden doesn't matter — whichever fires last
+/// builds the active route.
+#[cfg(not(feature = "ohos-napi"))]
+#[no_mangle]
+pub extern "C" fn js_register_widget_add_child_handler(f: WidgetAddChildHandler) {
+    WIDGET_ADD_CHILD_HANDLER.store(f as *mut (), Ordering::Release);
+    let snapshot_ids: Vec<String> = {
+        let guard = match NAVSTACK_REGISTRY.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        guard
+            .as_ref()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    for synth_id in snapshot_ids {
+        let Some(value_f64) = with_state_values(|m| m.get(&synth_id).copied()) else {
+            continue;
+        };
+        let current_str = decode_jsvalue_string(value_f64);
+        ensure_active_route_built(&synth_id, &current_str);
+    }
+}
+
+#[cfg(feature = "ohos-napi")]
+#[no_mangle]
+pub extern "C" fn js_register_widget_add_child_handler(_f: WidgetAddChildHandler) {
+    // No-op on harmonyos — ArkUI doesn't use the lazy NavStack runtime.
 }
 
 #[cfg(feature = "ohos-napi")]
@@ -371,6 +441,8 @@ pub extern "C" fn js_navstack_register_route(
             .push(NavRoute {
                 name: route_name.clone(),
                 handle: widget_handle,
+                builder: None,
+                host: 0,
             });
     }
     // Initial visibility — match current state value (set by __state_init
@@ -392,12 +464,139 @@ pub extern "C" fn js_navstack_register_route(
     }
 }
 
+/// `__navstack_register_lazy_route(host, "synth_id", "route_name", builder)`
+/// — records a route whose body widget is only built on first activation.
+/// The `builder` is a zero-arg closure (NaN-boxed) that returns a widget
+/// handle. Emitted by `state_desugar`'s NavStack rewrite in place of the
+/// eager three-call sequence (`let body = …; widgetAddChild; register`),
+/// which used to abort the launch frame when any route body was heavy
+/// enough that its widget tree construction panicked pre-runloop. See
+/// `perry-navstack-eager-prebuild-crash` follow-up.
+///
+/// If `route_name` matches the current value of the bound state at
+/// registration time, the route is built and mounted immediately so the
+/// boot frame isn't empty. Otherwise the builder is kept dormant until
+/// the first `state.set("route_name")` swap reaches this entry.
+#[no_mangle]
+pub extern "C" fn js_navstack_register_lazy_route(
+    host_handle: i64,
+    synth_id_handle: f64,
+    route_name_handle: f64,
+    builder_handle: f64,
+) {
+    let synth_id = decode_jsvalue_string(synth_id_handle);
+    let route_name = decode_jsvalue_string(route_name_handle);
+    {
+        let mut guard = NAVSTACK_REGISTRY
+            .lock()
+            .expect("NAVSTACK_REGISTRY poisoned");
+        let map = guard.get_or_insert_with(std::collections::HashMap::new);
+        map.entry(synth_id.clone())
+            .or_insert_with(Vec::new)
+            .push(NavRoute {
+                name: route_name.clone(),
+                handle: 0,
+                builder: Some(builder_handle),
+                host: host_handle,
+            });
+    }
+    // If this is the initial active route, build it now so first paint
+    // isn't an empty NavStack host.
+    let current_value = with_state_values(|m| m.get(&synth_id).copied());
+    if let Some(value_f64) = current_value {
+        let current_str = decode_jsvalue_string(value_f64);
+        if current_str == route_name {
+            ensure_active_route_built(&synth_id, &current_str);
+        }
+    }
+}
+
+/// Walk the registry for `synth_id`; if the route whose name matches
+/// `active_name` is still lazy (handle == 0), invoke its builder, addChild
+/// it to the host, and store the resulting handle. Returns silently if
+/// either handler (widget-add-child or hidden) isn't registered yet —
+/// the drain path in `js_register_widget_hidden_handler` will retry on
+/// handler registration.
+#[cfg(not(feature = "ohos-napi"))]
+fn ensure_active_route_built(synth_id: &str, active_name: &str) {
+    // Snapshot only what we need to invoke the builder outside the lock.
+    let pending: Option<(usize, i64, f64)> = {
+        let guard = match NAVSTACK_REGISTRY.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let routes = match guard.as_ref().and_then(|m| m.get(synth_id)) {
+            Some(v) => v,
+            None => return,
+        };
+        let mut found: Option<(usize, i64, f64)> = None;
+        for (idx, r) in routes.iter().enumerate() {
+            if r.name == active_name && r.handle == 0 {
+                if let Some(b) = r.builder {
+                    found = Some((idx, r.host, b));
+                    break;
+                }
+            }
+        }
+        found
+    };
+    let Some((idx, host, builder)) = pending else {
+        return;
+    };
+    let add_child_raw = WIDGET_ADD_CHILD_HANDLER.load(Ordering::Acquire);
+    if add_child_raw.is_null() {
+        // Platform UI handler not registered yet — bail; the drain path
+        // re-runs this on registration.
+        return;
+    }
+    // Invoke the builder (returns a NaN-boxed widget pointer). Outside
+    // the registry lock so the builder can re-enter JS land safely.
+    let widget_f64 = {
+        let ptr = crate::value::js_nanbox_get_pointer(builder) as *const u8;
+        if ptr.is_null() {
+            return;
+        }
+        let header = ptr as *const crate::closure::ClosureHeader;
+        crate::closure::js_closure_call0(header)
+    };
+    let widget_handle = crate::value::js_nanbox_get_pointer(widget_f64);
+    if widget_handle == 0 {
+        return;
+    }
+    let add_child: WidgetAddChildHandler = unsafe { std::mem::transmute(add_child_raw) };
+    add_child(host, widget_handle);
+    // Write back: store the new handle and drop the builder so we don't
+    // rebuild on subsequent activations.
+    let mut guard = match NAVSTACK_REGISTRY.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if let Some(routes) = guard.as_mut().and_then(|m| m.get_mut(synth_id)) {
+        if let Some(r) = routes.get_mut(idx) {
+            r.handle = widget_handle;
+            r.builder = None;
+        }
+    }
+}
+
+#[cfg(feature = "ohos-napi")]
+fn ensure_active_route_built(_synth_id: &str, _active_name: &str) {}
+
 /// Called by `js_state_set` after every state write. Walks any routes
 /// registered for `synth_id`, toggling each route's visibility so only the
 /// route whose `name` equals the new value stays visible. Compares the
 /// new value against route names by string-decoding the f64 once.
 #[cfg(not(feature = "ohos-napi"))]
 fn navstack_dispatch_state_change(synth_id: &str, new_value: f64) {
+    let raw = SET_WIDGET_HIDDEN_HANDLER.load(Ordering::Acquire);
+    if raw.is_null() {
+        return;
+    }
+    let new_value_str = decode_jsvalue_string(new_value);
+    // Build the active route if it's lazy + unbuilt. Done before we read
+    // the route snapshot for visibility so the freshly-mounted widget
+    // appears in the toggle pass.
+    ensure_active_route_built(synth_id, &new_value_str);
     let routes: Vec<NavRoute> = {
         let guard = match NAVSTACK_REGISTRY.lock() {
             Ok(g) => g,
@@ -408,13 +607,11 @@ fn navstack_dispatch_state_change(synth_id: &str, new_value: f64) {
             None => return,
         }
     };
-    let raw = SET_WIDGET_HIDDEN_HANDLER.load(Ordering::Acquire);
-    if raw.is_null() {
-        return;
-    }
-    let new_value_str = decode_jsvalue_string(new_value);
     let func: SetWidgetHiddenHandler = unsafe { std::mem::transmute(raw) };
     for route in &routes {
+        if route.handle == 0 {
+            continue; // Lazy + still unbuilt; nothing to toggle yet.
+        }
         let hidden = if route.name == new_value_str { 0 } else { 1 };
         func(route.handle, hidden);
     }

@@ -1046,34 +1046,35 @@ fn try_rewrite_navstack(
         }),
     });
 
+    // Each route body is wrapped in a zero-arg builder closure so the
+    // runtime can defer widget construction until the route is first
+    // entered. Eager pre-build of every body at App() time aborts the
+    // launch frame on heavy screens (LazyVStack + image grid etc.) —
+    // `widget_add_child` panics pre-runloop. See #1135 follow-up.
     for (route_name, route_body) in routes {
-        let route_id = fresh.fresh_local();
-        // let __nav_route_N = <body>;
-        body_stmts.push(Stmt::Let {
-            id: route_id,
-            name: format!("__nav_route_{}", route_id),
-            ty: Type::Any,
-            mutable: false,
-            init: Some(route_body),
-        });
-        // widgetAddChild(__nav_host, __nav_route_N);
+        let builder_func_id = fresh.fresh_func();
+        let builder = Expr::Closure {
+            func_id: builder_func_id,
+            params: Vec::<Param>::new(),
+            return_type: Type::Any,
+            body: vec![Stmt::Return(Some(route_body))],
+            captures: Vec::new(),
+            mutable_captures: Vec::new(),
+            captures_this: false,
+            enclosing_class: None,
+            is_async: false,
+        };
+        // __navstack_register_lazy_route(__nav_host, "__state_X", "name", () => <body>);
         body_stmts.push(Stmt::Expr(Expr::NativeMethodCall {
             module: "perry/ui".to_string(),
             class_name: None,
             object: None,
-            method: "widgetAddChild".to_string(),
-            args: vec![Expr::LocalGet(host_id), Expr::LocalGet(route_id)],
-        }));
-        // __navstack_register_route("__state_X", "name", __nav_route_N);
-        body_stmts.push(Stmt::Expr(Expr::NativeMethodCall {
-            module: "perry/ui".to_string(),
-            class_name: None,
-            object: None,
-            method: "__navstack_register_route".to_string(),
+            method: "__navstack_register_lazy_route".to_string(),
             args: vec![
+                Expr::LocalGet(host_id),
                 Expr::String(synth_id.clone()),
                 Expr::String(route_name),
-                Expr::LocalGet(route_id),
+                builder,
             ],
         }));
     }

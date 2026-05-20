@@ -990,10 +990,20 @@ extern "C" {
     /// route bound to the changed state's synth id. Defined in
     /// `perry-runtime/src/ui_text_registry.rs`'s `NAVSTACK_REGISTRY` block.
     fn js_register_widget_hidden_handler(f: extern "C" fn(widget_handle: i64, hidden: i32));
+    /// Lazy NavStack route mounting — runtime calls this to addChild a
+    /// freshly-built body widget to the NavStack host. Mirrors the hidden
+    /// handler: registered once at app_run, no-op until then.
+    fn js_register_widget_add_child_handler(
+        f: extern "C" fn(parent_handle: i64, child_handle: i64),
+    );
 }
 
 extern "C" fn navstack_set_widget_hidden(widget_handle: i64, hidden: i32) {
     crate::widgets::set_hidden(widget_handle, hidden != 0);
+}
+
+extern "C" fn navstack_add_child(parent_handle: i64, child_handle: i64) {
+    crate::widgets::add_child(parent_handle, child_handle);
 }
 
 fn register_cross_platform_text_handlers() {
@@ -1001,6 +1011,11 @@ fn register_cross_platform_text_handlers() {
         js_register_show_toast_handler(widgets::toast::show_toast_handler);
         js_register_set_text_handler(widgets::text_registry::set_text_handler);
         js_register_text_id_handler(widgets::text_registry::register_text_id_handler);
+        // Register `widget_add_child` BEFORE the hidden handler — the hidden
+        // handler's drain calls `ensure_active_route_built`, which needs
+        // add_child to mount the first lazy route. Wrong order leaves the
+        // initial route unmounted (blank screen).
+        js_register_widget_add_child_handler(navstack_add_child);
         js_register_widget_hidden_handler(navstack_set_widget_hidden);
     }
 }
