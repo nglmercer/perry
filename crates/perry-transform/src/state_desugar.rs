@@ -104,6 +104,22 @@ struct StateBinding {
 /// Run the desugar. No-op when the module has no `state<T>` declarations.
 pub fn run(module: &mut Module) {
     let mut bindings = collect_state_bindings(&module.init);
+    // Also harvest function-local `const x = state<T>(...)` declarations so
+    // an inner `NavStack(x, [...])` (e.g. the 5-tab Root shell) gets the
+    // same lowering as a module-top-level state. Without this, a tab-host
+    // NavStack falls through to the empty 0-arg stub and the tab content
+    // never renders.
+    let mut next_synth: usize = bindings.len();
+    for func in module.functions.iter() {
+        let func_bindings = collect_state_bindings(&func.body);
+        for (id, mut b) in func_bindings {
+            if !bindings.contains_key(&id) {
+                b.synth_id = format!("__state_fn_{}_{}", id, next_synth);
+                next_synth += 1;
+                bindings.insert(id, b);
+            }
+        }
+    }
     if bindings.is_empty() {
         return;
     }
@@ -127,6 +143,12 @@ pub fn run(module: &mut Module) {
         }
     }
     rewrite_init_decls(&mut module.init, &bindings);
+    // Apply the same `state(initial)` → `undefined; __state_init(...)`
+    // rewrite to function bodies so harvested function-local state decls
+    // (collected above) actually get their init call emitted.
+    for func in module.functions.iter_mut() {
+        rewrite_init_decls(&mut func.body, &bindings);
+    }
     let mut fresh = FreshIds {
         next_local: compute_max_local_id(module).saturating_add(1),
         next_func: compute_max_func_id(module).saturating_add(1),
