@@ -77,7 +77,7 @@ struct FetchResponse {
 /// net / DB) still use the legacy form until Phase 2 of the unification migrates
 /// them to NaN-boxed too.
 #[inline]
-fn handle_id(value: f64) -> usize {
+pub(crate) fn handle_id(value: f64) -> usize {
     let bits = value.to_bits();
     let top16 = bits >> 48;
     if top16 >= 0x7FF8 {
@@ -95,12 +95,12 @@ fn handle_id(value: f64) -> usize {
 /// NaN-box a Web Fetch handle id (registry index) into a POINTER_TAG f64
 /// for return across the FFI boundary. Pairs with `handle_id` on accessor entry.
 #[inline]
-fn handle_to_f64(id: usize) -> f64 {
+pub(crate) fn handle_to_f64(id: usize) -> f64 {
     perry_runtime::value::js_nanbox_pointer(id as i64)
 }
 
 /// Helper to extract string from StringHeader pointer
-unsafe fn string_from_header(ptr: *const StringHeader) -> Option<String> {
+pub(crate) unsafe fn string_from_header(ptr: *const StringHeader) -> Option<String> {
     // NaN-boxed TAG_UNDEFINED (0x7FFC_0000_0000_0001) unboxes to 0x1
     // after POINTER_MASK. Treat any pointer below page size as invalid.
     if ptr.is_null() || (ptr as usize) < 0x1000 {
@@ -904,7 +904,7 @@ pub extern "C" fn js_fetch_stream_close(handle: f64) -> f64 {
 // Web Fetch API: Headers, Request, Response constructors and methods
 // ========================================================================
 
-const TAG_UNDEFINED: u64 = 0x7FFC_0000_0000_0001;
+pub(crate) const TAG_UNDEFINED: u64 = 0x7FFC_0000_0000_0001;
 const TAG_NULL: u64 = 0x7FFC_0000_0000_0002;
 const TAG_FALSE: u64 = 0x7FFC_0000_0000_0003;
 const TAG_TRUE: u64 = 0x7FFC_0000_0000_0004;
@@ -964,17 +964,32 @@ lazy_static::lazy_static! {
     static ref NEXT_HEADERS_ID: Mutex<usize> = Mutex::new(1);
     static ref REQUEST_REGISTRY: Mutex<HashMap<usize, RequestRecord>> = Mutex::new(HashMap::new());
     static ref NEXT_REQUEST_ID: Mutex<usize> = Mutex::new(1);
-    static ref BLOB_REGISTRY: Mutex<HashMap<usize, BlobData>> = Mutex::new(HashMap::new());
+    pub(crate) static ref BLOB_REGISTRY: Mutex<HashMap<usize, BlobData>> = Mutex::new(HashMap::new());
     static ref NEXT_BLOB_ID: Mutex<usize> = Mutex::new(1);
 }
 
 #[derive(Clone)]
-struct BlobData {
-    body: Vec<u8>,
-    content_type: String,
+pub(crate) struct BlobData {
+    pub(crate) body: Vec<u8>,
+    pub(crate) content_type: String,
+    // Issue #1211: when the handle was created via `new File(parts, name, opts)`
+    // these mirror the spec File interface — Blobs leave both at None.
+    pub(crate) file_name: Option<String>,
+    pub(crate) last_modified_ms: Option<f64>,
 }
 
-fn alloc_blob(data: BlobData) -> usize {
+impl BlobData {
+    pub(crate) fn blob(body: Vec<u8>, content_type: String) -> Self {
+        BlobData {
+            body,
+            content_type,
+            file_name: None,
+            last_modified_ms: None,
+        }
+    }
+}
+
+pub(crate) fn alloc_blob(data: BlobData) -> usize {
     let mut id_guard = NEXT_BLOB_ID.lock().unwrap();
     let id = *id_guard;
     *id_guard += 1;
@@ -1317,15 +1332,9 @@ pub unsafe extern "C" fn js_response_blob(handle: f64) -> *mut perry_runtime::Pr
                     .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
                     .map(|(_, v)| v.clone())
                     .unwrap_or_default();
-                BlobData {
-                    body: resp.body.clone(),
-                    content_type: ct,
-                }
+                BlobData::blob(resp.body.clone(), ct)
             }
-            None => BlobData {
-                body: Vec::new(),
-                content_type: String::new(),
-            },
+            None => BlobData::blob(Vec::new(), String::new()),
         }
     };
     let blob_id = alloc_blob(data);
@@ -1467,11 +1476,12 @@ pub unsafe extern "C" fn js_blob_slice(
     } else {
         string_from_header(type_ptr).unwrap_or_default()
     };
-    handle_to_f64(alloc_blob(BlobData {
-        body: slice,
-        content_type: new_type,
-    }))
+    handle_to_f64(alloc_blob(BlobData::blob(slice, new_type)))
 }
+
+// Issue #1211: Blob / File constructors + object-URL registry now
+// live in sibling `fetch_blob.rs` to keep this file under the
+// 2,000-line size gate.  See that module for the FFI entry points.
 
 // ----------------- Web Streams bridge helpers (issue #237) -----------------
 //

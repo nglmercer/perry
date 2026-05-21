@@ -2135,6 +2135,15 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     // Buffer module-level encoding probes added in PR #1257.
     method("buffer", "isAscii", false, None),
     method("buffer", "isUtf8", false, None),
+    // Issue #1210: re-encode bytes between supported encodings.
+    method("buffer", "transcode", false, None),
+    // Issue #1211: Blob / File constructors + object-URL helpers
+    // exposed from node:buffer.  Blob/File constructors are recognized
+    // by the codegen builtin path, so they only need to appear here
+    // as class exports.
+    class("buffer", "Blob"),
+    class("buffer", "File"),
+    method("buffer", "resolveObjectURL", false, None),
     property("buffer", "constants"),
     property("buffer", "kMaxLength"),
     property("buffer", "kStringMaxLength"),
@@ -2147,6 +2156,10 @@ pub static API_MANIFEST: &[ApiEntry] = &[
     method("url", "format", false, None),
     method("url", "parse", false, None),
     method("url", "resolve", false, None),
+    // Issue #1211: Blob/File object-URL registry — paired with the
+    // `resolveObjectURL` export on `node:buffer`.
+    method("url", "createObjectURL", false, None),
+    method("url", "revokeObjectURL", false, None),
     // --- http (perry-ext-http surface + classes the framework spec
     //     exposes). Both http and https route through the same crate. ---
     method("http", "createServer", false, None),
