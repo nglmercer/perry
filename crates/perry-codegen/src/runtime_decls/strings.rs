@@ -403,6 +403,8 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
         &[DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE, DOUBLE],
     );
     module.declare_function("js_console_log_spread", VOID, &[I64]);
+    module.declare_function("js_console_info_spread", VOID, &[I64]);
+    module.declare_function("js_console_debug_spread", VOID, &[I64]);
     module.declare_function("js_console_error_spread", VOID, &[I64]);
     module.declare_function("js_console_warn_spread", VOID, &[I64]);
     // #1002: native `util.format` / `util.formatWithOptions`. Codegen
@@ -455,6 +457,7 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_process_kill", VOID, &[DOUBLE, DOUBLE]);
     module.declare_function("js_process_exit", VOID, &[DOUBLE]);
     module.declare_function("js_process_on", VOID, &[I64, I64]);
+    module.declare_function("js_process_once", VOID, &[I64, I64]);
     module.declare_function("js_process_next_tick", VOID, &[I64]);
     module.declare_function("js_process_stdin", DOUBLE, &[]);
     module.declare_function("js_process_stdout", DOUBLE, &[]);
