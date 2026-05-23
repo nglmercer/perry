@@ -323,22 +323,16 @@ pub(crate) fn refine_type_from_init(ctx: &FnCtx<'_>, init: &Expr) -> Option<HirT
                         _ => {}
                     }
                 }
-                // #1432: crypto factories / KDFs that return a NaN-boxed
-                // BufferHeader. Without this refinement they're typed
-                // `Any`, so the HMAC fast-path's `key_is_buffer` check
-                // can't identify a `SecretKey` / `pbkdf2Sync` result as
-                // a Buffer — the call falls through to handle-dispatch
-                // (~3 mutex locks) instead of the inline-FFI literal-key
-                // fast path. The runtime values are real Buffers, so
-                // tagging them `Named("Buffer")` is correct.
-                //
-                // Mirrors the existing `Expr::CryptoRandomBytes(_) →
-                // Uint8Array` arm in `static_type_of`; we use `"Buffer"`
-                // rather than `"Uint8Array"` here because the HMAC
-                // fast-path key check specifically matches the
-                // `Named("Buffer")` name (see `is_buffer_expr`).
                 if matches!(object.as_ref(), Expr::NativeModuleRef(m) if m == "crypto") {
                     match property.as_str() {
+                        // #1432: crypto factories / KDFs that return a
+                        // NaN-boxed BufferHeader. Without this refinement
+                        // they're typed `Any`, so the HMAC fast-path's
+                        // `key_is_buffer` check can't identify a
+                        // `SecretKey` / `pbkdf2Sync` result as a Buffer —
+                        // the call falls through to handle-dispatch
+                        // (~3 mutex locks) instead of the inline-FFI
+                        // literal-key fast path.
                         "createSecretKey"
                         | "generateKeySync"
                         | "scryptSync"
@@ -346,6 +340,16 @@ pub(crate) fn refine_type_from_init(ctx: &FnCtx<'_>, init: &Expr) -> Option<HirT
                         | "hkdfSync"
                         | "randomBytes" => {
                             return Some(HirType::Named("Buffer".into()));
+                        }
+                        // Inventory helpers expose a `string[]` to JS.
+                        "getHashes" | "getCiphers" | "getCurves" => {
+                            return Some(HirType::Array(Box::new(HirType::String)));
+                        }
+                        // `generateKeyPairSync` returns a `{ publicKey,
+                        // privateKey }` object; tagging it lets callers
+                        // refine the field types downstream.
+                        "generateKeyPairSync" => {
+                            return Some(HirType::Named("CryptoKeyPair".into()));
                         }
                         _ => {}
                     }
@@ -414,44 +418,69 @@ pub(crate) fn refine_type_from_init(ctx: &FnCtx<'_>, init: &Expr) -> Option<HirT
 /// `crypto.createHmac(alg, key).update(data).digest(enc)` chain shape.
 /// Walks the nested PropertyGet→Call structure looking for the
 /// `NativeModuleRef("crypto")` root.
+/// Wrapper used by the call-site refinement: returns `true` when the
+/// callee is the `crypto.create(Hash|Hmac)(...).update(...).digest(...)`
+/// shape, regardless of whether the encoding arg is present.
 fn is_crypto_digest_chain(callee: &Expr) -> bool {
+    crypto_digest_chain_has_string_encoding(callee).is_some()
+}
+
+#[allow(dead_code)]
+fn crypto_digest_chain_has_string_encoding(callee: &Expr) -> Option<bool> {
     let Expr::PropertyGet {
         property: p1,
         object: o1,
     } = callee
     else {
-        return false;
+        return None;
     };
     if p1 != "digest" {
-        return false;
+        return None;
     }
-    let Expr::Call { callee: c2, .. } = o1.as_ref() else {
-        return false;
+    let Expr::Call {
+        callee: c2,
+        args: digest_args,
+        ..
+    } = o1.as_ref()
+    else {
+        return None;
     };
     let Expr::PropertyGet {
         property: p2,
         object: o2,
     } = c2.as_ref()
     else {
-        return false;
+        return None;
     };
     if p2 != "update" {
-        return false;
+        return None;
     }
     let Expr::Call { callee: c3, .. } = o2.as_ref() else {
-        return false;
+        return None;
     };
     let Expr::PropertyGet {
         property: p3,
         object: o3,
     } = c3.as_ref()
     else {
-        return false;
+        return None;
     };
     if p3 != "createHash" && p3 != "createHmac" {
-        return false;
+        return None;
     }
-    matches!(o3.as_ref(), Expr::NativeModuleRef(n) if n == "crypto")
+    if !matches!(o3.as_ref(), Expr::NativeModuleRef(n) if n == "crypto") {
+        return None;
+    }
+    // Node returns a Buffer for `.digest()` with no encoding and a string
+    // when an encoding is supplied. Preserve that distinction so
+    // `.digest().toString("hex")` dispatches through Buffer, not String.
+    if digest_args.is_empty() || matches!(digest_args.first(), Some(Expr::Undefined)) {
+        return Some(false);
+    }
+    if matches!(digest_args.first(), Some(Expr::String(s)) if s.eq_ignore_ascii_case("buffer")) {
+        return Some(false);
+    }
+    Some(true)
 }
 
 /// Compute the effective list of capture LocalIds for a closure. Starts
@@ -1051,6 +1080,18 @@ pub(crate) fn is_string_expr(ctx: &FnCtx<'_>, e: &Expr) -> bool {
         {
             true
         }
+        // Perry's native crypto.generateKeyPairSync returns a plain object
+        // with PEM string fields. Refining these fields keeps
+        // `pair.publicKey.includes(...)` on the string fast path.
+        Expr::PropertyGet { object, property }
+            if matches!(property.as_str(), "publicKey" | "privateKey")
+                && matches!(
+                    static_type_of(ctx, object),
+                    Some(HirType::Named(ref name)) if name == "CryptoKeyPair"
+                ) =>
+        {
+            true
+        }
         // PropertyGet on a known class field with declared type String.
         Expr::PropertyGet { object, property } => {
             let Some(class_name) = receiver_class_name(ctx, object) else {
@@ -1475,6 +1516,14 @@ pub(crate) fn static_type_of(ctx: &FnCtx<'_>, e: &Expr) -> Option<HirType> {
         Expr::Bool(_) => Some(HirType::Boolean),
         Expr::LocalGet(id) => ctx.local_types.get(id).cloned(),
         Expr::PropertyGet { object, property } => {
+            if matches!(property.as_str(), "publicKey" | "privateKey")
+                && matches!(
+                    static_type_of(ctx, object),
+                    Some(HirType::Named(ref name)) if name == "CryptoKeyPair"
+                )
+            {
+                return Some(HirType::String);
+            }
             // If the object is a known class instance, look up the field
             // type from the class definition.
             let receiver_class = receiver_class_name(ctx, object)?;
@@ -1576,6 +1625,20 @@ pub(crate) fn static_type_of(ctx: &FnCtx<'_>, e: &Expr) -> Option<HirType> {
                 && is_crypto_digest_chain(callee) =>
         {
             Some(HirType::Named("Uint8Array".into()))
+        }
+        // crypto.getHashes()/getCiphers()/getCurves() all return
+        // Array<string>. Recognize this even in expression position so
+        // chained `.includes(...)` uses Array SameValueZero instead of
+        // falling through to dynamic/string dispatch.
+        Expr::Call { callee, .. }
+            if matches!(
+                callee.as_ref(),
+                Expr::PropertyGet { property, object }
+                    if matches!(object.as_ref(), Expr::NativeModuleRef(m) if m == "crypto")
+                        && matches!(property.as_str(), "getHashes" | "getCiphers" | "getCurves")
+            ) =>
+        {
+            Some(HirType::Array(Box::new(HirType::String)))
         }
         // `arr[i]` where `arr: Array<T>` has static type `T`. This lets
         // nested access like `grid[i][j]` and `grid[i].length` reach
