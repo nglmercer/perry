@@ -28,9 +28,10 @@ pub enum TypedFeedbackSiteKind {
     PropertyGet = 0,
     PropertySet = 1,
     MethodCall = 2,
-    ArrayElement = 3,
-    NumericFieldWrite = 4,
-    HelperReturn = 5,
+    ClosureCall = 3,
+    ArrayElement = 4,
+    NumericFieldWrite = 5,
+    HelperReturn = 6,
 }
 
 impl TypedFeedbackSiteKind {
@@ -38,9 +39,10 @@ impl TypedFeedbackSiteKind {
         match raw {
             1 => Self::PropertySet,
             2 => Self::MethodCall,
-            3 => Self::ArrayElement,
-            4 => Self::NumericFieldWrite,
-            5 => Self::HelperReturn,
+            3 => Self::ClosureCall,
+            4 => Self::ArrayElement,
+            5 => Self::NumericFieldWrite,
+            6 => Self::HelperReturn,
             _ => Self::PropertyGet,
         }
     }
@@ -50,6 +52,7 @@ impl TypedFeedbackSiteKind {
             Self::PropertyGet => "property_get",
             Self::PropertySet => "property_set",
             Self::MethodCall => "method_call",
+            Self::ClosureCall => "closure_call",
             Self::ArrayElement => "array_element",
             Self::NumericFieldWrite => "numeric_field_write",
             Self::HelperReturn => "helper_return",
@@ -80,6 +83,7 @@ impl TypedFeedbackState {
 enum ObservationSource {
     Property,
     Method,
+    Closure,
     Array,
     NumericWrite,
     HelperReturn,
@@ -115,6 +119,11 @@ impl Observation {
                     && self.class_id == other.class_id
                     && self.heap_type == other.heap_type
                     && self.aux == other.aux
+                    && self.value_tag == other.value_tag
+            }
+            ObservationSource::Closure => {
+                self.aux == other.aux
+                    && self.heap_type == other.heap_type
                     && self.value_tag == other.value_tag
             }
             ObservationSource::Array | ObservationSource::HelperReturn => {
@@ -880,6 +889,46 @@ pub extern "C" fn js_typed_feedback_object_set_field_by_name(
     crate::object::js_object_set_field_by_name(obj, key, value);
 }
 
+#[no_mangle]
+pub extern "C" fn js_typed_feedback_object_set_field_by_name_fast(
+    site_id: u64,
+    obj: *mut ObjectHeader,
+    key: *const crate::StringHeader,
+    value: f64,
+) {
+    let object_addr = normalize_raw_object_addr(obj as u64);
+    let (shape_addr, class_id, gc_type) = object_shape(object_addr);
+    let handled = crate::object::js_object_set_field_by_name_transition_fast(obj, key, value) != 0;
+    let observation = Observation {
+        source: ObservationSource::Property,
+        object_addr: shape_keyed_object_addr(ObservationSource::Property, object_addr),
+        shape_addr,
+        key_hash: key_hash(key),
+        class_id,
+        heap_type: gc_type,
+        aux: 0,
+        value_tag: stable_value_kind(value.to_bits()),
+    };
+    guard_observe(
+        site_id,
+        TypedFeedbackSiteKind::PropertySet,
+        observation,
+        handled,
+    );
+    if !handled {
+        record_fallback_call(site_id);
+        crate::object::js_object_set_field_by_name(obj, key, value);
+    }
+}
+
+#[path = "typed_feedback/guards.rs"]
+mod guards;
+pub use guards::{
+    js_typed_feedback_class_field_get_guard, js_typed_feedback_class_field_set_guard,
+    js_typed_feedback_closure_direct_call_guard, js_typed_feedback_method_direct_call_guard,
+    js_typed_feedback_native_call_method, js_typed_feedback_native_call_method_apply,
+};
+
 fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for &b in bytes {
@@ -915,6 +964,17 @@ fn valid_string_key(key: *const crate::StringHeader) -> bool {
 
 fn valid_method_name(method_name_ptr: *const i8, method_name_len: usize) -> bool {
     !method_name_ptr.is_null() && method_name_len > 0 && method_name_len <= 4096
+}
+
+fn method_name_bytes<'a>(method_name_ptr: *const i8, method_name_len: usize) -> Option<&'a [u8]> {
+    if !valid_method_name(method_name_ptr, method_name_len) {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(method_name_ptr as *const u8, method_name_len) })
+}
+
+fn method_name_str<'a>(method_name_ptr: *const i8, method_name_len: usize) -> Option<&'a str> {
+    std::str::from_utf8(method_name_bytes(method_name_ptr, method_name_len)?).ok()
 }
 
 fn is_plain_number_bits(bits: u64) -> bool {
@@ -996,99 +1056,6 @@ fn shape_keyed_object_addr(source: ObservationSource, object_addr: usize) -> usi
     } else {
         object_addr
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn js_typed_feedback_native_call_method(
-    site_id: u64,
-    object: f64,
-    method_name_ptr: *const i8,
-    method_name_len: usize,
-    args_ptr: *const f64,
-    args_len: usize,
-) -> f64 {
-    let bits = object.to_bits();
-    let object_addr = normalize_raw_object_addr(bits);
-    let (shape_addr, class_id, gc_type) = object_shape(object_addr);
-    let name_hash = if valid_method_name(method_name_ptr, method_name_len) {
-        hash_bytes(std::slice::from_raw_parts(
-            method_name_ptr as *const u8,
-            method_name_len,
-        ))
-    } else {
-        0
-    };
-    let observation = Observation {
-        source: ObservationSource::Method,
-        object_addr: shape_keyed_object_addr(ObservationSource::Method, object_addr),
-        shape_addr,
-        key_hash: name_hash,
-        class_id,
-        heap_type: gc_type,
-        aux: 0,
-        value_tag: value_tag(bits),
-    };
-    let pass = guard_observe(
-        site_id,
-        TypedFeedbackSiteKind::MethodCall,
-        observation,
-        valid_method_name(method_name_ptr, method_name_len)
-            && bits != TAG_NULL
-            && bits != TAG_UNDEFINED,
-    );
-    if !pass {
-        record_fallback_call(site_id);
-    }
-    crate::object::js_native_call_method(
-        object,
-        method_name_ptr,
-        method_name_len,
-        args_ptr,
-        args_len,
-    )
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn js_typed_feedback_native_call_method_apply(
-    site_id: u64,
-    object: f64,
-    method_name_ptr: *const i8,
-    method_name_len: usize,
-    args_array: i64,
-) -> f64 {
-    let bits = object.to_bits();
-    let object_addr = normalize_raw_object_addr(bits);
-    let (shape_addr, class_id, gc_type) = object_shape(object_addr);
-    let name_hash = if valid_method_name(method_name_ptr, method_name_len) {
-        hash_bytes(std::slice::from_raw_parts(
-            method_name_ptr as *const u8,
-            method_name_len,
-        ))
-    } else {
-        0
-    };
-    let observation = Observation {
-        source: ObservationSource::Method,
-        object_addr: shape_keyed_object_addr(ObservationSource::Method, object_addr),
-        shape_addr,
-        key_hash: name_hash,
-        class_id,
-        heap_type: gc_type,
-        aux: 0,
-        value_tag: value_tag(bits),
-    };
-    let pass = guard_observe(
-        site_id,
-        TypedFeedbackSiteKind::MethodCall,
-        observation,
-        valid_method_name(method_name_ptr, method_name_len)
-            && bits != TAG_NULL
-            && bits != TAG_UNDEFINED,
-    );
-    if !pass {
-        record_fallback_call(site_id);
-    }
-    crate::object::js_native_call_method_apply(object, method_name_ptr, method_name_len, args_array)
 }
 
 fn observe_array(site_id: u64, arr: *const ArrayHeader, index: u32) {
