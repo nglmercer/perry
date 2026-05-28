@@ -1,6 +1,6 @@
 // Auto-generated from Perry's API manifest (#465). Do not edit by hand.
 // Source: perry-api-manifest::API_MANIFEST
-// Coverage: 1392 entries across 82 modules
+// Coverage: 1395 entries across 82 modules
 
 declare module "@perryts/pdf" {
   /** stdlib */
@@ -2049,13 +2049,19 @@ declare module "util/types" {
   /** stdlib */
   export function isMap(...args: any[]): any;
   /** stdlib */
+  export function isMapIterator(...args: any[]): any;
+  /** stdlib */
   export function isNumberObject(...args: any[]): any;
   /** stdlib */
   export function isPromise(...args: any[]): any;
   /** stdlib */
+  export function isProxy(...args: any[]): any;
+  /** stdlib */
   export function isRegExp(...args: any[]): any;
   /** stdlib */
   export function isSet(...args: any[]): any;
+  /** stdlib */
+  export function isSetIterator(...args: any[]): any;
   /** stdlib */
   export function isSharedArrayBuffer(...args: any[]): any;
   /** stdlib */
@@ -2226,4 +2232,3 @@ declare module "zlib" {
   /** stdlib */
   export function unzipSync(p0: string): any;
 }
-

@@ -2,7 +2,7 @@
 
 This page is auto-generated from Perry's compile-time API manifest (`perry-api-manifest::API_MANIFEST`). It is the source of truth for what `perry compile` accepts; references to symbols not listed here produce `R005 UnimplementedApi` (issue #463). Stubs (#464) are flagged ⚠ — they link cleanly but no-op at runtime on the chosen target.
 
-Total: 1392 entries across 82 modules.
+Total: 1395 entries across 82 modules.
 
 ## Modules
 
@@ -1906,10 +1906,13 @@ Total: 1392 entries across 82 modules.
 - `isFloat64Array` — module
 - `isInt32Array` — module
 - `isMap` — module
+- `isMapIterator` — module
 - `isNumberObject` — module
 - `isPromise` — module
+- `isProxy` — module
 - `isRegExp` — module
 - `isSet` — module
+- `isSetIterator` — module
 - `isSharedArrayBuffer` — module
 - `isStringObject` — module
 - `isTypedArray` — module
@@ -2030,4 +2033,3 @@ Total: 1392 entries across 82 modules.
 ### Properties
 
 - `constants`
-
