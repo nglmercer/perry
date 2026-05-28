@@ -58,6 +58,7 @@ pub fn is_buffer_method_name(name: &str) -> bool {
     matches!(
         name,
         "toString"
+            | "inspect"
             | "slice"
             | "subarray"
             | "set"
@@ -327,6 +328,9 @@ pub unsafe fn dispatch_buffer_method(
                 crate::buffer::js_buffer_to_string(buf_ptr, enc)
             };
             f64::from_bits(JSValue::string_ptr(str_ptr).bits())
+        }
+        "inspect" => {
+            crate::builtins::js_util_inspect(buf_f64, f64::from_bits(crate::value::TAG_UNDEFINED))
         }
         "slice" | "subarray" => {
             let len = (*buf_ptr).length as i32;
