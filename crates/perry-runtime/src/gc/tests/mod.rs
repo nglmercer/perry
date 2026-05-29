@@ -1,7 +1,9 @@
 mod alloc;
 mod barrier;
+mod budgeted_step_api;
 mod contract;
 mod copying;
+mod cycle_state;
 mod evacuation;
 mod helper_stores;
 mod layout_trace;
