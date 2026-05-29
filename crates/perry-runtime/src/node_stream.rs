@@ -117,6 +117,7 @@ const READABLE_HWM_KEY: &[u8] = b"__perryReadableHwm";
 const READABLE_PENDING_KEY: &[u8] = b"__perryReadablePending";
 const READABLE_RESUME_SCHEDULED_KEY: &[u8] = b"__perryReadableResumeScheduled";
 const STREAM_PIPES_KEY: &[u8] = b"__perryStreamPipes";
+const READABLE_BASE64_REMAINDER_KEY: &[u8] = b"__perryReadableBase64Remainder";
 const STREAM_PIPE_NO_END_KEY: &[u8] = b"__perryStreamPipeNoEnd";
 const STREAM_PIPE_END_PENDING_KEY: &[u8] = b"__perryStreamPipeEndPending";
 const STREAM_AUTO_DESTROY_KEY: &[u8] = b"__perryStreamAutoDestroy";
@@ -347,6 +348,7 @@ fn push_chunk(stream: f64, chunk: f64) -> f64 {
     }
     let jsval = JSValue::from_bits(chunk.to_bits());
     if jsval.is_null() || jsval.is_undefined() {
+        flush_readable_decoder(stream);
         mark_stream_ended(stream);
         refresh_readable_aborted_flag(stream);
         schedule_readable_end(stream);
@@ -355,6 +357,13 @@ fn push_chunk(stream: f64, chunk: f64) -> f64 {
     if has_truthy_hidden(stream, hidden_ended_key()) {
         return f64::from_bits(TAG_FALSE);
     }
+    let Some(chunk) = decode_readable_chunk_for_encoding(stream, chunk) else {
+        return f64::from_bits(TAG_TRUE);
+    };
+    push_chunk_backpressure_result(stream, append_readable_output_chunk(stream, chunk))
+}
+
+fn append_readable_output_chunk(stream: f64, chunk: f64) -> f64 {
     let added = if readable_object_mode(stream) {
         1.0
     } else {
@@ -374,6 +383,105 @@ fn push_chunk(stream: f64, chunk: f64) -> f64 {
             buffer_pending_readable_chunk(stream, chunk);
         }
     }
+    total
+}
+
+fn decode_readable_chunk_for_encoding(stream: f64, chunk: f64) -> Option<f64> {
+    let Some(encoding) = readable_encoding_tag(stream) else {
+        return Some(chunk);
+    };
+    if JSValue::from_bits(chunk.to_bits()).is_any_string() {
+        return Some(chunk);
+    }
+    let raw = raw_ptr_from_value(chunk);
+    if raw < 0x10000 || !crate::buffer::is_registered_buffer(raw) {
+        return Some(chunk);
+    }
+    if encoding == 2 {
+        return decode_readable_base64_chunk(stream, raw);
+    }
+    Some(buffer_chunk_to_encoded_string(raw, encoding))
+}
+
+fn decode_readable_base64_chunk(stream: f64, raw: usize) -> Option<f64> {
+    let mut bytes = readable_base64_remainder_bytes(stream);
+    append_buffer_bytes(raw, &mut bytes);
+    let complete_len = bytes.len() / 3 * 3;
+    set_readable_base64_remainder_bytes(stream, &bytes[complete_len..]);
+    if complete_len == 0 {
+        return None;
+    }
+    Some(encoded_string_from_bytes(&bytes[..complete_len], 2))
+}
+
+fn flush_readable_decoder(stream: f64) {
+    if readable_encoding_tag(stream) != Some(2) {
+        return;
+    }
+    let bytes = readable_base64_remainder_bytes(stream);
+    set_readable_base64_remainder_bytes(stream, &[]);
+    if !bytes.is_empty() {
+        append_readable_output_chunk(stream, encoded_string_from_bytes(&bytes, 2));
+    }
+}
+
+fn readable_base64_remainder_bytes(stream: f64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if let Some(value) = get_hidden_value(stream, hidden_readable_base64_remainder_key()) {
+        append_buffer_bytes(raw_ptr_from_value(value), &mut bytes);
+    }
+    bytes
+}
+
+fn set_readable_base64_remainder_bytes(stream: f64, bytes: &[u8]) {
+    let value = if bytes.is_empty() {
+        f64::from_bits(TAG_UNDEFINED)
+    } else {
+        buffer_value_from_bytes(bytes)
+    };
+    set_hidden_value(stream, hidden_readable_base64_remainder_key(), value);
+}
+
+fn buffer_chunk_to_encoded_string(raw: usize, encoding: i32) -> f64 {
+    let ptr =
+        crate::buffer::js_buffer_to_string(raw as *const crate::buffer::BufferHeader, encoding);
+    f64::from_bits(JSValue::string_ptr(ptr).bits())
+}
+
+fn encoded_string_from_bytes(bytes: &[u8], encoding: i32) -> f64 {
+    let value = buffer_value_from_bytes(bytes);
+    buffer_chunk_to_encoded_string(raw_ptr_from_value(value), encoding)
+}
+
+fn readable_encoding_tag(stream: f64) -> Option<i32> {
+    let encoding = readable_encoding_value(stream);
+    if JSValue::from_bits(encoding.to_bits()).is_any_string() {
+        Some(crate::buffer::js_encoding_tag_from_value(encoding))
+    } else {
+        None
+    }
+}
+
+/// Byte length of a stream chunk for `push()`'s highWaterMark accounting:
+/// the UTF-16 length for strings, the byte length for buffers, and `1`
+/// (object-mode count) for anything else.
+fn chunk_byte_len(chunk: f64) -> usize {
+    let jsval = JSValue::from_bits(chunk.to_bits());
+    if jsval.is_any_string() {
+        let ptr = crate::value::js_get_string_pointer_unified(chunk) as *const crate::StringHeader;
+        if !ptr.is_null() && (ptr as usize) >= 0x10000 {
+            return unsafe { (*ptr).utf16_len as usize };
+        }
+        return 0;
+    }
+    let raw = raw_ptr_from_value(chunk);
+    if raw >= 0x10000 && crate::buffer::is_registered_buffer(raw) {
+        return unsafe { (*(raw as *const crate::buffer::BufferHeader)).length as usize };
+    }
+    1
+}
+
+fn push_chunk_backpressure_result(stream: f64, total: f64) -> f64 {
     let hwm = get_hidden_value(stream, hidden_hwm_key()).unwrap_or_else(|| default_hwm(false));
     if total < hwm {
         f64::from_bits(TAG_TRUE)
@@ -433,24 +541,6 @@ extern "C" fn ns_compose1(_closure: *const ClosureHeader, _arg: f64) -> f64 {
     js_node_stream_duplex_new(f64::from_bits(TAG_UNDEFINED))
 }
 
-/// Byte length of a stream chunk for `push()`'s highWaterMark accounting:
-/// the UTF-8 length for strings, the byte length for buffers, and `1`
-/// (object-mode count) for anything else.
-fn chunk_byte_len(chunk: f64) -> usize {
-    let jsval = JSValue::from_bits(chunk.to_bits());
-    if jsval.is_any_string() {
-        let ptr = crate::value::js_get_string_pointer_unified(chunk) as *const crate::StringHeader;
-        if !ptr.is_null() && (ptr as usize) >= 0x10000 {
-            return unsafe { (*ptr).byte_len as usize };
-        }
-        return 0;
-    }
-    let raw = raw_ptr_from_value(chunk);
-    if raw >= 0x10000 && crate::buffer::is_registered_buffer(raw) {
-        return unsafe { (*(raw as *const crate::buffer::BufferHeader)).length as usize };
-    }
-    1
-}
 extern "C" fn ns_pipe2(closure: *const ClosureHeader, dest: f64, options: f64) -> f64 {
     if pipe_destination_is_missing(dest) {
         throw_readable_pipe_missing_destination();
@@ -2985,6 +3075,11 @@ fn hidden_stream_pipes_key() -> *mut crate::string::StringHeader {
 }
 
 #[inline]
+fn hidden_readable_base64_remainder_key() -> *mut crate::string::StringHeader {
+    hidden_key(READABLE_BASE64_REMAINDER_KEY)
+}
+
+#[inline]
 fn hidden_stream_pipe_no_end_key() -> *mut crate::string::StringHeader {
     hidden_key(STREAM_PIPE_NO_END_KEY)
 }
@@ -3837,10 +3932,17 @@ fn read_stream_available_default(stream: f64) -> f64 {
     if stream_hidden_ended(stream) {
         queue_readable_event(stream);
     }
+    let encoded = readable_encoding_tag(stream).is_some();
     if values.len() == 1 {
+        if encoded {
+            return values[0];
+        }
         return string_chunk_to_buffer(values[0]).unwrap_or(values[0]);
     }
     let result = crate::string::js_string_concat_chain(values.as_ptr(), values.len() as i32);
+    if encoded {
+        return f64::from_bits(JSValue::string_ptr(result).bits());
+    }
     box_pointer(crate::buffer::js_buffer_from_string(result, 0) as *const u8)
 }
 
@@ -3858,6 +3960,9 @@ fn read_stream_exact_size(stream: f64, size: f64) -> f64 {
             refresh_readable_aborted_flag(stream);
         }
         return f64::from_bits(TAG_NULL);
+    }
+    if readable_encoding_tag(stream).is_some() {
+        return read_stream_available_default(stream);
     }
     if requested > available && !stream_hidden_ended(stream) {
         return f64::from_bits(TAG_NULL);
