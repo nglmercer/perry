@@ -590,12 +590,6 @@
     "category": "bug-open",
     "reason": "node:stream/web: getReader({mode:'byob'}) on non-byte stream does not throw TypeError. Flips to PASS when #1545 lands."
   },
-  "node-suite/stream/readable/unshift-increases-length": {
-    "issue": "1532",
-    "added": "2026-05-24",
-    "category": "bug-open",
-    "reason": "node:stream: unshift() \u2014 readableLength does not grow by chunk size. Flips to PASS when #1532 lands."
-  },
   "node-suite/stream/compose/instance-chain": {
     "issue": "1531",
     "added": "2026-05-24",
@@ -638,12 +632,6 @@
     "category": "bug-open",
     "reason": "node:stream: Readable.from(POJO-with-Symbol.iterator) \u2014 does not iterate the custom iterable. Flips to PASS when #1532 lands."
   },
-  "node-suite/stream/readable/unshift-return-value": {
-    "issue": "1532",
-    "added": "2026-05-24",
-    "category": "bug-open",
-    "reason": "node:stream: unshift() return value \u2014 not undefined. Flips to PASS when #1532 lands."
-  },
   "node-suite/stream/compose/buffer-preserves": {
     "issue": "1531",
     "added": "2026-05-24",
@@ -667,12 +655,6 @@
     "added": "2026-05-24",
     "category": "bug-open",
     "reason": "node:stream: compose(stream) \u2014 single-stream form does not return Duplex wrap. Flips to PASS when #1531 lands."
-  },
-  "node-suite/stream/readable/unshift-buffer": {
-    "issue": "1532",
-    "added": "2026-05-24",
-    "category": "bug-open",
-    "reason": "node:stream: unshift(Buffer) \u2014 explicit Buffer not properly added to front of buffer queue. Flips to PASS when #1532 lands."
   },
   "node-suite/stream/web/desired-size-restores-after-drain": {
     "issue": "1545",
@@ -733,12 +715,6 @@
     "added": "2026-05-24",
     "category": "bug-open",
     "reason": "node:stream/web: ReadableStream.from(asyncGen()) \u2014 iteration wrong or fails. Flips to PASS when #1545 lands."
-  },
-  "node-suite/stream/readable/unshift-while-flowing": {
-    "issue": "1532",
-    "added": "2026-05-24",
-    "category": "bug-open",
-    "reason": "node:stream: unshift() during flowing mode \u2014 chunk not re-emitted in order. Flips to PASS when #1532 lands."
   },
   "node-suite/stream/readable/compose-with-passthrough": {
     "issue": "1531",
