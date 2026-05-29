@@ -196,7 +196,9 @@ extern "C" fn ns_readable_end_microtask(closure: *const ClosureHeader) -> f64 {
         hidden_end_scheduled_key(),
         f64::from_bits(TAG_FALSE),
     );
-    emit_readable_end_once(stream);
+    if pending_readable_chunk_count(stream) == 0 && !stream_destroyed(stream) {
+        emit_readable_end_once(stream);
+    }
     f64::from_bits(TAG_UNDEFINED)
 }
 
@@ -377,7 +379,7 @@ fn append_readable_output_chunk(stream: f64, chunk: f64) -> f64 {
         push_readable_buffered_chunk(stream, chunk);
         mark_disturbed(stream);
         schedule_readable_event(stream);
-        if readable_is_flowing(stream) {
+        if readable_is_flowing(stream) && !should_defer_initial_data_emit(stream) {
             emit_readable_data(stream, chunk);
         } else {
             buffer_pending_readable_chunk(stream, chunk);
@@ -3326,6 +3328,14 @@ fn readable_is_paused(stream: f64) -> bool {
     readable_flowing_value(stream).to_bits() == TAG_FALSE
 }
 
+fn has_writable_side(stream: f64) -> bool {
+    get_hidden_value(stream, hidden_writable_flag_key()).is_some()
+}
+
+fn should_defer_initial_data_emit(stream: f64) -> bool {
+    has_truthy_hidden(stream, hidden_readable_resume_scheduled_key()) && !has_writable_side(stream)
+}
+
 fn set_readable_flowing(stream: f64, value: f64) {
     if get_hidden_value(stream, hidden_readable_flag_key()).is_some() {
         set_hidden_value(stream, readable_flowing_key(), value);
@@ -3362,6 +3372,10 @@ fn emit_readable_data(stream: f64, chunk: f64) {
     if stream_destroyed(stream) {
         return;
     }
+    emit_readable_data_unchecked(stream, chunk);
+}
+
+fn emit_readable_data_unchecked(stream: f64, chunk: f64) {
     let _ = emit_stream_event(stream, string_value(b"data"), &[chunk]);
     write_chunk_to_pipe_destinations(stream, chunk);
 }
@@ -3386,15 +3400,16 @@ fn flush_pending_readable_chunks(stream: f64) {
         box_pointer(crate::array::js_array_alloc(0) as *const u8),
     );
     for chunk in chunks {
-        if !readable_is_flowing(stream) || stream_destroyed(stream) {
+        if !readable_is_flowing(stream) {
             buffer_pending_readable_chunk(stream, chunk);
             continue;
         }
-        emit_readable_data(stream, chunk);
+        emit_readable_data_unchecked(stream, chunk);
     }
     if stream_hidden_ended(stream)
         && pending_readable_chunk_count(stream) == 0
         && !readable_is_paused(stream)
+        && !stream_destroyed(stream)
     {
         schedule_readable_end(stream);
     }
@@ -3406,8 +3421,8 @@ pub(super) fn readable_data_listener_added(stream: f64) {
         return;
     }
     set_readable_flowing(stream, f64::from_bits(TAG_TRUE));
-    flush_pending_readable_chunks(stream);
-    schedule_readable_from_drain(stream);
+    schedule_readable_resume(stream);
+    invoke_read_once(stream);
 }
 
 fn schedule_readable_resume(stream: f64) {
@@ -4068,11 +4083,27 @@ fn drain_readable_from_events(stream: f64) {
         if !values.is_empty() {
             mark_disturbed(stream);
         }
+        let mut emit_destroyed_tail = false;
         for chunk in values {
-            emit_readable_data(stream, chunk);
+            if !readable_is_flowing(stream) {
+                return;
+            }
+            if stream_destroyed(stream) {
+                if !emit_destroyed_tail {
+                    return;
+                }
+                emit_readable_data_unchecked(stream, chunk);
+                return;
+            }
+            emit_readable_data_unchecked(stream, chunk);
+            if stream_destroyed(stream) {
+                emit_destroyed_tail = true;
+            }
         }
     }
-    emit_readable_end_once(stream);
+    if !stream_destroyed(stream) {
+        emit_readable_end_once(stream);
+    }
 }
 
 fn is_array_like_value(value: f64) -> bool {
