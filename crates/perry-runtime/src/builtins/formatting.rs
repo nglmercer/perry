@@ -13,6 +13,7 @@ mod array_buffer;
 mod boxed_primitives;
 pub use boxed_primitives::scan_boxed_primitive_payload_roots_mut;
 mod collections;
+mod identity_equality;
 mod strip_vt;
 
 pub use strip_vt::js_util_strip_vt_control_characters;
@@ -1938,6 +1939,13 @@ pub extern "C" fn js_util_is_deep_strict_equal(left: f64, right: f64) -> f64 {
             _ => false,
         };
         return f64::from_bits(crate::value::JSValue::bool(equal).bits());
+    }
+    if identity_equality::is_identity_only_deep_equal_value(left)
+        || identity_equality::is_identity_only_deep_equal_value(right)
+    {
+        return f64::from_bits(
+            crate::value::JSValue::bool(left.to_bits() == right.to_bits()).bits(),
+        );
     }
     let has_tagged_heap_operand = left_value.is_pointer() || right_value.is_pointer();
     let has_raw_heap_operand =
