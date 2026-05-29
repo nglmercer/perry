@@ -18,10 +18,9 @@
 //!   only outside suppressed, reentrant, or unsafe regions, and must be
 //!   reported separately.
 //!
-//! Current threshold-triggered work in `gc_check_trigger()` is still a
-//! behavior-compatible synchronous collection. Trace output labels that path
-//! as `legacy_synchronous` until the cycle state machine and debt pacer turn
-//! allocation pressure into bounded progress.
+//! Threshold-triggered work in `gc_check_trigger()` is debt-paced: heap goals
+//! start or resume a budgeted cycle and allocation-side checks spend bounded
+//! mutator-assist work instead of running a whole automatic collection.
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::cell::{Cell, RefCell};
@@ -37,6 +36,7 @@ use std::time::{Duration, Instant};
 mod types;
 pub use types::*;
 mod policy;
+pub(crate) use policy::gc_runtime_safepoint;
 pub use policy::*;
 mod telemetry;
 pub use telemetry::*;
@@ -222,6 +222,23 @@ fn gc_collect_inner_with_trigger(trigger: GcTriggerSnapshot) -> GcCollectOutcome
 fn gc_collect_full_mark_sweep_with_trigger(trigger: GcTriggerSnapshot) -> GcCollectOutcome {
     GC_TRIGGER_BUMPED.with(|c| c.set(false));
     GcCycleState::new_full(trigger).run_to_completion()
+}
+
+#[allow(dead_code)]
+fn gc_collect_emergency_full() -> GcCollectOutcome {
+    gc_collect_full_mark_sweep_with_trigger(GcTriggerSnapshot::capture(GcTriggerKind::Emergency))
+}
+
+#[cfg(test)]
+pub(super) fn test_gc_collect_emergency_full_trace_json() -> serde_json::Value {
+    let outcome = gc_collect_full_mark_sweep_with_trigger(GcTriggerSnapshot {
+        kind: GcTriggerKind::Emergency,
+        steps_before: Some(GcStepSnapshot::current()),
+    });
+    outcome
+        .trace
+        .expect("test requested emergency full GC trace capture")
+        .into_json(GcStepSnapshot::current())
 }
 
 pub fn gc_init() {

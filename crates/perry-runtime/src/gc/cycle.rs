@@ -14,6 +14,20 @@ pub(super) enum GcCyclePhase {
 
 impl GcCyclePhase {
     #[inline]
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::BuildValidPointerSet => "build_valid_pointer_set",
+            Self::RootScan => "root_scan",
+            Self::MarkPropagation => "mark_propagation",
+            Self::BlockPersistence => "block_persistence",
+            Self::AtomicFinalize => "atomic_finalize",
+            Self::Sweep => "sweep",
+            Self::Reclaim => "reclaim",
+            Self::Complete => "complete",
+        }
+    }
+
+    #[inline]
     pub(super) const fn ffi_code(self) -> u32 {
         match self {
             Self::BuildValidPointerSet => 1,
@@ -25,6 +39,14 @@ impl GcCyclePhase {
             Self::Reclaim => 7,
             Self::Complete => 8,
         }
+    }
+
+    #[inline]
+    pub(super) const fn mutator_assist_honors_budget(self) -> bool {
+        matches!(
+            self,
+            Self::BuildValidPointerSet | Self::MarkPropagation | Self::BlockPersistence
+        )
     }
 }
 
@@ -261,6 +283,7 @@ struct MinorCycleContext {
     prev_in_alloc: u8,
     previous_pause_us: u64,
     current_rss_bytes: u64,
+    malloc_sweep_due: bool,
     evacuation_policy_allowed: bool,
     force_evacuation: bool,
     old_page_selection: OldPageDefragSelection,
@@ -323,7 +346,7 @@ impl GcCycleState {
         old_page_selection: OldPageDefragSelection,
         old_page_source_blocks: crate::arena::OldArenaSourceBlockSelection,
     ) -> Self {
-        let _ = trigger;
+        let malloc_sweep_due = copied_minor_malloc_sweep_due(trigger.kind);
         Self {
             collection_kind: GcCollectionKind::Minor,
             phase: GcCyclePhase::BuildValidPointerSet,
@@ -338,6 +361,7 @@ impl GcCycleState {
                 prev_in_alloc,
                 previous_pause_us,
                 current_rss_bytes,
+                malloc_sweep_due,
                 evacuation_policy_allowed,
                 force_evacuation,
                 old_page_selection,
@@ -376,6 +400,7 @@ impl GcCycleState {
             };
         }
 
+        let debt_before = self.trace.as_ref().map(|_| GcDebtSnapshot::current());
         let step_start = Instant::now();
         self.active_step_start = Some(step_start);
         match self.phase {
@@ -389,7 +414,34 @@ impl GcCycleState {
             GcCyclePhase::Complete => {}
         }
         self.active_step_start = None;
-        self.active_elapsed = self.active_elapsed.saturating_add(step_start.elapsed());
+        let step_elapsed = step_start.elapsed();
+        self.active_elapsed = self.active_elapsed.saturating_add(step_elapsed);
+        if let Some(debt_before) = debt_before {
+            let debt_after = GcDebtSnapshot::current();
+            if let Some(trace) = self.trace.as_mut() {
+                trace.record_pause_step(
+                    phase_before,
+                    self.phase,
+                    budget.work_units,
+                    step_elapsed,
+                    debt_before,
+                    debt_after,
+                );
+            } else if let Some(trace) = self
+                .outcome
+                .as_mut()
+                .and_then(|outcome| outcome.trace.as_mut())
+            {
+                trace.record_pause_step(
+                    phase_before,
+                    self.phase,
+                    budget.work_units,
+                    step_elapsed,
+                    debt_before,
+                    debt_after,
+                );
+            }
+        }
         GcCycleStepResult {
             phase: phase_before,
             completed: self.phase == GcCyclePhase::Complete,
@@ -667,12 +719,13 @@ impl GcCycleState {
         let phase_start = trace_phase_start(&self.trace);
         let sweep = if let Some(minor) = self.minor.as_ref() {
             if minor.evacuation.old_page_moved_bytes > 0 {
-                sweep_with_age_bump_and_targeted_old_reclaim(
+                sweep_with_age_bump_and_targeted_old_reclaim_and_malloc(
                     true,
                     &minor.old_page_source_blocks.block_indices,
+                    minor.malloc_sweep_due,
                 )
             } else {
-                sweep_with_age_bump(true)
+                sweep_with_age_bump_and_malloc(true, minor.malloc_sweep_due)
             }
         } else {
             sweep_with_age_bump_and_old_reclaim(false, true)
@@ -746,9 +799,15 @@ impl GcCycleState {
             finish_full_old_reclaim_baseline();
         }
 
+        let malloc_swept = self
+            .minor
+            .as_ref()
+            .map(|minor| minor.malloc_sweep_due)
+            .unwrap_or(true);
+
         self.outcome = Some(GcCollectOutcome {
             freed_bytes: self.freed_bytes,
-            malloc_swept: true,
+            malloc_swept,
             trace: self.trace.take(),
         });
         self.phase = GcCyclePhase::Complete;
