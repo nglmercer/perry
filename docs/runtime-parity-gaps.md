@@ -676,7 +676,6 @@ Modules where Perry has at least one coverage source. Listed in descending gap-s
 - `util.transferableAbortController()`
 - `util.transferableAbortSignal(signal)`
 - `util.aborted(signal, resource)`
-- `util.convertProcessSignalToExitCode(signal)`
 - `util.diff(actual, expected)`
 - `util.setTraceSigInt(enable)`
 - `MIMEType.prototype.type`
