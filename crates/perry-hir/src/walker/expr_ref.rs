@@ -154,6 +154,7 @@ where
         | Expr::SymbolFor(v)
         | Expr::SymbolKeyFor(v)
         | Expr::SymbolDescription(v)
+        | Expr::RegExpEscape(v)
         | Expr::SymbolToString(v)
         | Expr::RegExpSource(v)
         | Expr::RegExpFlags(v)
@@ -661,7 +662,7 @@ where
             f(b);
             f(c);
         }
-        Expr::ObjectGroupBy { items, key_fn } => {
+        Expr::ObjectGroupBy { items, key_fn } | Expr::MapGroupBy { items, key_fn } => {
             f(items);
             f(key_fn);
         }
