@@ -730,6 +730,7 @@ pub(crate) fn is_native_module_callable_export(module: &str, prop: &str) -> bool
             | ("events", "EventEmitter")
             | ("events", "on")
             | ("stream", "compose")
+            | ("stream", "duplexPair")
             | ("stream", "pipeline")
             | ("stream", "Readable")
             | ("stream", "Writable")
