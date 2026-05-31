@@ -190,6 +190,10 @@ where
         | Expr::MathMinSpread(v)
         | Expr::MathMaxSpread(v)
         | Expr::WebAssemblyValidate(v)
+        | Expr::WebAssemblyCompile(v)
+        | Expr::WebAssemblyModuleNew(v)
+        | Expr::WebAssemblyModuleExports(v)
+        | Expr::WebAssemblyModuleImports(v)
         | Expr::WebAssemblyInstantiate(v)
         | Expr::Atob(v)
         | Expr::Btoa(v)
@@ -761,6 +765,10 @@ where
             for e in args {
                 f(e);
             }
+        }
+        Expr::WebAssemblyModuleCustomSections { module, name } => {
+            f(module);
+            f(name);
         }
         Expr::DateUtc(elements) => {
             for e in elements {
