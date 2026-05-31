@@ -1,6 +1,6 @@
 // Auto-generated from Perry's API manifest (#465). Do not edit by hand.
 // Source: perry-api-manifest::API_MANIFEST
-// Coverage: 2337 entries across 102 modules
+// Coverage: 2347 entries across 102 modules
 
 type PerryU32 = number & { readonly __perryU32?: never };
 type PerryU64 = number & { readonly __perryU64?: never };
@@ -175,6 +175,9 @@ declare module "async_hooks" {
   export class AsyncLocalStorage { [key: string]: any; }
   /** stdlib */
   export class AsyncResource { [key: string]: any; }
+  /** stdlib */
+  const _default: any;
+  export default _default;
   /** stdlib */
   export function createHook(...args: any[]): any;
   /** stdlib */
@@ -1265,6 +1268,9 @@ declare module "events" {
   /** stdlib */
   export const captureRejections: any;
   /** stdlib */
+  const _default: any;
+  export default _default;
+  /** stdlib */
   export const defaultMaxListeners: any;
   /** stdlib */
   export const errorMonitor: any;
@@ -1872,6 +1878,9 @@ declare module "os" {
   /** stdlib */
   export const constants: any;
   /** stdlib */
+  const _default: any;
+  export default _default;
+  /** stdlib */
   export const devNull: any;
   /** stdlib */
   export function arch(...args: any[]): any;
@@ -1917,6 +1926,9 @@ declare module "os" {
 
 declare module "path" {
   /** stdlib */
+  const _default: any;
+  export default _default;
+  /** stdlib */
   export const delimiter: any;
   /** stdlib */
   export const posix: any;
@@ -1954,6 +1966,9 @@ declare module "path" {
 
 declare module "path/posix" {
   /** stdlib */
+  const _default: any;
+  export default _default;
+  /** stdlib */
   export const delimiter: any;
   /** stdlib */
   export const posix: any;
@@ -1990,6 +2005,9 @@ declare module "path/posix" {
 }
 
 declare module "path/win32" {
+  /** stdlib */
+  const _default: any;
+  export default _default;
   /** stdlib */
   export const delimiter: any;
   /** stdlib */
@@ -2813,6 +2831,9 @@ declare module "punycode.ucs2" {
 
 declare module "querystring" {
   /** stdlib */
+  const _default: any;
+  export default _default;
+  /** stdlib */
   export function decode(...args: any[]): any;
   /** stdlib */
   export function encode(...args: any[]): any;
@@ -3018,6 +3039,9 @@ declare module "sys" {
   /** stdlib */
   export class TextEncoder { [key: string]: any; }
   /** stdlib */
+  const _default: any;
+  export default _default;
+  /** stdlib */
   export const types: any;
   /** stdlib */
   export function aborted(...args: any[]): any;
@@ -3177,6 +3201,9 @@ declare module "url" {
   /** stdlib */
   export class Url { [key: string]: any; }
   /** stdlib */
+  const _default: any;
+  export default _default;
+  /** stdlib */
   export function Url(...args: any[]): any;
   /** stdlib */
   export function domainToASCII(...args: any[]): any;
@@ -3205,6 +3232,9 @@ declare module "util" {
   export class TextDecoder { [key: string]: any; }
   /** stdlib */
   export class TextEncoder { [key: string]: any; }
+  /** stdlib */
+  const _default: any;
+  export default _default;
   /** stdlib */
   export const types: any;
   /** stdlib */

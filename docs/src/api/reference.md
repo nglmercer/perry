@@ -2,7 +2,7 @@
 
 This page is auto-generated from Perry's compile-time API manifest (`perry-api-manifest::API_MANIFEST`). It is the source of truth for what `perry compile` accepts; references to symbols not listed here produce `R005 UnimplementedApi` (issue #463). Stubs (#464) are flagged ⚠ — they link cleanly but no-op at runtime on the chosen target.
 
-Total: 2337 entries across 102 modules.
+Total: 2347 entries across 102 modules.
 
 ## Modules
 
@@ -229,6 +229,10 @@ Total: 2337 entries across 102 modules.
 - `runInAsyncScope` — instance *(class: `AsyncResource`)*
 - `triggerAsyncId` — module
 - `triggerAsyncId` — instance *(class: `AsyncResource`)*
+
+### Properties
+
+- `default`
 
 ## `axios`
 
@@ -1083,6 +1087,7 @@ Total: 2337 entries across 102 modules.
 
 - `captureRejectionSymbol`
 - `captureRejections`
+- `default`
 - `defaultMaxListeners`
 - `errorMonitor`
 - `usingDomains`
@@ -1834,6 +1839,7 @@ Total: 2337 entries across 102 modules.
 
 - `EOL`
 - `constants`
+- `default`
 - `devNull`
 
 ## `path`
@@ -1856,6 +1862,7 @@ Total: 2337 entries across 102 modules.
 
 ### Properties
 
+- `default`
 - `delimiter`
 - `posix`
 - `sep`
@@ -1881,6 +1888,7 @@ Total: 2337 entries across 102 modules.
 
 ### Properties
 
+- `default`
 - `delimiter`
 - `posix`
 - `sep`
@@ -1906,6 +1914,7 @@ Total: 2337 entries across 102 modules.
 
 ### Properties
 
+- `default`
 - `delimiter`
 - `posix`
 - `sep`
@@ -2415,6 +2424,10 @@ Total: 2337 entries across 102 modules.
 - `unescape` — module
 - `unescapeBuffer` — module
 
+### Properties
+
+- `default`
+
 ## `rate-limiter-flexible`
 
 ### Classes
@@ -2689,6 +2702,7 @@ Total: 2337 entries across 102 modules.
 
 ### Properties
 
+- `default`
 - `types`
 
 ## `test`
@@ -2817,6 +2831,10 @@ Total: 2337 entries across 102 modules.
 - `resolveObject` — module
 - `urlToHttpOptions` — module
 
+### Properties
+
+- `default`
+
 ## `util`
 
 ### Classes
@@ -2855,6 +2873,7 @@ Total: 2337 entries across 102 modules.
 
 ### Properties
 
+- `default`
 - `types`
 
 ## `util/types`
