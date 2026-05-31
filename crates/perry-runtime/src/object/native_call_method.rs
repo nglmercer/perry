@@ -1886,6 +1886,11 @@ pub unsafe extern "C" fn js_native_call_method(
                     method_name,
                 );
             }
+            if let Some(result) =
+                crate::node_test::dispatch_object_method((*obj).class_id, method_name)
+            {
+                return result;
+            }
             // #2856: Map/Set iterators returned from a value-level
             // `m.entries()`/`.keys()`/`.values()` / `s.entries()` etc. carry
             // dedicated class ids so `.next()` lands in the matching iterator
