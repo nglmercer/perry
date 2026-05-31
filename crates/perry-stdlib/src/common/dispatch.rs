@@ -56,6 +56,81 @@ pub unsafe extern "C" fn js_handle_method_dispatch(
     // Dispatchers below gate on registry membership plus method vocabulary
     // because native handle id spaces are not unified (#91).
 
+    // node:sqlite DatabaseSync handle. Keep this before the better-sqlite3
+    // SQLite fallbacks because method names like prepare/exec/close overlap
+    // but the lifecycle/error semantics are intentionally different.
+    #[cfg(feature = "database-sqlite")]
+    if matches!(
+        method_name,
+        "open"
+            | "close"
+            | "exec"
+            | "prepare"
+            | "createTagStore"
+            | "createSession"
+            | "applyChangeset"
+            | "enableLoadExtension"
+            | "loadExtension"
+            | "location"
+            | "__perry_dispose__"
+            | "@@__perry_wk_dispose"
+    ) {
+        if let Some(result) =
+            crate::sqlite::dispatch_node_sqlite_database_method(handle, method_name, &args)
+        {
+            return result;
+        }
+    }
+
+    // node:sqlite SQLTagStore handle. Keep this before StatementSync because
+    // the query execution method names overlap but tag stores consume tagged
+    // template arguments and bind them positionally.
+    #[cfg(feature = "database-sqlite")]
+    if matches!(method_name, "run" | "get" | "all" | "iterate" | "clear") {
+        if let Some(result) =
+            crate::sqlite::dispatch_node_sqlite_tag_store_method(handle, method_name, &args)
+        {
+            return result;
+        }
+    }
+
+    // node:sqlite StatementSync handle. Keep this before the better-sqlite3
+    // statement fallback because run/get/all overlap but Node's parameter and
+    // result semantics are different.
+    #[cfg(feature = "database-sqlite")]
+    if matches!(
+        method_name,
+        "run"
+            | "get"
+            | "all"
+            | "iterate"
+            | "columns"
+            | "setReadBigInts"
+            | "setReturnArrays"
+            | "setAllowBareNamedParameters"
+            | "setAllowUnknownNamedParameters"
+    ) {
+        if let Some(result) =
+            crate::sqlite::dispatch_node_sqlite_statement_method(handle, method_name, &args)
+        {
+            return result;
+        }
+    }
+
+    // node:sqlite Session handle. This follows DatabaseSync dispatch because
+    // `close` overlaps and the database lifecycle rules should win for DBs.
+    #[cfg(feature = "database-sqlite")]
+    if matches!(
+        method_name,
+        "changeset" | "patchset" | "close" | "__perry_dispose__" | "@@__perry_wk_dispose"
+    ) {
+        if let Some(result) =
+            crate::sqlite::dispatch_node_sqlite_session_method(handle, method_name, &args)
+        {
+            return result;
+        }
+    }
+
     // Fastify app: routes for HTTP verbs + lifecycle methods.
     // #1113 adds `"on"` here — `app.server.on(event, cb)` dispatches
     // against the same FastifyApp handle the user code holds (the
@@ -1232,6 +1307,33 @@ pub unsafe extern "C" fn js_handle_property_dispatch(
         return v;
     }
 
+    #[cfg(feature = "database-sqlite")]
+    {
+        if let Some(v) =
+            crate::sqlite::dispatch_node_sqlite_database_property(handle, property_name)
+        {
+            return v;
+        }
+        if let Some(v) =
+            crate::sqlite::dispatch_node_sqlite_tag_store_property(handle, property_name)
+        {
+            return v;
+        }
+        if let Some(v) =
+            crate::sqlite::dispatch_node_sqlite_statement_property(handle, property_name)
+        {
+            return v;
+        }
+        if let Some(v) = crate::sqlite::dispatch_node_sqlite_limits_property(handle, property_name)
+        {
+            return v;
+        }
+        if let Some(v) = crate::sqlite::dispatch_node_sqlite_session_property(handle, property_name)
+        {
+            return v;
+        }
+    }
+
     // Server-side node:http request/response handles whose static
     // `HttpServer` / `IncomingMessage` / `ServerResponse` type was lost.
     #[cfg(feature = "external-http-server-pump")]
@@ -1778,6 +1880,11 @@ pub unsafe extern "C" fn js_handle_property_set_dispatch(
     let _ = handle;
     let _ = value;
 
+    #[cfg(feature = "database-sqlite")]
+    if crate::sqlite::dispatch_node_sqlite_limits_set(handle, property_name, value) {
+        return;
+    }
+
     // Try Fastify context dispatch (request/reply properties)
     #[cfg(feature = "http-server")]
     if with_handle::<crate::fastify::FastifyContext, bool, _>(handle, |_| true).unwrap_or(false) {
@@ -1919,6 +2026,8 @@ pub unsafe extern "C" fn js_stdlib_init_dispatch() {
     perry_runtime::js_set_native_querystring_dispatch(
         crate::querystring::js_querystring_native_dispatch,
     );
+    #[cfg(feature = "database-sqlite")]
+    perry_runtime::js_set_native_sqlite_dispatch(crate::sqlite::js_node_sqlite_native_dispatch);
     perry_runtime::js_set_native_domain_dispatch(crate::domain::js_domain_native_dispatch);
 
     // #2533: route captured / aliased http/https/http2 `createServer` back to

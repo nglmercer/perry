@@ -15,7 +15,10 @@ thread_local! {
         RefCell::new(HashMap::new());
     static NATIVE_MODULE_ACCESSOR_EXPORTS: RefCell<HashMap<String, u64>> =
         RefCell::new(HashMap::new());
+    static HANDLE_PROPERTY_BIND_REENTRY: Cell<bool> = const { Cell::new(false) };
     static BUFFER_CONSTRUCTOR_VALUE: Cell<u64> = const { Cell::new(0) };
+    static SQLITE_STATEMENT_SYNC_CONSTRUCTOR_VALUE: Cell<u64> = const { Cell::new(0) };
+    static SQLITE_SESSION_CONSTRUCTOR_VALUE: Cell<u64> = const { Cell::new(0) };
     static UTIL_INSPECT_DEFAULT_OPTIONS: Cell<u64> = const { Cell::new(0) };
     static UTIL_INSPECT_STYLES: Cell<u64> = const { Cell::new(0) };
     static UTIL_INSPECT_COLORS: Cell<u64> = const { Cell::new(0) };
@@ -37,6 +40,20 @@ pub fn scan_native_callable_export_roots_mut(visitor: &mut crate::gc::RuntimeRoo
         }
     });
     BUFFER_CONSTRUCTOR_VALUE.with(|slot| {
+        let mut value_bits = slot.get();
+        if value_bits != 0 {
+            visitor.visit_nanbox_u64_slot(&mut value_bits);
+            slot.set(value_bits);
+        }
+    });
+    SQLITE_STATEMENT_SYNC_CONSTRUCTOR_VALUE.with(|slot| {
+        let mut value_bits = slot.get();
+        if value_bits != 0 {
+            visitor.visit_nanbox_u64_slot(&mut value_bits);
+            slot.set(value_bits);
+        }
+    });
+    SQLITE_SESSION_CONSTRUCTOR_VALUE.with(|slot| {
         let mut value_bits = slot.get();
         if value_bits != 0 {
             visitor.visit_nanbox_u64_slot(&mut value_bits);
@@ -1121,6 +1138,54 @@ const FS_NAMESPACE_EXPORT_KEYS: &[&[u8]] = &[
     b"promises",
 ];
 
+const SQLITE_CONSTANTS_KEYS: &[&[u8]] = &[
+    b"SQLITE_CHANGESET_DATA",
+    b"SQLITE_CHANGESET_NOTFOUND",
+    b"SQLITE_CHANGESET_CONFLICT",
+    b"SQLITE_CHANGESET_CONSTRAINT",
+    b"SQLITE_CHANGESET_FOREIGN_KEY",
+    b"SQLITE_CHANGESET_OMIT",
+    b"SQLITE_CHANGESET_REPLACE",
+    b"SQLITE_CHANGESET_ABORT",
+    b"SQLITE_OK",
+    b"SQLITE_DENY",
+    b"SQLITE_IGNORE",
+    b"SQLITE_CREATE_INDEX",
+    b"SQLITE_CREATE_TABLE",
+    b"SQLITE_CREATE_TEMP_INDEX",
+    b"SQLITE_CREATE_TEMP_TABLE",
+    b"SQLITE_CREATE_TEMP_TRIGGER",
+    b"SQLITE_CREATE_TEMP_VIEW",
+    b"SQLITE_CREATE_TRIGGER",
+    b"SQLITE_CREATE_VIEW",
+    b"SQLITE_DELETE",
+    b"SQLITE_DROP_INDEX",
+    b"SQLITE_DROP_TABLE",
+    b"SQLITE_DROP_TEMP_INDEX",
+    b"SQLITE_DROP_TEMP_TABLE",
+    b"SQLITE_DROP_TEMP_TRIGGER",
+    b"SQLITE_DROP_TEMP_VIEW",
+    b"SQLITE_DROP_TRIGGER",
+    b"SQLITE_DROP_VIEW",
+    b"SQLITE_INSERT",
+    b"SQLITE_PRAGMA",
+    b"SQLITE_READ",
+    b"SQLITE_SELECT",
+    b"SQLITE_TRANSACTION",
+    b"SQLITE_UPDATE",
+    b"SQLITE_ATTACH",
+    b"SQLITE_DETACH",
+    b"SQLITE_ALTER_TABLE",
+    b"SQLITE_REINDEX",
+    b"SQLITE_ANALYZE",
+    b"SQLITE_CREATE_VTABLE",
+    b"SQLITE_DROP_VTABLE",
+    b"SQLITE_FUNCTION",
+    b"SQLITE_SAVEPOINT",
+    b"SQLITE_COPY",
+    b"SQLITE_RECURSIVE",
+];
+
 pub(crate) fn native_module_enumerable_keys(module_name: &str) -> Option<&'static [&'static [u8]]> {
     let module_name = normalize_native_module_alias(module_name);
     match module_name {
@@ -1150,6 +1215,15 @@ pub(crate) fn native_module_enumerable_keys(module_name: &str) -> Option<&'stati
             b"strict",
         ]),
         "buffer.constants" => Some(&[b"MAX_LENGTH", b"MAX_STRING_LENGTH"]),
+        "sqlite" => Some(&[
+            b"DatabaseSync",
+            b"Session",
+            b"StatementSync",
+            b"backup",
+            b"constants",
+            b"default",
+        ]),
+        "sqlite.constants" => Some(SQLITE_CONSTANTS_KEYS),
         "domain" => Some(&[b"_stack", b"Domain", b"createDomain", b"create", b"active"]),
         // #3677: zlib.constants enumerates the full Z_*/BROTLI_*/ZSTD_* table.
         "zlib.constants" => Some(ZLIB_CONSTANTS_KEYS),
@@ -1454,6 +1528,12 @@ pub(crate) fn bound_native_callable_export_value(module_name: &str, property_nam
     {
         attach_stream_constructor_prototype(value, property_name);
     }
+    if module_name == "sqlite" && property_name == "DatabaseSync" {
+        attach_sqlite_database_sync_prototype(value);
+    }
+    if module_name == "sqlite" && property_name == "Session" {
+        attach_sqlite_session_prototype(value);
+    }
 
     // `PerformanceObserver.supportedEntryTypes` is a static array on the
     // constructor. `PerformanceObserver` is a function value (a bound-method
@@ -1667,6 +1747,59 @@ fn native_callable_export_arity(module: &str, prop: &str) -> Option<u32> {
     }
 }
 
+extern "C" fn sqlite_statement_sync_constructor_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+) -> f64 {
+    crate::fs::validate::throw_error_with_code("Illegal constructor", "ERR_ILLEGAL_CONSTRUCTOR")
+}
+
+extern "C" fn sqlite_session_constructor_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+) -> f64 {
+    crate::fs::validate::throw_error_with_code("Illegal constructor", "ERR_ILLEGAL_CONSTRUCTOR")
+}
+
+fn sqlite_statement_sync_constructor_value() -> f64 {
+    SQLITE_STATEMENT_SYNC_CONSTRUCTOR_VALUE.with(|slot| {
+        let cached = slot.get();
+        if cached != 0 {
+            return f64::from_bits(cached);
+        }
+
+        let func_ptr = sqlite_statement_sync_constructor_thunk as *const u8;
+        crate::closure::js_register_closure_arity(func_ptr, 0);
+        let closure = crate::closure::js_closure_alloc_singleton(func_ptr);
+        if closure.is_null() {
+            return f64::from_bits(crate::value::TAG_UNDEFINED);
+        }
+        set_bound_native_closure_name(closure, "StatementSync");
+        let value = crate::value::js_nanbox_pointer(closure as i64);
+        slot.set(value.to_bits());
+        value
+    })
+}
+
+fn sqlite_session_constructor_value() -> f64 {
+    SQLITE_SESSION_CONSTRUCTOR_VALUE.with(|slot| {
+        let cached = slot.get();
+        if cached != 0 {
+            return f64::from_bits(cached);
+        }
+
+        let func_ptr = sqlite_session_constructor_thunk as *const u8;
+        crate::closure::js_register_closure_arity(func_ptr, 0);
+        let closure = crate::closure::js_closure_alloc_singleton(func_ptr);
+        if closure.is_null() {
+            return f64::from_bits(crate::value::TAG_UNDEFINED);
+        }
+        set_bound_native_closure_name(closure, "Session");
+        let value = crate::value::js_nanbox_pointer(closure as i64);
+        attach_sqlite_session_prototype(value);
+        slot.set(value.to_bits());
+        value
+    })
+}
+
 fn native_callable_export_display_name<'a>(module: &str, prop: &'a str) -> &'a str {
     if module == "fs" {
         match prop {
@@ -1757,6 +1890,184 @@ const BUFFER_PROTOTYPE_METHODS: &[&str] = &[
     "indexOf",
     "lastIndexOf",
 ];
+
+const SQLITE_DATABASE_SYNC_PROTOTYPE_METHODS: &[&str] = &[
+    "open",
+    "close",
+    "exec",
+    "prepare",
+    "function",
+    "aggregate",
+    "enableDefensive",
+    "setAuthorizer",
+    "createTagStore",
+    "createSession",
+    "applyChangeset",
+    "enableLoadExtension",
+    "loadExtension",
+    "location",
+];
+
+const SQLITE_SESSION_PROTOTYPE_METHODS: &[&str] = &["changeset", "patchset", "close"];
+
+extern "C" fn sqlite_database_sync_prototype_method_thunk(
+    closure: *const crate::closure::ClosureHeader,
+    arg0: f64,
+    arg1: f64,
+    arg2: f64,
+) -> f64 {
+    unsafe {
+        let method_name_ptr = crate::closure::js_closure_get_capture_ptr(closure, 0) as *const i8;
+        let method_name_len = crate::closure::js_closure_get_capture_ptr(closure, 1) as usize;
+        let receiver = crate::object::js_implicit_this_get();
+        let args = [arg0, arg1, arg2];
+        crate::object::js_native_call_method(
+            receiver,
+            method_name_ptr,
+            method_name_len,
+            args.as_ptr(),
+            args.len(),
+        )
+    }
+}
+
+fn attach_sqlite_database_sync_prototype(constructor_value: f64) {
+    let constructor_js = JSValue::from_bits(constructor_value.to_bits());
+    if !constructor_js.is_pointer() {
+        return;
+    }
+    let closure = constructor_js.as_pointer::<crate::closure::ClosureHeader>() as usize;
+    if closure == 0 {
+        return;
+    }
+
+    let proto = js_object_alloc(0, 0);
+    if proto.is_null() {
+        return;
+    }
+
+    let constructor = "constructor";
+    let constructor_key =
+        crate::string::js_string_from_bytes(constructor.as_ptr(), constructor.len() as u32);
+    js_object_set_field_by_name(proto, constructor_key, constructor_value);
+    super::set_builtin_property_attrs(
+        proto as usize,
+        constructor.to_string(),
+        super::PropertyAttrs::new(true, false, true),
+    );
+
+    let func_ptr = sqlite_database_sync_prototype_method_thunk as *const u8;
+    crate::closure::js_register_closure_arity(func_ptr, 3);
+    for method in SQLITE_DATABASE_SYNC_PROTOTYPE_METHODS {
+        let leaked: &'static [u8] = method.as_bytes().to_vec().leak();
+        let method_closure = crate::closure::js_closure_alloc(func_ptr, 2);
+        if method_closure.is_null() {
+            continue;
+        }
+        crate::closure::js_closure_set_capture_ptr(method_closure, 0, leaked.as_ptr() as i64);
+        crate::closure::js_closure_set_capture_ptr(method_closure, 1, leaked.len() as i64);
+        set_bound_native_closure_name(method_closure, method);
+        set_builtin_closure_length(method_closure as usize, 0);
+        let key = crate::string::js_string_from_bytes(method.as_ptr(), method.len() as u32);
+        let method_value = crate::value::js_nanbox_pointer(method_closure as i64);
+        js_object_set_field_by_name(proto, key, method_value);
+        super::set_builtin_property_attrs(
+            proto as usize,
+            (*method).to_string(),
+            super::PropertyAttrs::new(true, false, true),
+        );
+    }
+
+    let proto_value = crate::value::js_nanbox_pointer(proto as i64);
+    crate::closure::closure_set_dynamic_prop(closure, "prototype", proto_value);
+    super::set_builtin_property_attrs(
+        closure,
+        "prototype".to_string(),
+        super::PropertyAttrs::new(true, false, false),
+    );
+}
+
+fn attach_sqlite_session_prototype(constructor_value: f64) {
+    let constructor_js = JSValue::from_bits(constructor_value.to_bits());
+    if !constructor_js.is_pointer() {
+        return;
+    }
+    let closure = constructor_js.as_pointer::<crate::closure::ClosureHeader>() as usize;
+    if closure == 0 {
+        return;
+    }
+
+    let proto = js_object_alloc(0, 0);
+    if proto.is_null() {
+        return;
+    }
+
+    let func_ptr = sqlite_database_sync_prototype_method_thunk as *const u8;
+    crate::closure::js_register_closure_arity(func_ptr, 3);
+    for method in SQLITE_SESSION_PROTOTYPE_METHODS {
+        let leaked: &'static [u8] = method.as_bytes().to_vec().leak();
+        let method_closure = crate::closure::js_closure_alloc(func_ptr, 2);
+        if method_closure.is_null() {
+            continue;
+        }
+        crate::closure::js_closure_set_capture_ptr(method_closure, 0, leaked.as_ptr() as i64);
+        crate::closure::js_closure_set_capture_ptr(method_closure, 1, leaked.len() as i64);
+        set_bound_native_closure_name(method_closure, method);
+        set_builtin_closure_length(method_closure as usize, 0);
+        let key = crate::string::js_string_from_bytes(method.as_ptr(), method.len() as u32);
+        let method_value = crate::value::js_nanbox_pointer(method_closure as i64);
+        js_object_set_field_by_name(proto, key, method_value);
+        super::set_builtin_property_attrs(
+            proto as usize,
+            (*method).to_string(),
+            super::PropertyAttrs::new(true, true, true),
+        );
+    }
+
+    let dispose_method = "@@__perry_wk_dispose";
+    let dispose_leaked: &'static [u8] = dispose_method.as_bytes().to_vec().leak();
+    let dispose_closure = crate::closure::js_closure_alloc(func_ptr, 2);
+    if !dispose_closure.is_null() {
+        crate::closure::js_closure_set_capture_ptr(
+            dispose_closure,
+            0,
+            dispose_leaked.as_ptr() as i64,
+        );
+        crate::closure::js_closure_set_capture_ptr(dispose_closure, 1, dispose_leaked.len() as i64);
+        set_bound_native_closure_name(dispose_closure, "[Symbol.dispose]");
+        set_builtin_closure_length(dispose_closure as usize, 0);
+        let dispose_value = crate::value::js_nanbox_pointer(dispose_closure as i64);
+        let dispose_sym = crate::symbol::well_known_symbol("dispose");
+        if !dispose_sym.is_null() {
+            let dispose_sym_value = crate::value::js_nanbox_pointer(dispose_sym as i64);
+            unsafe {
+                crate::symbol::js_object_set_symbol_property(
+                    crate::value::js_nanbox_pointer(proto as i64),
+                    dispose_sym_value,
+                    dispose_value,
+                );
+            }
+        }
+    }
+
+    let constructor = "constructor";
+    let constructor_key =
+        crate::string::js_string_from_bytes(constructor.as_ptr(), constructor.len() as u32);
+    js_object_set_field_by_name(proto, constructor_key, constructor_value);
+    super::set_builtin_property_attrs(
+        proto as usize,
+        constructor.to_string(),
+        super::PropertyAttrs::new(true, false, true),
+    );
+
+    let proto_value = crate::value::js_nanbox_pointer(proto as i64);
+    crate::closure::closure_set_dynamic_prop(closure, "prototype", proto_value);
+    super::set_builtin_property_attrs(
+        closure,
+        "prototype".to_string(),
+        super::PropertyAttrs::new(true, false, false),
+    );
+}
 
 pub(crate) fn buffer_constructor_value() -> f64 {
     BUFFER_CONSTRUCTOR_VALUE.with(|slot| {
@@ -2129,6 +2440,9 @@ pub(crate) fn is_native_module_callable_export(module: &str, prop: &str) -> bool
             | ("module", "enableCompileCache")
             | ("module", "isBuiltin")
             | ("module", "SourceMap")
+            | ("sqlite", "DatabaseSync")
+            | ("sqlite", "Session")
+            | ("sqlite", "StatementSync")
             | ("domain", "Domain")
             | ("domain", "createDomain")
             | ("domain", "create")
@@ -2227,6 +2541,7 @@ pub(crate) fn is_native_module_callable_export(module: &str, prop: &str) -> bool
             | ("child_process", "fork")
             | ("events", "EventEmitter")
             | ("events", "on")
+            | ("sqlite", "backup")
             | ("events", "once")
             | ("events", "addAbortListener")
             | ("events", "getEventListeners")
@@ -2910,9 +3225,21 @@ pub extern "C" fn js_class_method_bind(
                     let id = (bits & 0x0000_FFFF_FFFF_FFFF) as i64;
                     if id > 0 && id < 0x100000 {
                         if let Some(dispatch) = handle_property_dispatch() {
-                            let value = unsafe { dispatch(id, method_name_ptr, method_name_len) };
-                            if value.to_bits() != crate::value::TAG_UNDEFINED {
-                                return value;
+                            let value = HANDLE_PROPERTY_BIND_REENTRY.with(|guard| {
+                                if guard.get() {
+                                    None
+                                } else {
+                                    guard.set(true);
+                                    let value =
+                                        unsafe { dispatch(id, method_name_ptr, method_name_len) };
+                                    guard.set(false);
+                                    Some(value)
+                                }
+                            });
+                            if let Some(value) = value {
+                                if value.to_bits() != crate::value::TAG_UNDEFINED {
+                                    return value;
+                                }
                             }
                         }
                     }
@@ -3919,6 +4246,57 @@ pub(crate) unsafe fn get_native_module_constant(
         })
     };
 
+    let sqlite_const = |prop: &str| -> Option<f64> {
+        Some(match prop {
+            "SQLITE_CHANGESET_DATA" => 1.0,
+            "SQLITE_CHANGESET_NOTFOUND" => 2.0,
+            "SQLITE_CHANGESET_CONFLICT" => 3.0,
+            "SQLITE_CHANGESET_CONSTRAINT" => 4.0,
+            "SQLITE_CHANGESET_FOREIGN_KEY" => 5.0,
+            "SQLITE_CHANGESET_OMIT" => 0.0,
+            "SQLITE_CHANGESET_REPLACE" => 1.0,
+            "SQLITE_CHANGESET_ABORT" => 2.0,
+            "SQLITE_OK" => 0.0,
+            "SQLITE_DENY" => 1.0,
+            "SQLITE_IGNORE" => 2.0,
+            "SQLITE_CREATE_INDEX" => 1.0,
+            "SQLITE_CREATE_TABLE" => 2.0,
+            "SQLITE_CREATE_TEMP_INDEX" => 3.0,
+            "SQLITE_CREATE_TEMP_TABLE" => 4.0,
+            "SQLITE_CREATE_TEMP_TRIGGER" => 5.0,
+            "SQLITE_CREATE_TEMP_VIEW" => 6.0,
+            "SQLITE_CREATE_TRIGGER" => 7.0,
+            "SQLITE_CREATE_VIEW" => 8.0,
+            "SQLITE_DELETE" => 9.0,
+            "SQLITE_DROP_INDEX" => 10.0,
+            "SQLITE_DROP_TABLE" => 11.0,
+            "SQLITE_DROP_TEMP_INDEX" => 12.0,
+            "SQLITE_DROP_TEMP_TABLE" => 13.0,
+            "SQLITE_DROP_TEMP_TRIGGER" => 14.0,
+            "SQLITE_DROP_TEMP_VIEW" => 15.0,
+            "SQLITE_DROP_TRIGGER" => 16.0,
+            "SQLITE_DROP_VIEW" => 17.0,
+            "SQLITE_INSERT" => 18.0,
+            "SQLITE_PRAGMA" => 19.0,
+            "SQLITE_READ" => 20.0,
+            "SQLITE_SELECT" => 21.0,
+            "SQLITE_TRANSACTION" => 22.0,
+            "SQLITE_UPDATE" => 23.0,
+            "SQLITE_ATTACH" => 24.0,
+            "SQLITE_DETACH" => 25.0,
+            "SQLITE_ALTER_TABLE" => 26.0,
+            "SQLITE_REINDEX" => 27.0,
+            "SQLITE_ANALYZE" => 28.0,
+            "SQLITE_CREATE_VTABLE" => 29.0,
+            "SQLITE_DROP_VTABLE" => 30.0,
+            "SQLITE_FUNCTION" => 31.0,
+            "SQLITE_SAVEPOINT" => 32.0,
+            "SQLITE_COPY" => 0.0,
+            "SQLITE_RECURSIVE" => 33.0,
+            _ => return None,
+        })
+    };
+
     match module_name {
         // node:punycode (deprecated, #2513) — the bundled punycode.js version
         // and the `ucs2` code-point helper sub-namespace (#2607).
@@ -3987,6 +4365,13 @@ pub(crate) unsafe fn get_native_module_constant(
                     None
                 }
             }),
+        "sqlite" => match property {
+            "constants" => Some(create_sub_namespace("sqlite.constants")),
+            "Session" => Some(sqlite_session_constructor_value()),
+            "StatementSync" => Some(sqlite_statement_sync_constructor_value()),
+            _ => None,
+        },
+        "sqlite.constants" => sqlite_const(property),
         "path" => match property {
             "default" if !is_cjs_default_object => cjs_default_export_value("path"),
             "sep" => {
