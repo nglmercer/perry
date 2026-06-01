@@ -1685,8 +1685,6 @@ Total: 2488 entries across 106 modules.
 
 - `builtinModules`
 - `constants`
-- `wrap`
-- `wrapper`
 
 ## `moment`
 
