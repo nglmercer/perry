@@ -2254,6 +2254,15 @@ pub enum Expr {
         paths: Vec<String>,
         arg: Box<Expr>,
     },
+    /// Compile-time-resolved `new Worker(filename, options?)` from
+    /// `node:worker_threads`. The filename expression follows the same
+    /// deterministic subset as dynamic `import()`: lowering leaves `paths`
+    /// empty, and the module collector resolves it before codegen.
+    WorkerNew {
+        paths: Vec<String>,
+        filename: Box<Expr>,
+        options: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
