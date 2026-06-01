@@ -250,6 +250,7 @@ pub(crate) const GLOBAL_THIS_BUILTIN_NAMESPACES: &[&str] =
 /// real direct-call runtime helpers so rebinding works:
 /// `const clone = globalThis.structuredClone; clone(value)`.
 pub(crate) const GLOBAL_THIS_BUILTIN_FUNCTIONS: &[&str] = &[
+    "fetch",
     "structuredClone",
     "atob",
     "btoa",
@@ -478,7 +479,7 @@ extern "C" fn global_this_error_prepare_stack_trace_thunk(
     crate::value::js_nanbox_string(empty as i64)
 }
 
-fn global_this_rest_array_values(rest: f64) -> Vec<f64> {
+pub(super) fn global_this_rest_array_values(rest: f64) -> Vec<f64> {
     let value = crate::value::JSValue::from_bits(rest.to_bits());
     if !value.is_pointer() {
         return Vec::new();
@@ -1130,6 +1131,11 @@ fn populate_global_this_builtins(singleton: *mut ObjectHeader) {
     // dispatch so direct property reads and rebound calls match bare calls.
     for name in GLOBAL_THIS_BUILTIN_FUNCTIONS.iter().copied() {
         let (func_ptr, arity, has_rest) = match name {
+            "fetch" => (
+                super::global_fetch::global_this_fetch_thunk as *const u8,
+                1,
+                true,
+            ),
             "structuredClone" => (global_this_structured_clone_thunk as *const u8, 2, false),
             "atob" => (global_this_atob_thunk as *const u8, 1, false),
             "btoa" => (global_this_btoa_thunk as *const u8, 1, false),
