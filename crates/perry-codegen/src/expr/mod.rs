@@ -1409,7 +1409,6 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         | Expr::Bool(..)
         | Expr::Undefined
         | Expr::Null
-        | Expr::NewTarget
         | Expr::Void(..)
         | Expr::TypeOf(..)
         | Expr::String(..)
