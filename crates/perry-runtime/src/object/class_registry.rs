@@ -112,6 +112,10 @@ pub struct VTableMethodEntry {
     pub func_ptr: usize,
     pub param_count: u32,
     pub has_synthetic_arguments: bool,
+    /// Trailing user rest param (`method(a, ...rest)`). Distinct from
+    /// `has_synthetic_arguments`: the rest slot holds only the args from the
+    /// rest position onward, so apply/dynamic dispatch bundles them correctly.
+    pub has_rest: bool,
 }
 
 /// Per-class vtable with methods, getters, and setters
@@ -2636,6 +2640,7 @@ pub unsafe extern "C" fn js_register_class_method(
     func_ptr: i64,
     param_count: i64,
     has_synthetic_arguments: i64,
+    has_rest: i64,
 ) {
     let name = if name_ptr.is_null() || name_len <= 0 {
         return;
@@ -2661,6 +2666,7 @@ pub unsafe extern "C" fn js_register_class_method(
             func_ptr: func_ptr as usize,
             param_count: param_count as u32,
             has_synthetic_arguments: has_synthetic_arguments != 0,
+            has_rest: has_rest != 0,
         },
     );
     VTABLE_GEN.fetch_add(1, Ordering::Release);
@@ -2774,6 +2780,7 @@ struct VTableICEntry {
     func_ptr: usize,
     param_count: u32,
     has_synthetic_arguments: u32,
+    has_rest: u32,
 }
 
 const EMPTY_VTABLE_IC_ENTRY: VTableICEntry = VTableICEntry {
@@ -2784,6 +2791,7 @@ const EMPTY_VTABLE_IC_ENTRY: VTableICEntry = VTableICEntry {
     func_ptr: 0,
     param_count: 0,
     has_synthetic_arguments: 0,
+    has_rest: 0,
 };
 
 thread_local! {
@@ -2808,7 +2816,7 @@ fn vtable_ic_slot(class_id: u32, method_name_ptr: usize) -> usize {
 pub(crate) unsafe fn vtable_ic_lookup(
     class_id: u32,
     method_name_ptr: usize,
-) -> Option<(usize, u32, bool)> {
+) -> Option<(usize, u32, bool, bool)> {
     if method_name_ptr == 0 {
         return None;
     }
@@ -2825,6 +2833,7 @@ pub(crate) unsafe fn vtable_ic_lookup(
                 entry.func_ptr,
                 entry.param_count,
                 entry.has_synthetic_arguments != 0,
+                entry.has_rest != 0,
             ))
         } else {
             None
@@ -2839,6 +2848,7 @@ pub(crate) unsafe fn vtable_ic_insert(
     func_ptr: usize,
     param_count: u32,
     has_synthetic_arguments: bool,
+    has_rest: bool,
 ) {
     if method_name_ptr == 0 {
         return;
@@ -2855,6 +2865,7 @@ pub(crate) unsafe fn vtable_ic_insert(
             func_ptr,
             param_count,
             has_synthetic_arguments: if has_synthetic_arguments { 1 } else { 0 },
+            has_rest: if has_rest { 1 } else { 0 },
         };
     });
 }
@@ -2868,6 +2879,7 @@ pub(crate) unsafe fn call_vtable_method(
     args_len: usize,
     param_count: u32,
     has_synthetic_arguments: bool,
+    has_rest: bool,
 ) -> f64 {
     #[inline(always)]
     unsafe fn arg_or_nan(args_ptr: *const f64, args_len: usize, idx: usize) -> f64 {
@@ -2906,12 +2918,31 @@ pub(crate) unsafe fn call_vtable_method(
         }
     };
 
+    // A trailing param that is either the synthesized `arguments` object or a
+    // user rest param (`method(a, ...rest)`) needs the call-site args bundled
+    // into a JS array for that slot. Without this, an apply/dynamic dispatch
+    // (`recv.method(...spread)` via `js_native_call_method_apply`) passes the
+    // raw individual args and the callee reads `rest = args[0]` as a scalar —
+    // marked's `new Marked()` -> `this.use(...e)` hit exactly this, throwing
+    // `(number).forEach is not a function`. The synthesized-`arguments` slot
+    // holds ALL passed args; a user rest slot holds only args from the rest
+    // position onward (so `method(a, ...rest)` keeps `a` positional).
     let mut adjusted_args_storage: Option<Vec<f64>> = None;
-    let (call_args_ptr, call_args_len) = if has_synthetic_arguments {
+    let (call_args_ptr, call_args_len) = if has_synthetic_arguments || has_rest {
         let visible_params = (param_count as usize).saturating_sub(1);
-        let raw_args = crate::array::js_array_alloc_with_length(args_len as u32);
-        for i in 0..args_len {
-            crate::array::js_array_set_f64(raw_args, i as u32, arg_or_nan(args_ptr, args_len, i));
+        let pack_start = if has_synthetic_arguments {
+            0
+        } else {
+            visible_params.min(args_len)
+        };
+        let packed_len = args_len.saturating_sub(pack_start);
+        let raw_args = crate::array::js_array_alloc_with_length(packed_len as u32);
+        for (slot, i) in (pack_start..args_len).enumerate() {
+            crate::array::js_array_set_f64(
+                raw_args,
+                slot as u32,
+                arg_or_nan(args_ptr, args_len, i),
+            );
         }
         let raw_args_value = crate::value::js_nanbox_pointer(raw_args as i64);
         let mut args = Vec::with_capacity(param_count as usize);
@@ -3335,6 +3366,7 @@ pub unsafe extern "C" fn js_register_class_computed_method(
                 // metadata through this registration path (only `has_rest`),
                 // so they never receive a synthesized arguments object.
                 has_synthetic_arguments: false,
+                has_rest: has_rest != 0,
             },
         );
     }
@@ -3888,11 +3920,11 @@ pub(crate) fn get_parent_class_id(class_id: u32) -> Option<u32> {
 }
 
 /// Look up a method by name in the class vtable, walking the parent chain.
-/// Returns `Some((func_ptr, param_count, has_synthetic_arguments))` if found,
-/// `None` otherwise.
+/// Returns `Some((func_ptr, param_count, has_synthetic_arguments, has_rest))`
+/// if found, `None` otherwise.
 /// Used by `js_assimilate_thenable` (refs #586) and other runtime callers
 /// that need to probe a class for a method without invoking it.
-pub fn lookup_class_method_in_chain(class_id: u32, name: &str) -> Option<(usize, u32, bool)> {
+pub fn lookup_class_method_in_chain(class_id: u32, name: &str) -> Option<(usize, u32, bool, bool)> {
     let registry = CLASS_VTABLE_REGISTRY.read().unwrap();
     let reg = registry.as_ref()?;
     let mut cur = class_id;
@@ -3903,6 +3935,7 @@ pub fn lookup_class_method_in_chain(class_id: u32, name: &str) -> Option<(usize,
                     entry.func_ptr,
                     entry.param_count,
                     entry.has_synthetic_arguments,
+                    entry.has_rest,
                 ));
             }
         }
