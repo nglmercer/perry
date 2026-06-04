@@ -319,8 +319,20 @@ echo ""
 TARGET_DIR="${CARGO_TARGET_DIR:-$SCRIPT_DIR/target}"
 PERRY_BIN="$TARGET_DIR/release/perry"
 echo "Building compiler (release)..."
-if ! cargo build --release --quiet -p perry -p perry-runtime -p perry-stdlib 2>/dev/null; then
-    echo -e "${RED}Failed to build compiler${NC}"
+BUILD_PACKAGES=(-p perry -p perry-runtime -p perry-stdlib)
+BUILD_FEATURES=()
+if [[ -n "${PERRY_NO_AUTO_OPTIMIZE:-}" && "$TEST_SUITE" == "node-suite" ]]; then
+    case "$MODULE_FILTER" in
+        ""|http|http/*|https|https/*|http2|http2/*)
+            # No-auto optimized links still consume prebuilt well-known ext archives
+            # and need the matching stdlib pump hooks compiled into libperry_stdlib.a.
+            BUILD_PACKAGES+=(-p perry-ext-http)
+            BUILD_FEATURES+=(--features perry-stdlib/external-http-server-pump,perry-stdlib/external-http-client-pump)
+            ;;
+    esac
+fi
+if ! cargo build --release --quiet "${BUILD_PACKAGES[@]}" "${BUILD_FEATURES[@]}" 2>/dev/null; then
+    echo -e "${RED}Failed to build compiler/runtime archives${NC}"
     exit 1
 fi
 if [[ ! -x "$PERRY_BIN" ]]; then
@@ -328,7 +340,7 @@ if [[ ! -x "$PERRY_BIN" ]]; then
     exit 1
 fi
 
-echo -e "${GREEN}Compiler and runtime built successfully${NC}"
+echo -e "${GREEN}Compiler and runtime archives built successfully${NC}"
 echo ""
 echo "Running parity tests (backend: $BACKEND_LABEL, suite: $TEST_SUITE${MODULE_FILTER:+, module: $MODULE_FILTER})..."
 echo ""
