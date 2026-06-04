@@ -129,6 +129,7 @@ pub extern "C" fn js_child_process_fork(module_ptr: i64, args_ptr: i64, opts_ptr
     command.args(&arg_strs);
     cp_apply_argv0(&mut command, opts_val);
     cp_apply_options(&mut command, opts_val);
+    cp_apply_detached(&mut command, opts_val);
     cp_apply_live_stdio(&mut command, &stdio_kinds);
 
     let launched = fork_launch(
