@@ -352,6 +352,7 @@ PERRY_BIN="$TARGET_DIR/release/perry"
 echo "Building compiler (release)..."
 BUILD_PACKAGES=(-p perry -p perry-runtime -p perry-stdlib)
 BUILD_FEATURES=()
+needs_wasm_host=0
 if [[ -n "${PERRY_NO_AUTO_OPTIMIZE:-}" && "$TEST_SUITE" == "node-suite" ]]; then
     case "$MODULE_FILTER" in
         ""|http|http/*|https|https/*|http2|http2/*)
@@ -371,6 +372,14 @@ if [[ "$TEST_SUITE" == "node-suite" ]]; then
             if [[ -z "$TEST_FILTER" || "$TEST_FILTER" == *webassembly* || "$TEST_FILTER" == *wasm* ]]; then
                 needs_wasm_host=1
             fi
+            ;;
+    esac
+    case "$MODULE_FILTER:$TEST_FILTER" in
+        :|:webassembly*|:*webassembly*|globals:|globals:webassembly*|globals:*webassembly*|globals/*:|globals/*:webassembly*|globals/*:*webassembly*)
+            # WebAssembly metadata fixtures lower to wasm-host runtime calls. In
+            # no-auto mode, build the feature-enabled runtime and host archive
+            # up front so compile/link matches the auto-detected path.
+            needs_wasm_host=1
             ;;
     esac
 fi
@@ -618,7 +627,7 @@ for test_file in "${TEST_FILES[@]}"; do
     if [[ -n "$BACKEND_FLAG" ]]; then
         compile_flags+=("$BACKEND_FLAG")
     fi
-    if [[ "$test_id" == node-suite/*/*webassembly* || "$test_id" == node-suite/*/*wasm* ]]; then
+    if [[ "$needs_wasm_host" -eq 1 && ( "$test_id" == node-suite/*/*webassembly* || "$test_id" == node-suite/*/*wasm* ) ]]; then
         compile_flags+=(--enable-wasm-runtime)
     fi
     # #499: some parity tests transitively pull in `.js` fixtures
