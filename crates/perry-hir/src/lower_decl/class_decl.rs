@@ -435,6 +435,14 @@ pub fn lower_class_decl(
                 let (prop_name, can_source_order_register) = match &method.key {
                     ast::PropName::Ident(ident) => (ident.sym.to_string(), true),
                     ast::PropName::Str(s) => (s.value.as_str().unwrap_or("").to_string(), true),
+                    // Numeric-literal member names (`get 0()`, `set 1.5(v)`,
+                    // `42() {}`) are valid class element keys — their property
+                    // key is the canonical ToString of the numeric value, the
+                    // same conversion object literals use (`{ 0: ... }`).
+                    // Without this arm they fell through `_ => continue` and the
+                    // method/accessor was silently dropped, so `C.prototype[0]`
+                    // read `undefined` (Test262 accessor-name-inst/literal-numeric-*).
+                    ast::PropName::Num(n) => (n.value.to_string(), true),
                     ast::PropName::Computed(computed) => {
                         if is_symbol_iterator_key(&computed.expr) {
                             ("@@iterator".to_string(), false)
@@ -1212,6 +1220,9 @@ pub fn lower_class_from_ast(
                 let (prop_name, can_source_order_register) = match &method.key {
                     ast::PropName::Ident(ident) => (ident.sym.to_string(), true),
                     ast::PropName::Str(s) => (s.value.as_str().unwrap_or("").to_string(), true),
+                    // Numeric-literal member names — see the parallel arm in
+                    // `lower_class_decl`. Canonical ToString of the value.
+                    ast::PropName::Num(n) => (n.value.to_string(), true),
                     ast::PropName::Computed(computed)
                         if is_inspect_custom_key(ctx, &computed.expr)
                             && !method.is_static

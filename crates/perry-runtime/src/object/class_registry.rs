@@ -3919,6 +3919,47 @@ pub(crate) unsafe fn class_static_accessor_setter_apply(
     false
 }
 
+/// Apply an instance `set name(v)` accessor from the class vtable chain,
+/// invoking it with the `(this, value)` calling convention class setters use.
+/// Returns `true` if a setter was found and called. Used when a write targets
+/// a class prototype ref (`C.prototype[key] = v`) whose `key` is an accessor
+/// defined on the prototype itself (Test262 accessor-name-inst setters).
+pub(crate) unsafe fn class_instance_setter_apply(
+    class_id: u32,
+    name: &str,
+    receiver: f64,
+    value: f64,
+) -> bool {
+    let guard = match CLASS_VTABLE_REGISTRY.read() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    let Some(reg) = guard.as_ref() else {
+        return false;
+    };
+    let mut cid = class_id;
+    let mut depth = 0usize;
+    while cid != 0 && depth < 32 {
+        if let Some(vtable) = reg.get(&cid) {
+            if let Some(&setter_ptr) = vtable.setters.get(name) {
+                if setter_ptr != 0 {
+                    let f: extern "C" fn(f64, f64) -> f64 = std::mem::transmute(setter_ptr);
+                    let _ = f(receiver, value);
+                }
+                return true;
+            }
+        }
+        match get_parent_class_id(cid) {
+            Some(p) if p != 0 && p != cid => {
+                cid = p;
+                depth += 1;
+            }
+            _ => break,
+        }
+    }
+    false
+}
+
 /// Call a static method func_ptr with `args` (no `this` prepend — static
 /// methods read `this` from the implicit-this slot, set by the caller).
 /// Mirrors the arity dispatch of `call_vtable_method` minus the receiver arg.
