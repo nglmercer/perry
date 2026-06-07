@@ -854,6 +854,7 @@ pub fn lower_class_decl(
                     let key = match &m.key {
                         ast::PropName::Ident(i) => i.sym.to_string(),
                         ast::PropName::Str(s) => s.value.as_str().unwrap_or("").to_string(),
+                        ast::PropName::Num(n) => n.value.to_string(),
                         _ => continue,
                     };
                     accessor_names.insert(key);

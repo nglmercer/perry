@@ -585,6 +585,19 @@ fn lower_assignment_target(
                                     && ctx.lookup_func(&cls_name).is_none()
                                 {
                                     None
+                                } else if ctx.lookup_class(&cls_name).is_some()
+                                    && ctx
+                                        .lookup_class_accessor_names(&cls_name)
+                                        .is_some_and(|names| names.iter().any(|n| n == &method_name))
+                                {
+                                    // `C.prototype.<accessor> = v` where `<accessor>`
+                                    // is a `set`/`get` declared on the class is an
+                                    // ordinary write that must INVOKE the setter — not
+                                    // a prototype-method monkey-patch. Fall through to
+                                    // the generic PropertySet path (which reaches the
+                                    // runtime prototype-ref setter dispatch). Test262
+                                    // accessor-name-inst setters.
+                                    None
                                 } else if ctx.lookup_class(&cls_name).is_some() {
                                     Some(ProtoOwner::Class(cls_name))
                                 } else if let Some(local_id) = ctx.lookup_local(&cls_name) {
