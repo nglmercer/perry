@@ -3688,6 +3688,20 @@ pub unsafe extern "C" fn js_register_class_computed_accessor(
 
 /// Look up a static method by name in `CLASS_STATIC_METHODS`, walking the
 /// class_id parent chain (so a subclass inherits a parent's static method).
+/// Own-only static method lookup (no parent-chain walk) — for
+/// `getOwnPropertyDescriptor(C, name)`, where inherited statics must NOT be
+/// reported as own properties of `C`.
+pub(crate) fn class_has_own_static_method(class_id: u32, name: &str) -> bool {
+    CLASS_STATIC_METHODS
+        .read()
+        .ok()
+        .and_then(|g| {
+            g.as_ref()
+                .and_then(|m| m.get(&class_id).map(|inner| inner.contains_key(name)))
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn lookup_static_method_in_chain(
     class_id: u32,
     name: &str,
@@ -3917,6 +3931,95 @@ pub(crate) unsafe fn class_static_accessor_setter_apply(
         }
     }
     false
+}
+
+/// Apply an instance `set name(v)` accessor from the class vtable chain,
+/// invoking it with the `(this, value)` calling convention class setters use.
+/// Returns `true` if a setter was found and called. Used when a write targets
+/// a class prototype ref (`C.prototype[key] = v`) whose `key` is an accessor
+/// defined on the prototype itself (Test262 accessor-name-inst setters).
+pub(crate) unsafe fn class_instance_setter_apply(
+    class_id: u32,
+    name: &str,
+    receiver: f64,
+    value: f64,
+) -> bool {
+    let guard = match CLASS_VTABLE_REGISTRY.read() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    let Some(reg) = guard.as_ref() else {
+        return false;
+    };
+    let mut cid = class_id;
+    let mut depth = 0usize;
+    while cid != 0 && depth < 32 {
+        if let Some(vtable) = reg.get(&cid) {
+            if let Some(&setter_ptr) = vtable.setters.get(name) {
+                if setter_ptr != 0 {
+                    let f: extern "C" fn(f64, f64) -> f64 = std::mem::transmute(setter_ptr);
+                    let _ = f(receiver, value);
+                }
+                return true;
+            }
+        }
+        match get_parent_class_id(cid) {
+            Some(p) if p != 0 && p != cid => {
+                cid = p;
+                depth += 1;
+            }
+            _ => break,
+        }
+    }
+    false
+}
+
+/// Spec `Function.prototype.length` for a class method named `name` — the
+/// count of formal parameters, excluding a trailing rest param and the
+/// synthesized `arguments` slot (neither contributes to `.length`). Walks the
+/// instance vtable chain, then the static-method table. Used to stamp the
+/// bound-method closure's length so `C.prototype.m.length` is correct
+/// (Test262 .../class/{gen,async}-method/...-trailing-comma + length tests).
+/// Note: does not subtract for default-valued params (the registry doesn't
+/// record the first-default position); methods with defaults already reported
+/// the wrong length, so this is a strict improvement, never a regression.
+pub(crate) fn class_method_bind_length(class_id: u32, name: &str) -> Option<u32> {
+    if let Ok(guard) = CLASS_VTABLE_REGISTRY.read() {
+        if let Some(reg) = guard.as_ref() {
+            let mut cid = class_id;
+            let mut depth = 0usize;
+            while cid != 0 && depth < 32 {
+                if let Some(vt) = reg.get(&cid) {
+                    if let Some(e) = vt.methods.get(name) {
+                        let mut len = e.param_count;
+                        if e.has_rest {
+                            len = len.saturating_sub(1);
+                        }
+                        if e.has_synthetic_arguments {
+                            len = len.saturating_sub(1);
+                        }
+                        return Some(len);
+                    }
+                }
+                match get_parent_class_id(cid) {
+                    Some(p) if p != 0 && p != cid => {
+                        cid = p;
+                        depth += 1;
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+    // Static methods: CLASS_STATIC_METHODS stores (func_ptr, param_count, has_rest).
+    if let Some((_, param_count, has_rest)) = lookup_static_method_in_chain(class_id, name) {
+        let mut len = param_count;
+        if has_rest {
+            len = len.saturating_sub(1);
+        }
+        return Some(len);
+    }
+    None
 }
 
 /// Call a static method func_ptr with `args` (no `this` prepend — static

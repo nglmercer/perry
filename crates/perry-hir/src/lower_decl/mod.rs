@@ -39,7 +39,9 @@ pub(crate) use class_members::{
     lower_getter_method, lower_getter_method_with_name, lower_setter_method,
     lower_setter_method_with_name,
 };
-pub(crate) use class_validation::validate_legacy_decorator_surface;
+pub(crate) use class_validation::{
+    validate_class_element_early_errors, validate_legacy_decorator_surface,
+};
 pub(crate) use enum_decl::{compute_enum_members, lower_enum_decl};
 pub(crate) use fn_decl::lower_fn_decl;
 pub(crate) use helpers::{

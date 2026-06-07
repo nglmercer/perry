@@ -411,6 +411,9 @@ pub fn lower_class_method(
     let name = match &method.key {
         ast::PropName::Ident(ident) => ident.sym.to_string(),
         ast::PropName::Str(s) => s.value.as_str().unwrap_or("").to_string(),
+        // Numeric-literal method name (`42() {}`): the registration key (and
+        // func name) is the canonical ToString of the value.
+        ast::PropName::Num(n) => n.value.to_string(),
         ast::PropName::Computed(computed) if is_symbol_iterator_key(&computed.expr) => {
             "@@iterator".to_string()
         }
@@ -657,6 +660,10 @@ pub fn lower_getter_method(
     let name = match &method.key {
         ast::PropName::Ident(ident) => format!("get_{}", ident.sym),
         ast::PropName::Str(s) => format!("get_{}", s.value.as_str().unwrap_or("")),
+        // Numeric-literal getter (`get 0()`): synthetic internal symbol; the
+        // accessor is registered under the canonical numeric prop key by the
+        // caller (lower_class_decl), not this name.
+        ast::PropName::Num(n) => format!("get_{}", n.value),
         ast::PropName::Computed(computed) => {
             // Well-known symbol getters (e.g., `get [Symbol.toStringTag]()`)
             // get a synthetic `get_@@<short>` name. The caller is
@@ -742,6 +749,9 @@ pub fn lower_setter_method(
     let name = match &method.key {
         ast::PropName::Ident(ident) => format!("set_{}", ident.sym),
         ast::PropName::Str(s) => format!("set_{}", s.value.as_str().unwrap_or("")),
+        // Numeric-literal setter (`set 0(v)`): synthetic internal symbol;
+        // registered under the canonical numeric prop key by the caller.
+        ast::PropName::Num(n) => format!("set_{}", n.value),
         _ => return Err(anyhow!("Unsupported setter key")),
     };
     lower_setter_method_with_name(ctx, method, name)

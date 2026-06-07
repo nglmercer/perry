@@ -222,6 +222,24 @@ pub extern "C" fn js_object_set_field_by_name(
                             .get(&class_id)
                             .is_some_and(|props| props.contains_key(&name))
                     });
+                    // `C.prototype[key] = v` where `key` is an instance
+                    // `set key(v)` accessor defined on the prototype: invoke the
+                    // setter with `this` = the prototype ref. The prototype ref
+                    // and the constructor ref are both INT32-tagged class refs;
+                    // distinguish via `class_prototype_ref_id`. Instance setters
+                    // live in the vtable; static accessors (below) live in the
+                    // constructor ref's table (Test262 accessor-name-inst).
+                    if !has_own_data
+                        && super::class_prototype_ref_id(f64::from_bits(bits)).is_some()
+                        && super::class_registry::class_instance_setter_apply(
+                            class_id,
+                            &name,
+                            f64::from_bits(bits),
+                            value,
+                        )
+                    {
+                        return;
+                    }
                     if !has_own_data
                         && super::class_registry::class_static_accessor_setter_apply(
                             class_id,

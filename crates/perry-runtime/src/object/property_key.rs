@@ -41,6 +41,16 @@ pub unsafe extern "C" fn js_object_set_property_key(
     if key_str.is_null() {
         return value;
     }
+    // Class constructor/prototype refs are INT32-tagged values, not real
+    // `ObjectHeader`s — `extract_obj_ptr` returns null for them, so a
+    // `C.prototype[key] = v` / `C[key] = v` write silently no-op'd here. The
+    // get side already passes the raw NaN-boxed bits into the by-name dispatch
+    // (which has a dedicated 0x7FFE class-ref branch); mirror that on the set
+    // side so static-accessor and prototype instance-setter dispatch run.
+    if super::class_ref_id(obj_value).is_some() {
+        js_object_set_field_by_name(obj_value.to_bits() as *mut ObjectHeader, key_str, value);
+        return value;
+    }
     let obj = extract_obj_ptr(obj_value);
     if !obj.is_null() {
         js_object_set_field_by_name(obj, key_str, value);
