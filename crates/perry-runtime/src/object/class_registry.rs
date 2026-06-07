@@ -3688,6 +3688,20 @@ pub unsafe extern "C" fn js_register_class_computed_accessor(
 
 /// Look up a static method by name in `CLASS_STATIC_METHODS`, walking the
 /// class_id parent chain (so a subclass inherits a parent's static method).
+/// Own-only static method lookup (no parent-chain walk) — for
+/// `getOwnPropertyDescriptor(C, name)`, where inherited statics must NOT be
+/// reported as own properties of `C`.
+pub(crate) fn class_has_own_static_method(class_id: u32, name: &str) -> bool {
+    CLASS_STATIC_METHODS
+        .read()
+        .ok()
+        .and_then(|g| {
+            g.as_ref()
+                .and_then(|m| m.get(&class_id).map(|inner| inner.contains_key(name)))
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn lookup_static_method_in_chain(
     class_id: u32,
     name: &str,

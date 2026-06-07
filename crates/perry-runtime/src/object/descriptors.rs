@@ -237,6 +237,25 @@ pub extern "C" fn js_object_get_own_property_descriptor(obj_value: f64, key_valu
                     super::rebuild_object_field_layout(desc, 4);
                     return f64::from_bits((desc as u64) | 0x7FFD_0000_0000_0000);
                 }
+                // Static methods are own properties of the class *constructor*
+                // (not the prototype). `getOwnPropertyDescriptor(C, "m")` for a
+                // `static m() {}` must report a `{ writable, enumerable: false,
+                // configurable }` data property — `hasOwnProperty(C, "m")`
+                // already returns true, so without this the two disagreed and
+                // verifyProperty threw "reading 'enumerable'" on undefined
+                // (Test262 elements/after-same-line-static-*).
+                if super::class_prototype_ref_id(obj_value).is_none()
+                    && super::class_registry::class_has_own_static_method(class_id, &method_name)
+                {
+                    // Bind the static method to the constructor ref to produce a
+                    // callable value, mirroring the `C.m` read path. The name
+                    // bytes are leaked (bounded by the static descriptor set) so
+                    // the pointer js_class_method_bind stashes stays valid.
+                    let leaked: &'static [u8] = method_name.as_bytes().to_vec().leak();
+                    let value =
+                        super::js_class_method_bind(obj_value, leaked.as_ptr(), leaked.len());
+                    return build_data_descriptor(value, true, false, true);
+                }
             }
             return f64::from_bits(crate::value::TAG_UNDEFINED);
         }
