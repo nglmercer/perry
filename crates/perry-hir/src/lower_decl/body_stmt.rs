@@ -11,40 +11,11 @@ use crate::lower::{
 use crate::lower_patterns::*;
 use crate::lower_types::*;
 
+use super::class_computed::{
+    class_computed_member_registration_expr, push_deduped_class_computed_keys,
+};
 use super::helpers::{async_iterator_method_call, is_filehandle_readlines_for_await_target};
 use super::*;
-
-fn class_computed_member_registration_expr(class_name: &str, member: &ClassComputedMember) -> Expr {
-    match member.kind {
-        ClassComputedMemberKind::Method => Expr::RegisterClassComputedMethod {
-            class_name: class_name.to_string(),
-            key_expr: Box::new(member.key_expr.clone()),
-            method_name: member.function.name.clone(),
-            is_static: member.is_static,
-            param_count: member.function.params.len() as u32,
-            has_rest: member
-                .function
-                .params
-                .last()
-                .map(|p| p.is_rest)
-                .unwrap_or(false),
-        },
-        ClassComputedMemberKind::Getter => Expr::RegisterClassComputedAccessor {
-            class_name: class_name.to_string(),
-            key_expr: Box::new(member.key_expr.clone()),
-            getter_name: Some(member.function.name.clone()),
-            setter_name: None,
-            is_static: member.is_static,
-        },
-        ClassComputedMemberKind::Setter => Expr::RegisterClassComputedAccessor {
-            class_name: class_name.to_string(),
-            key_expr: Box::new(member.key_expr.clone()),
-            getter_name: None,
-            setter_name: Some(member.function.name.clone()),
-            is_static: member.is_static,
-        },
-    }
-}
 
 mod nested_fn_decl;
 
@@ -524,6 +495,11 @@ pub fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<Ve
                     )));
                 }
                 ctx.pending_classes.push(class);
+            } else {
+                // Duplicate same-named class: still evaluate its computed
+                // member keys for their spec-mandated side effects. See
+                // `push_deduped_class_computed_keys`.
+                push_deduped_class_computed_keys(ctx, &class_decl.class, &mut result)?;
             }
         }
         ast::Stmt::Decl(ast::Decl::Fn(fn_decl)) => {
