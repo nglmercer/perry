@@ -138,6 +138,7 @@ pub fn lower_class_decl(
 ) -> Result<Class> {
     let name = class_decl.ident.sym.to_string();
     validate_legacy_decorator_surface(&class_decl.class, &name)?;
+    validate_class_element_early_errors(&class_decl.class, &name)?;
     let class_id = match ctx.lookup_class(&name) {
         Some(id) => id,
         None => {
@@ -1063,6 +1064,7 @@ pub fn lower_class_from_ast(
     is_exported: bool,
 ) -> Result<Class> {
     validate_legacy_decorator_surface(class, name)?;
+    validate_class_element_early_errors(class, name)?;
     let class_id = match ctx.lookup_class(name) {
         Some(id) => id,
         None => {
