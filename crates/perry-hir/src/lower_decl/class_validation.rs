@@ -97,11 +97,10 @@ pub fn validate_class_element_early_errors(class: &ast::Class, class_name: &str)
                 // ClassMethod (not Constructor), so the duplicate count above
                 // doesn't see them — reject here.
                 if !m.is_static && name == "constructor" {
-                    let is_special = matches!(
-                        m.kind,
-                        ast::MethodKind::Getter | ast::MethodKind::Setter
-                    ) || m.function.is_generator
-                        || m.function.is_async;
+                    let is_special =
+                        matches!(m.kind, ast::MethodKind::Getter | ast::MethodKind::Setter)
+                            || m.function.is_generator
+                            || m.function.is_async;
                     if is_special {
                         bail!(
                             "SyntaxError: class `{class_name}` constructor may not be an \
