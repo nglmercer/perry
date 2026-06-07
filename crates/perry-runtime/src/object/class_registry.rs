@@ -3974,6 +3974,54 @@ pub(crate) unsafe fn class_instance_setter_apply(
     false
 }
 
+/// Spec `Function.prototype.length` for a class method named `name` — the
+/// count of formal parameters, excluding a trailing rest param and the
+/// synthesized `arguments` slot (neither contributes to `.length`). Walks the
+/// instance vtable chain, then the static-method table. Used to stamp the
+/// bound-method closure's length so `C.prototype.m.length` is correct
+/// (Test262 .../class/{gen,async}-method/...-trailing-comma + length tests).
+/// Note: does not subtract for default-valued params (the registry doesn't
+/// record the first-default position); methods with defaults already reported
+/// the wrong length, so this is a strict improvement, never a regression.
+pub(crate) fn class_method_bind_length(class_id: u32, name: &str) -> Option<u32> {
+    if let Ok(guard) = CLASS_VTABLE_REGISTRY.read() {
+        if let Some(reg) = guard.as_ref() {
+            let mut cid = class_id;
+            let mut depth = 0usize;
+            while cid != 0 && depth < 32 {
+                if let Some(vt) = reg.get(&cid) {
+                    if let Some(e) = vt.methods.get(name) {
+                        let mut len = e.param_count;
+                        if e.has_rest {
+                            len = len.saturating_sub(1);
+                        }
+                        if e.has_synthetic_arguments {
+                            len = len.saturating_sub(1);
+                        }
+                        return Some(len);
+                    }
+                }
+                match get_parent_class_id(cid) {
+                    Some(p) if p != 0 && p != cid => {
+                        cid = p;
+                        depth += 1;
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+    // Static methods: CLASS_STATIC_METHODS stores (func_ptr, param_count, has_rest).
+    if let Some((_, param_count, has_rest)) = lookup_static_method_in_chain(class_id, name) {
+        let mut len = param_count;
+        if has_rest {
+            len = len.saturating_sub(1);
+        }
+        return Some(len);
+    }
+    None
+}
+
 /// Call a static method func_ptr with `args` (no `this` prepend — static
 /// methods read `this` from the implicit-this slot, set by the caller).
 /// Mirrors the arity dispatch of `call_vtable_method` minus the receiver arg.

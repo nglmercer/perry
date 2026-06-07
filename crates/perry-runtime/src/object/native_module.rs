@@ -5825,10 +5825,39 @@ pub extern "C" fn js_class_method_bind(
             set_bound_native_closure_name(closure, name);
             if let Some(length) = bound_native_method_length(name) {
                 set_builtin_closure_length(closure as usize, length);
+            } else if let Some(class_id) = class_id_from_method_receiver(instance) {
+                // User class method bound as a value (`C.prototype.m`, `c.m`):
+                // stamp its spec `.length` from the registered param count so
+                // `C.prototype.m.length` reflects the declared arity instead of
+                // the closure's capture count (Test262 method `.length` tests).
+                if let Some(length) =
+                    super::class_registry::class_method_bind_length(class_id, name)
+                {
+                    set_builtin_closure_length(closure as usize, length);
+                }
             }
         }
     }
     crate::value::js_nanbox_pointer(closure as i64)
+}
+
+/// Resolve the owning class id for a `js_class_method_bind` receiver: a class
+/// constructor/prototype ref (INT32-tagged) or a real class instance pointer.
+fn class_id_from_method_receiver(instance: f64) -> Option<u32> {
+    if let Some(cid) = class_ref_id(instance) {
+        return Some(cid);
+    }
+    let jsv = JSValue::from_bits(instance.to_bits());
+    if jsv.is_pointer() {
+        let obj = jsv.as_pointer::<ObjectHeader>();
+        if !obj.is_null() && (obj as usize) >= 0x100000 {
+            let cid = unsafe { (*obj).class_id };
+            if cid != 0 {
+                return Some(cid);
+            }
+        }
+    }
+    None
 }
 
 pub(crate) const CLASS_PROTOTYPE_REF_FLAG: u64 = 1u64 << 32;
