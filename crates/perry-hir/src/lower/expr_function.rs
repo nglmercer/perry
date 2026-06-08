@@ -243,9 +243,18 @@ pub(super) fn lower_arrow(ctx: &mut LoweringContext, arrow: &ast::ArrowExpr) -> 
             is_rest,
             arguments_object: None,
         });
-        // Track destructuring patterns to generate extraction statements
-        if is_destructuring_pattern(param) {
-            destructuring_params.push((param_id, param.clone()));
+        // Track destructuring patterns to generate extraction statements. A
+        // `([x, y] = [1, 2]) =>` param is a `Pat::Assign` wrapping the array/
+        // object pattern; unwrap it so the destructuring binding is still
+        // emitted (the `= [1,2]` default is handled separately via
+        // `get_param_default`). Mirrors `lower_fn_decl`.
+        let inner_pat = if let ast::Pat::Assign(assign) = param {
+            assign.left.as_ref()
+        } else {
+            param
+        };
+        if is_destructuring_pattern(inner_pat) {
+            destructuring_params.push((param_id, inner_pat.clone()));
         }
     }
 
@@ -493,9 +502,20 @@ pub(crate) fn lower_fn_expr(ctx: &mut LoweringContext, fn_expr: &ast::FnExpr) ->
             arguments_object: None,
         });
         default_param_pats.push(param.pat.clone());
-        // Track destructuring patterns to generate extraction statements
-        if is_destructuring_pattern(&param.pat) {
-            destructuring_params.push((param_id, param.pat.clone()));
+        // Track destructuring patterns to generate extraction statements. A
+        // `function*([x, y] = [1, 2]) {}` param is a `Pat::Assign` wrapping the
+        // array/object pattern; unwrap it so the destructuring binding is still
+        // emitted (the `= [1,2]` default is applied via `get_param_default`).
+        // Mirrors `lower_fn_decl`. Without this, an async-generator EXPRESSION
+        // with a destructured-default param dropped the binding and `x`/`y`
+        // lowered to `js_throw_reference_error_unresolved_get`.
+        let inner_pat = if let ast::Pat::Assign(assign) = &param.pat {
+            assign.left.as_ref()
+        } else {
+            &param.pat
+        };
+        if is_destructuring_pattern(inner_pat) {
+            destructuring_params.push((param_id, inner_pat.clone()));
         }
     }
     for (param, pat) in params.iter_mut().zip(default_param_pats.iter()) {
@@ -553,6 +573,7 @@ pub(crate) fn lower_fn_expr(ctx: &mut LoweringContext, fn_expr: &ast::FnExpr) ->
         let stmts = generate_param_destructuring_stmts(ctx, pat, *param_id)?;
         destructuring_stmts.extend(stmts);
     }
+    let destructuring_prologue_len = destructuring_stmts.len();
 
     // Hoist function declarations: pre-register all function declarations in the body
     // so they can be referenced before their lexical position (JS hoisting semantics).
@@ -719,6 +740,16 @@ pub(crate) fn lower_fn_expr(ctx: &mut LoweringContext, fn_expr: &ast::FnExpr) ->
 
     // Refs #486: same default-param desugar as lower_arrow above.
     let default_stmts = crate::lower_decl::build_default_param_stmts(&params);
+    // Record the param-prologue length for generator function expressions
+    // (`async function*([x] = d){}`) so the generator transform runs param
+    // binding synchronously at call time (spec FunctionDeclarationInstantiation
+    // order). See `Module.gen_param_prologue_len`.
+    if fn_expr.function.is_generator {
+        let prologue_len = default_stmts.len() + destructuring_prologue_len;
+        if prologue_len > 0 {
+            ctx.gen_param_prologue_len.insert(func_id, prologue_len);
+        }
+    }
     if !default_stmts.is_empty() {
         let mut new_body = default_stmts;
         new_body.append(&mut body);

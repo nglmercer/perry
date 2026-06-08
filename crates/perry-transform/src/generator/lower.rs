@@ -3,6 +3,105 @@
 use super::*;
 use perry_hir::walker::walk_expr_children;
 
+/// For async generators, `yield E` evaluates as `AsyncGeneratorYield(?
+/// Await(E))` — the operand is awaited (one microtask tick) before being
+/// delivered to the consumer. So `yield Promise.reject(x)` awaits the rejection
+/// and throws `x` into the generator, and `yield Promise.resolve(v)` yields `v`,
+/// not the promise. Perry yielded the raw operand. This pass rewrites every
+/// statement-level non-delegate `yield E` (the only positions left after
+/// `hoist_yields`) into `let __ayield = await E; yield __ayield`. The `await`
+/// lowers to its own suspension state via the existing await machinery; the temp
+/// is a cross-state local that `collect_hoisted_vars` boxes. `yield*` delegation
+/// is left untouched — it awaits each delegated step through `delegate_await`.
+fn await_async_generator_yield_operands(stmts: &mut Vec<Stmt>, next_id: &mut LocalId) {
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    for mut stmt in std::mem::take(stmts) {
+        // Recurse into nested control-flow bodies first (mirrors
+        // `collect_vars_recursive`). Nested closures are not descended — their
+        // yields belong to inner generators.
+        match &mut stmt {
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                await_async_generator_yield_operands(then_branch, next_id);
+                if let Some(eb) = else_branch {
+                    await_async_generator_yield_operands(eb, next_id);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } => {
+                await_async_generator_yield_operands(body, next_id);
+            }
+            Stmt::For { body, .. } => await_async_generator_yield_operands(body, next_id),
+            Stmt::Labeled { body, .. } => {
+                let mut wrapped = vec![std::mem::replace(body.as_mut(), Stmt::Break)];
+                await_async_generator_yield_operands(&mut wrapped, next_id);
+                // A labeled statement wraps a single loop/block (never a bare
+                // yield), so the rewrite only touches its inner body and the
+                // wrapper stays a single statement.
+                if let Some(inner) = wrapped.pop() {
+                    *body.as_mut() = inner;
+                }
+            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+            } => {
+                await_async_generator_yield_operands(body, next_id);
+                if let Some(c) = catch {
+                    await_async_generator_yield_operands(&mut c.body, next_id);
+                }
+                if let Some(f) = finally {
+                    await_async_generator_yield_operands(f, next_id);
+                }
+            }
+            Stmt::Switch { cases, .. } => {
+                for case in cases {
+                    await_async_generator_yield_operands(&mut case.body, next_id);
+                }
+            }
+            _ => {}
+        }
+
+        // Pull the non-delegate yield operand into a preceding `await`.
+        let yield_value: Option<&mut Option<Box<Expr>>> = match &mut stmt {
+            Stmt::Expr(Expr::Yield {
+                value,
+                delegate: false,
+            }) => Some(value),
+            Stmt::Let {
+                init:
+                    Some(Expr::Yield {
+                        value,
+                        delegate: false,
+                    }),
+                ..
+            } => Some(value),
+            Stmt::Return(Some(Expr::Yield {
+                value,
+                delegate: false,
+            })) => Some(value),
+            _ => None,
+        };
+        if let Some(value) = yield_value {
+            let operand = value.take().map(|b| *b).unwrap_or(Expr::Undefined);
+            let tmp = alloc_local(next_id);
+            *value = Some(Box::new(Expr::LocalGet(tmp)));
+            out.push(Stmt::Let {
+                id: tmp,
+                name: format!("__ayield_{}", tmp),
+                ty: Type::Any,
+                mutable: true,
+                init: Some(Expr::Await(Box::new(operand))),
+            });
+        }
+        out.push(stmt);
+    }
+    *stmts = out;
+}
+
 /// Transform a single generator function into a state machine.
 pub fn transform_generator_function(
     func: &mut Function,
@@ -67,6 +166,27 @@ pub fn transform_generator_function_with_extra_captures(
     let is_async_generator = func.is_async;
     func.is_async = false;
 
+    // Spec: generator/async-generator parameter binding
+    // (FunctionDeclarationInstantiation) runs *synchronously* when the function
+    // is called — before the generator object is created — so an
+    // iterator/RequireObjectCoercible/TDZ error during destructuring or default
+    // evaluation throws at call time, not on the first `.next()`. Lowering
+    // prepends the param prologue (default guards + destructuring binding) to
+    // the body; here we lift those leading statements out so they run in the
+    // outer wrapper (run-at-call) rather than state 0 of the state machine.
+    // `gen_prologue_len` returns 0 for generators with no destructuring/default
+    // params, leaving this fully inert for the common case.
+    let prologue_len = super::gen_prologue_len(func.id);
+    let param_prologue: Vec<Stmt> = if prologue_len > 0 && prologue_len <= func.body.len() {
+        func.body.drain(..prologue_len).collect()
+    } else {
+        Vec::new()
+    };
+    // Locals the prologue binds (destructured targets + scaffolding temps). They
+    // are written in the outer wrapper but read by the state machine, so they
+    // must be boxed captures like any other cross-state local.
+    let prologue_hoist = collect_hoisted_vars(&param_prologue);
+
     // #321: hoist `yield` / `yield*` that live inside a larger expression
     // (`return (yield 1) + (yield 2)`, call args, array/object literals, etc.)
     // into ordered `let __ygen_N = yield E;` temps so the linearizer below only
@@ -79,6 +199,13 @@ pub fn transform_generator_function_with_extra_captures(
     // local. Allocated before `local_id_before` so they are not double-counted
     // in `extra_local_ids`.
     hoist_yields_in_stmts(&mut func.body, next_local_id);
+
+    // Async generators await each `yield` operand before delivering it (spec
+    // `AsyncGeneratorYield(? Await(value))`). Run after `hoist_yields` so every
+    // remaining yield is at a statement-level position this pass recognises.
+    if is_async_generator {
+        await_async_generator_yield_operands(&mut func.body, next_local_id);
+    }
 
     let state_id = alloc_local(next_local_id);
     let done_id = alloc_local(next_local_id);
@@ -157,8 +284,14 @@ pub fn transform_generator_function_with_extra_captures(
 
     // Collect hoisted var IDs first so we know which Lets to rewrite
     let hoisted_for_rewrite = collect_hoisted_vars(&func.body);
-    let hoisted_ids: std::collections::HashSet<LocalId> =
+    let mut hoisted_ids: std::collections::HashSet<LocalId> =
         hoisted_for_rewrite.iter().map(|(id, _, _)| *id).collect();
+    // The lifted param prologue defines locals (destructured targets + temps)
+    // that the state machine reads; treat them as hoisted so their `Let`s route
+    // through the prealloc box (`js_box_set`) instead of shadowing the capture.
+    for (id, _, _) in &prologue_hoist {
+        hoisted_ids.insert(*id);
+    }
 
     // Rewrite `Let { id, init: Some(expr) }` → `Expr(LocalSet(id, expr))` for hoisted
     // variables inside state bodies. Without this, the Let creates a fresh local that
@@ -387,6 +520,13 @@ pub fn transform_generator_function_with_extra_captures(
     // Hoist variable declarations from the original body — collected
     // here (before the prealloc emit) so the prealloc set is complete.
     let mut hoisted = hoisted_for_rewrite;
+    // Box + capture the lifted prologue's locals so the state machine can read
+    // the destructured param values it bound in the outer wrapper.
+    for v in &prologue_hoist {
+        if !hoisted.iter().any(|(id, _, _)| *id == v.0) {
+            hoisted.push(v.clone());
+        }
+    }
     for route in &catches {
         if let (Some(param_id), Some(param_name)) = (route.param_id, route.param_name.as_ref()) {
             if !hoisted.iter().any(|(id, _, _)| *id == param_id) {
@@ -522,6 +662,18 @@ pub fn transform_generator_function_with_extra_captures(
         mutable: true,
         init: Some(Expr::Undefined),
     });
+
+    // Run the lifted parameter prologue in the outer wrapper, after the box
+    // stubs are in place (so its destructured-target `Let`s route to
+    // `js_box_set` on the prealloc'd boxes the state machine captures) and
+    // before the generator object is built/returned. Any iterator /
+    // RequireObjectCoercible / TDZ error here propagates synchronously out of
+    // the call, matching spec FunctionDeclarationInstantiation order.
+    if !param_prologue.is_empty() {
+        let mut prologue = param_prologue;
+        rewrite_hoisted_lets_in_stmts(&mut prologue, &hoisted_ids);
+        new_body.extend(prologue);
+    }
 
     // Build captures: state, done, sent, params, hoisted vars, extra locals
     let mut captures = vec![state_id, done_id, sent_id, executing_id];
