@@ -77,22 +77,19 @@ unsafe fn resolve_species(original: f64) -> SpeciesChoice {
     if crate::value::js_is_truthy(crate::array::js_array_is_array(original)) == 0 {
         return SpeciesChoice::Default;
     }
-    let c = read_constructor(original);
-    let cv = JSValue::from_bits(c.to_bits());
-    // step 5: if Type(C) is Object, C = Get(C, @@species); null → undefined.
-    let mut c = c;
+    // step 3: C = Get(O, "constructor"). step 5: if Type(C) is Object,
+    // C = Get(C, @@species); a null species → undefined.
+    let mut c = read_constructor(original);
     if is_object_value(c) {
         let s = get_species(c);
-        let sv = JSValue::from_bits(s.to_bits());
-        c = if sv.to_bits() == TAG_NULL {
+        c = if s.to_bits() == TAG_NULL {
             f64::from_bits(TAG_UNDEFINED)
         } else {
             s
         };
     }
-    let cv = JSValue::from_bits(c.to_bits());
     // step 6: undefined → default ArrayCreate.
-    if cv.is_undefined() {
+    if JSValue::from_bits(c.to_bits()).is_undefined() {
         return SpeciesChoice::Default;
     }
     // Fast path: the intrinsic Array constructor → plain allocation
@@ -102,7 +99,6 @@ unsafe fn resolve_species(original: f64) -> SpeciesChoice {
     }
     // step 7: a non-constructor (number/string/null/non-callable) → TypeError.
     if !is_constructor(c) {
-        let _ = cv;
         throw_not_constructor();
     }
     SpeciesChoice::Custom(c)
