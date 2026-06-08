@@ -173,8 +173,15 @@ pub(super) fn try_local_array_methods(
                         // explicit thisArg is supplied with no spread.
                         if matches!(
                             method_name,
-                            "map" | "filter" | "forEach" | "find" | "findIndex" | "findLast"
-                                | "findLastIndex" | "some" | "every"
+                            "map"
+                                | "filter"
+                                | "forEach"
+                                | "find"
+                                | "findIndex"
+                                | "findLast"
+                                | "findLastIndex"
+                                | "some"
+                                | "every"
                         ) && call.args.len() >= 2
                             && call.args.iter().all(|a| a.spread.is_none())
                         {

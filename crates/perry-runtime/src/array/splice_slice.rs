@@ -204,7 +204,8 @@ pub extern "C" fn js_array_slice(
         // `O.constructor` / `@@species` and throws on a poisoned getter or
         // non-constructor species before any element is copied.
         let recv_value = f64::from_bits(crate::value::JSValue::pointer(arr as *const u8).bits());
-        let result_box = crate::array::species::array_species_create(recv_value, slice_len as usize);
+        let result_box =
+            crate::array::species::array_species_create(recv_value, slice_len as usize);
         let is_plain = crate::array::species::species_result_is_plain_array(result_box);
         let result = crate::value::js_nanbox_get_pointer(result_box) as *mut ArrayHeader;
 

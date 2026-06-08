@@ -521,8 +521,15 @@ pub(super) fn try_array_only_methods(
                 if !recv_is_class
                     && matches!(
                         method_name,
-                        "map" | "filter" | "forEach" | "find" | "findIndex" | "findLast"
-                            | "findLastIndex" | "some" | "every"
+                        "map"
+                            | "filter"
+                            | "forEach"
+                            | "find"
+                            | "findIndex"
+                            | "findLast"
+                            | "findLastIndex"
+                            | "some"
+                            | "every"
                     )
                     && call.args.len() >= 2
                     && call.args.iter().all(|a| a.spread.is_none())
