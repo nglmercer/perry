@@ -235,7 +235,7 @@ toml = "1.1"
 jsonwebtoken = { version = "10.4", default-features = false, features = ["rust_crypto", "use_pem"] }
 
 # Terminal UI
-indicatif = "0.17"
+indicatif = "0.18"
 console = "0.16"
 dialoguer = "0.12"
 
