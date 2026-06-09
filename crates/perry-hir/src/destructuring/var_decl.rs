@@ -1900,6 +1900,32 @@ pub(crate) fn lower_var_decl_with_destructuring(
                     _ => {}
                 }
             }
+            // `with (o) { var foo = v; }` — the binding `foo` is hoisted to
+            // the enclosing var scope, but the *initialisation* is a normal
+            // PutValue under the with environment: when `o` has a `foo`
+            // property, the write goes to `o.foo`, not the hoisted local
+            // (test262 with/12.10-0-8). Emit the hoisted Let (no init) plus
+            // a WithSet for the assignment.
+            if is_var_decl && init.is_some() {
+                if let Some(env_id) = ctx.active_with_envs_for_ident(&name).into_iter().next() {
+                    result.push(Stmt::Let {
+                        id,
+                        name: name.clone(),
+                        ty,
+                        mutable,
+                        init: None,
+                    });
+                    let fallback = crate::lower::with_set_fallback_for_ident(ctx, &name);
+                    result.push(Stmt::Expr(Expr::WithSet {
+                        object: Box::new(Expr::LocalGet(env_id)),
+                        property: name,
+                        value: Box::new(init.unwrap()),
+                        fallback,
+                        strict: ctx.current_strict,
+                    }));
+                    return Ok(result);
+                }
+            }
             result.push(Stmt::Let {
                 id,
                 name,

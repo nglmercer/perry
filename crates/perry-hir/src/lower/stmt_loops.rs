@@ -328,16 +328,30 @@ pub(crate) fn lazy_or_index_elem(
     }
 }
 
-/// `__iter.next()`.
-pub(crate) fn iterator_next_call(iter_id: LocalId) -> Expr {
+/// Wrap an iterator-protocol call result in the spec "If innerResult is not
+/// an Object, throw a TypeError" check (IteratorNext / IteratorClose).
+fn iterator_result_validated(call: Expr) -> Expr {
     Expr::Call {
+        callee: Box::new(Expr::ExternFuncRef {
+            name: "js_iterator_result_validate".to_string(),
+            param_types: vec![Type::Any],
+            return_type: Type::Any,
+        }),
+        args: vec![call],
+        type_args: vec![],
+    }
+}
+
+/// `__iter.next()` (validated: a non-object result is a TypeError).
+pub(crate) fn iterator_next_call(iter_id: LocalId) -> Expr {
+    iterator_result_validated(Expr::Call {
         callee: Box::new(Expr::PropertyGet {
             object: Box::new(Expr::LocalGet(iter_id)),
             property: "next".to_string(),
         }),
         args: vec![],
         type_args: vec![],
-    }
+    })
 }
 
 /// The lazy `for...of` driver loop, modeled as a `for` so `continue` re-pulls
@@ -389,7 +403,9 @@ pub(crate) fn iterator_close_guarded_stmt(iter_id: LocalId) -> Stmt {
             }),
             right: Box::new(Expr::Null),
         },
-        then_branch: vec![Stmt::Expr(iterator_return_call(iter_id, false))],
+        then_branch: vec![Stmt::Expr(iterator_result_validated(iterator_return_call(
+            iter_id, false,
+        )))],
         else_branch: None,
     }
 }
@@ -1343,7 +1359,12 @@ pub(crate) fn lower_stmt_for_of(
             Expr::SetValues(Box::new(arr_expr))
         }
     } else if is_iterable_typed_array {
-        Expr::ArrayFrom(Box::new(arr_expr))
+        // Iterate the typed array LIVE: the holder keeps the TA's static
+        // type so IndexGet/`.length` route through the typed-array
+        // accessors, and element writes made by the loop body are
+        // observed (test262 *-mutate.js). The previous `Expr::ArrayFrom`
+        // materialization snapshotted the elements up front.
+        arr_expr
     } else if use_lazy_iter {
         // GetIterator(obj): obj[Symbol.iterator](). Drives the lazy loop below.
         Expr::GetIterator(Box::new(arr_expr))
@@ -1399,6 +1420,10 @@ pub(crate) fn lower_stmt_for_of(
     } else if use_lazy_iter {
         // Holds the iterator object, not an array.
         Type::Any
+    } else if is_iterable_typed_array {
+        // Keep the TA's own type so IndexGet/length go through the
+        // typed-array accessors (live reads), not raw Array element loads.
+        iterable_type.clone().unwrap_or(Type::Any)
     } else {
         Type::Array(Box::new(elem_type.clone()))
     };
@@ -1443,15 +1468,23 @@ pub(crate) fn lower_stmt_for_of(
                     ast::Pat::Ident(ident) => {
                         let name = ident.id.sym.to_string();
                         let id = ctx.define_local(name.clone(), elem_type.clone());
+                        if var_decl.kind == ast::VarDeclKind::Const {
+                            // `for (const x of …) { x = 1; }` → TypeError.
+                            ctx.mark_local_immutable(id);
+                        }
                         vec![(name, id)]
                     }
                     ast::Pat::Array(arr_pat) => {
+                        // Collect ALL leaves — incl. defaults (`[a, b = f()]`),
+                        // rest (`[h, ...t]`), and nested patterns — so the body
+                        // sees every binding. The Tuple [k, v] typing for the
+                        // Map fast path only applies to all-Ident patterns,
+                        // which collect in the same positional order.
                         let mut ids = Vec::new();
-                        for (idx, elem) in arr_pat.elems.iter().enumerate() {
-                            if let Some(elem_pat) = elem {
-                                if let ast::Pat::Ident(ident) = elem_pat {
+                        if map_kv_fastpath {
+                            for (idx, elem) in arr_pat.elems.iter().enumerate() {
+                                if let Some(ast::Pat::Ident(ident)) = elem {
                                     let name = ident.id.sym.to_string();
-                                    // For Map destructuring [k, v], use key type for idx 0, value type for idx 1
                                     let var_type = if let Type::Tuple(ref types) = elem_type {
                                         types.get(idx).cloned().unwrap_or(Type::Any)
                                     } else {
@@ -1461,33 +1494,14 @@ pub(crate) fn lower_stmt_for_of(
                                     ids.push((name, id));
                                 }
                             }
+                        } else {
+                            collect_for_of_pattern_leaves(ctx, &decl.name, &mut ids);
                         }
                         ids
                     }
-                    ast::Pat::Object(obj_pat) => {
+                    ast::Pat::Object(_) => {
                         let mut ids = Vec::new();
-                        for prop in &obj_pat.props {
-                            match prop {
-                                ast::ObjectPatProp::Assign(assign) => {
-                                    let name = assign.key.sym.to_string();
-                                    let id = ctx.define_local(name.clone(), Type::Any);
-                                    ids.push((name, id));
-                                }
-                                ast::ObjectPatProp::KeyValue(kv) => {
-                                    if let ast::Pat::Ident(ident) = &*kv.value {
-                                        let name = ident.id.sym.to_string();
-                                        let id = ctx.define_local(name.clone(), Type::Any);
-                                        ids.push((name, id));
-                                    } else {
-                                        // Nested pattern (e.g. `key: [a, b]`).
-                                        // Recurse so leaves get pre-defined and
-                                        // the body can reference them. Issue #554.
-                                        collect_for_of_pattern_leaves(ctx, &kv.value, &mut ids);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+                        collect_for_of_pattern_leaves(ctx, &decl.name, &mut ids);
                         ids
                     }
                     _ => {
@@ -1500,12 +1514,21 @@ pub(crate) fn lower_stmt_for_of(
                 return Err(anyhow!("for-of requires a variable declaration"));
             }
         }
-        ast::ForHead::Pat(pat) => {
-            let name = get_pat_name(pat)?;
-            let id = ctx.define_local(name.clone(), Type::Any);
-            vec![(name, id)]
-        }
+        ast::ForHead::Pat(_) => Vec::new(),
         _ => return Err(anyhow!("Unsupported for-of left-hand side")),
+    };
+
+    // `for (<expr-or-pattern> of …)` heads (bare ident, member expr,
+    // destructuring assignment): resolve the target before the body so any
+    // sloppy implicit global it creates is in scope.
+    let pat_head_binding = if matches!(&for_of_stmt.left, ast::ForHead::Pat(_)) {
+        Some(predefine_for_head(
+            ctx,
+            &for_of_stmt.left,
+            elem_type.clone(),
+        )?)
+    } else {
+        None
     };
 
     // NOW lower the body - variables are defined so body can reference them
@@ -1608,130 +1631,39 @@ pub(crate) fn lower_stmt_for_of(
                             }
                             stmts
                         } else {
-                            // Array destructuring: for (const [a, b] of arr)
-                            let mut stmts = vec![Stmt::Let {
-                                id: item_id,
-                                name: format!("__item_{}", item_id),
-                                ty: elem_type.clone(),
-                                mutable: false,
-                                init: Some(item_expr),
-                            }];
-
-                            // Extract each element using pre-defined IDs
-                            let mut var_idx = 0;
-                            for (idx, elem) in arr_pat.elems.iter().enumerate() {
-                                if let Some(elem_pat) = elem {
-                                    if let ast::Pat::Ident(_) = elem_pat {
-                                        let (name, id) = var_ids[var_idx].clone();
-                                        var_idx += 1;
-                                        // For Map destructuring, use the Tuple element type
-                                        let var_type = if let Type::Tuple(ref types) = elem_type {
-                                            types.get(idx).cloned().unwrap_or(Type::Any)
-                                        } else {
-                                            Type::Any
-                                        };
-                                        stmts.push(Stmt::Let {
-                                            id,
-                                            name,
-                                            ty: var_type,
-                                            mutable: false,
-                                            init: Some(Expr::IndexGet {
-                                                object: Box::new(Expr::LocalGet(item_id)),
-                                                index: Box::new(Expr::Number(idx as f64)),
-                                            }),
-                                        });
-                                    }
-                                }
-                            }
+                            // Array destructuring: for (const [a, b] of arr).
+                            // Route through the shared pattern-binding emitter
+                            // so defaults (`[a, b = f()]`), rest elements, and
+                            // nested patterns all bind (the previous inline
+                            // walk silently skipped non-Ident elements —
+                            // test262 for-of scope-* probes).
+                            let mut stmts = Vec::new();
+                            let mut var_idx = 0usize;
+                            emit_for_of_pattern_binding(
+                                ctx,
+                                &decl.name,
+                                item_expr,
+                                &var_ids,
+                                &mut var_idx,
+                                &mut stmts,
+                            )?;
                             stmts
                         }
                     }
-                    ast::Pat::Object(obj_pat) => {
-                        // Object destructuring: for (const { a, b } of arr)
-                        let mut stmts = vec![Stmt::Let {
-                            id: item_id,
-                            name: format!("__item_{}", item_id),
-                            ty: Type::Any,
-                            mutable: false,
-                            init: Some(item_expr),
-                        }];
-
-                        // Extract each property using pre-defined IDs
-                        let mut var_idx = 0;
-                        for prop in &obj_pat.props {
-                            match prop {
-                                ast::ObjectPatProp::Assign(assign) => {
-                                    let prop_name = assign.key.sym.to_string();
-                                    let (name, id) = var_ids[var_idx].clone();
-                                    var_idx += 1;
-                                    let init_value = if let Some(default_expr) = &assign.value {
-                                        let prop_access = Expr::PropertyGet {
-                                            object: Box::new(Expr::LocalGet(item_id)),
-                                            property: prop_name,
-                                        };
-                                        let default_val = lower_expr(ctx, default_expr)?;
-                                        let condition = Expr::Compare {
-                                            op: CompareOp::Ne,
-                                            left: Box::new(prop_access.clone()),
-                                            right: Box::new(Expr::Undefined),
-                                        };
-                                        Expr::Conditional {
-                                            condition: Box::new(condition),
-                                            then_expr: Box::new(prop_access),
-                                            else_expr: Box::new(default_val),
-                                        }
-                                    } else {
-                                        Expr::PropertyGet {
-                                            object: Box::new(Expr::LocalGet(item_id)),
-                                            property: prop_name,
-                                        }
-                                    };
-                                    stmts.push(Stmt::Let {
-                                        id,
-                                        name,
-                                        ty: Type::Any,
-                                        mutable: false,
-                                        init: Some(init_value),
-                                    });
-                                }
-                                ast::ObjectPatProp::KeyValue(kv) => {
-                                    let key = match &kv.key {
-                                        ast::PropName::Ident(ident) => ident.sym.to_string(),
-                                        ast::PropName::Str(s) => {
-                                            s.value.as_str().unwrap_or("").to_string()
-                                        }
-                                        _ => continue,
-                                    };
-                                    let key_source = Expr::PropertyGet {
-                                        object: Box::new(Expr::LocalGet(item_id)),
-                                        property: key,
-                                    };
-                                    if let ast::Pat::Ident(_) = &*kv.value {
-                                        let (name, id) = var_ids[var_idx].clone();
-                                        var_idx += 1;
-                                        stmts.push(Stmt::Let {
-                                            id,
-                                            name,
-                                            ty: Type::Any,
-                                            mutable: false,
-                                            init: Some(key_source),
-                                        });
-                                    } else {
-                                        // Nested pattern (e.g. `key: [a, b]`).
-                                        // Issue #554.
-                                        emit_for_of_pattern_binding(
-                                            ctx,
-                                            &kv.value,
-                                            key_source,
-                                            &var_ids,
-                                            &mut var_idx,
-                                            &mut stmts,
-                                        )?;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+                    ast::Pat::Object(_) => {
+                        // Object destructuring: for (const { a, b } of arr).
+                        // Shared emitter — handles defaults, rest props, and
+                        // nested patterns uniformly.
+                        let mut stmts = Vec::new();
+                        let mut var_idx = 0usize;
+                        emit_for_of_pattern_binding(
+                            ctx,
+                            &decl.name,
+                            item_expr,
+                            &var_ids,
+                            &mut var_idx,
+                            &mut stmts,
+                        )?;
                         stmts
                     }
                     _ => {
@@ -1755,14 +1687,14 @@ pub(crate) fn lower_stmt_for_of(
             }
         }
         ast::ForHead::Pat(_) => {
-            let (name, id) = var_ids[0].clone();
-            vec![Stmt::Let {
-                id,
-                name,
-                ty: Type::Any,
-                mutable: false,
-                init: Some(lazy_or_index_elem(use_lazy_iter, arr_id, idx_id, result_id)),
-            }]
+            let binding = pat_head_binding
+                .as_ref()
+                .ok_or_else(|| anyhow!("for-of pattern head not pre-resolved"))?;
+            let mut source = lazy_or_index_elem(use_lazy_iter, arr_id, idx_id, result_id);
+            if for_of_stmt.is_await && !use_lazy_iter {
+                source = Expr::Await(Box::new(source));
+            }
+            for_head_binding_stmts(ctx, binding, source, elem_type.clone())?
         }
         _ => return Err(anyhow!("Unsupported for-of left-hand side")),
     };
@@ -1826,6 +1758,186 @@ pub(crate) fn lower_stmt_for_of(
     Ok(())
 }
 
+/// Pre-resolved `for-in` / `for-of` head target. Built BEFORE the loop body
+/// is lowered (so pattern leaves are in scope for body references), consumed
+/// AFTER (to build the per-iteration binding statements).
+pub(crate) enum ForHeadBinding {
+    /// `for (var/let/const x …)` — fresh per-loop binding.
+    DeclIdent { name: String, id: LocalId },
+    /// `for (var/let/const [x, y] …)` / object patterns — leaves pre-defined.
+    DeclPattern {
+        pat: ast::Pat,
+        var_ids: Vec<(String, LocalId)>,
+    },
+    /// `for (x …)` / `for ((x) …)` where `x` resolves to an existing
+    /// binding — plain assignment each iteration (the binding leaks).
+    AssignLocal { id: LocalId },
+    /// `for (x.y …)` / `for (x[k] …)` — member store each iteration.
+    AssignMember { member: ast::MemberExpr },
+    /// `for ([a, b] …)` with pre-existing targets — destructuring
+    /// assignment each iteration.
+    AssignPattern { pat: ast::AssignTargetPat },
+}
+
+fn unwrap_parens_expr(mut e: &ast::Expr) -> &ast::Expr {
+    while let ast::Expr::Paren(p) = e {
+        e = &p.expr;
+    }
+    e
+}
+
+/// Phase A: resolve the head, defining any fresh bindings so the loop body
+/// (lowered next) sees them. `elem_ty` types a simple decl-ident binding.
+pub(crate) fn predefine_for_head(
+    ctx: &mut LoweringContext,
+    left: &ast::ForHead,
+    elem_ty: Type,
+) -> Result<ForHeadBinding> {
+    match left {
+        ast::ForHead::VarDecl(var_decl) => {
+            let decl = var_decl
+                .decls
+                .first()
+                .ok_or_else(|| anyhow!("for head requires a variable declaration"))?;
+            match &decl.name {
+                ast::Pat::Ident(ident) => {
+                    let name = ident.id.sym.to_string();
+                    let id = ctx.define_local(name.clone(), elem_ty);
+                    if var_decl.kind == ast::VarDeclKind::Const {
+                        // `for (const k in/of …) { k = 1; }` → TypeError.
+                        ctx.mark_local_immutable(id);
+                    }
+                    Ok(ForHeadBinding::DeclIdent { name, id })
+                }
+                pat => {
+                    let mut var_ids = Vec::new();
+                    collect_for_of_pattern_leaves(ctx, pat, &mut var_ids);
+                    Ok(ForHeadBinding::DeclPattern {
+                        pat: pat.clone(),
+                        var_ids,
+                    })
+                }
+            }
+        }
+        ast::ForHead::Pat(pat) => match pat.as_ref() {
+            ast::Pat::Ident(ident) => {
+                let name = ident.id.sym.to_string();
+                let id = ctx
+                    .lookup_local(&name)
+                    .unwrap_or_else(|| ctx.define_sloppy_implicit_global(name));
+                Ok(ForHeadBinding::AssignLocal { id })
+            }
+            ast::Pat::Expr(expr) => match unwrap_parens_expr(expr) {
+                ast::Expr::Ident(ident) => {
+                    let name = ident.sym.to_string();
+                    let id = ctx
+                        .lookup_local(&name)
+                        .unwrap_or_else(|| ctx.define_sloppy_implicit_global(name));
+                    Ok(ForHeadBinding::AssignLocal { id })
+                }
+                ast::Expr::Member(member) => Ok(ForHeadBinding::AssignMember {
+                    member: member.clone(),
+                }),
+                other => Err(anyhow!(
+                    "Unsupported for-in/for-of head expression: {:?}",
+                    std::mem::discriminant(other)
+                )),
+            },
+            ast::Pat::Array(arr_pat) => Ok(ForHeadBinding::AssignPattern {
+                pat: ast::AssignTargetPat::Array(arr_pat.clone()),
+            }),
+            ast::Pat::Object(obj_pat) => Ok(ForHeadBinding::AssignPattern {
+                pat: ast::AssignTargetPat::Object(obj_pat.clone()),
+            }),
+            other => Err(anyhow!(
+                "Unsupported for-in/for-of head pattern: {:?}",
+                std::mem::discriminant(other)
+            )),
+        },
+        _ => Err(anyhow!("Unsupported for-in/for-of left-hand side")),
+    }
+}
+
+/// Phase B: build the per-iteration statements that bind/assign `source`
+/// (the current key/element) into the head target.
+pub(crate) fn for_head_binding_stmts(
+    ctx: &mut LoweringContext,
+    binding: &ForHeadBinding,
+    source: Expr,
+    elem_ty: Type,
+) -> Result<Vec<Stmt>> {
+    match binding {
+        ForHeadBinding::DeclIdent { name, id } => Ok(vec![Stmt::Let {
+            id: *id,
+            name: name.clone(),
+            ty: elem_ty,
+            mutable: false,
+            init: Some(source),
+        }]),
+        ForHeadBinding::DeclPattern { pat, var_ids } => {
+            let mut out = Vec::new();
+            let mut var_idx = 0usize;
+            // An array pattern iterates the bound value — for for-in keys
+            // (strings) that means destructuring by code point. ForOfToArray
+            // handles strings/arrays/iterables uniformly.
+            let source = if matches!(pat, ast::Pat::Array(_)) {
+                Expr::ForOfToArray(Box::new(source))
+            } else {
+                source
+            };
+            crate::lower::emit_for_of_pattern_binding(
+                ctx,
+                pat,
+                source,
+                var_ids,
+                &mut var_idx,
+                &mut out,
+            )?;
+            Ok(out)
+        }
+        ForHeadBinding::AssignLocal { id } => {
+            Ok(vec![Stmt::Expr(Expr::LocalSet(*id, Box::new(source)))])
+        }
+        ForHeadBinding::AssignMember { member } => {
+            let object = Box::new(lower_expr(ctx, &member.obj)?);
+            let assign = match &member.prop {
+                ast::MemberProp::Ident(prop) => Expr::PropertySet {
+                    object,
+                    property: prop.sym.to_string(),
+                    value: Box::new(source),
+                },
+                ast::MemberProp::Computed(c) => Expr::IndexSet {
+                    object,
+                    index: Box::new(lower_expr(ctx, &c.expr)?),
+                    value: Box::new(source),
+                },
+                ast::MemberProp::PrivateName(_) => {
+                    return Err(anyhow!("private member as for-loop head not supported"))
+                }
+            };
+            Ok(vec![Stmt::Expr(assign)])
+        }
+        ForHeadBinding::AssignPattern { pat } => {
+            let tmp_id = ctx.fresh_local();
+            let tmp_name = format!("__forhead_{}", tmp_id);
+            ctx.locals.push((tmp_name.clone(), tmp_id, Type::Any));
+            let mut out = vec![Stmt::Let {
+                id: tmp_id,
+                name: tmp_name,
+                ty: Type::Any,
+                mutable: false,
+                init: Some(source),
+            }];
+            out.extend(
+                crate::destructuring::lower_destructuring_assignment_stmt_from_local(
+                    ctx, pat, tmp_id,
+                )?,
+            );
+            Ok(out)
+        }
+    }
+}
+
 pub(crate) fn lower_stmt_for_in(
     ctx: &mut LoweringContext,
     module: &mut Module,
@@ -1838,18 +1950,9 @@ pub(crate) fn lower_stmt_for_in(
     // Push a block scope so the loop key and internal temporaries don't leak.
     let for_scope_mark = ctx.push_block_scope();
 
-    // Get the iteration variable name
-    let key_name = match &for_in_stmt.left {
-        ast::ForHead::VarDecl(var_decl) => {
-            if let Some(decl) = var_decl.decls.first() {
-                get_binding_name(&decl.name)?
-            } else {
-                return Err(anyhow!("for-in requires a variable declaration"));
-            }
-        }
-        ast::ForHead::Pat(pat) => get_pat_name(pat)?,
-        _ => return Err(anyhow!("Unsupported for-in left-hand side")),
-    };
+    // Resolve the head target (defines fresh decl bindings so the body
+    // lowered below can reference them).
+    let head_binding = predefine_for_head(ctx, &for_in_stmt.left, Type::String)?;
 
     // Lower the object expression
     let obj_expr = lower_expr(ctx, &for_in_stmt.right)?;
@@ -1864,7 +1967,6 @@ pub(crate) fn lower_stmt_for_in(
     // Create internal variables for the keys array and index
     let keys_id = ctx.fresh_local();
     let idx_id = ctx.fresh_local();
-    let key_id = ctx.define_local(key_name.clone(), Type::String);
 
     // Store keys array reference: let __keys = Object.keys(obj)
     module.init.push(Stmt::Let {
@@ -1878,20 +1980,15 @@ pub(crate) fn lower_stmt_for_in(
     // Lower the body
     let mut loop_body = lower_body_stmt(ctx, &for_in_stmt.body)?;
 
-    // Prepend: const key = __keys[__i]
-    loop_body.insert(
-        0,
-        Stmt::Let {
-            id: key_id,
-            name: key_name,
-            ty: Type::String,
-            mutable: false,
-            init: Some(Expr::IndexGet {
-                object: Box::new(Expr::LocalGet(keys_id)),
-                index: Box::new(Expr::LocalGet(idx_id)),
-            }),
-        },
-    );
+    // Prepend the key binding/assignment: <head> = __keys[__i]
+    let key_source = Expr::IndexGet {
+        object: Box::new(Expr::LocalGet(keys_id)),
+        index: Box::new(Expr::LocalGet(idx_id)),
+    };
+    let binding_stmts = for_head_binding_stmts(ctx, &head_binding, key_source, Type::String)?;
+    for (i, stmt) in binding_stmts.into_iter().enumerate() {
+        loop_body.insert(i, stmt);
+    }
 
     // Create the for loop:
     // for (let __i = 0; __i < __keys.length; __i++) { ... }

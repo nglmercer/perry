@@ -50,8 +50,9 @@ mod stmt;
 pub(crate) use stmt::*;
 mod stmt_loops;
 pub(crate) use stmt_loops::{
-    insert_iterator_close_on_abrupt, iterator_close_guarded_stmt, iterator_next_call,
-    lazy_iter_for_stmt, lazy_or_index_elem, lower_stmt_for_in, lower_stmt_for_of,
+    for_head_binding_stmts, insert_iterator_close_on_abrupt, iterator_close_guarded_stmt,
+    iterator_next_call, lazy_iter_for_stmt, lazy_or_index_elem, lower_stmt_for_in,
+    lower_stmt_for_of, predefine_for_head,
 };
 mod module_decl;
 pub(crate) use module_decl::*;
@@ -101,7 +102,7 @@ pub use lower_module_fn::{
 mod lower_expr;
 pub(crate) use lower_expr::{
     lower_expr, lower_expr_assignment, throw_reference_error_expr, try_desugar_reactive_text,
-    with_set_fallback_for_ident,
+    with_implicit_unset_let, with_set_fallback_for_ident,
 };
 
 // Re-export extracted module functions
