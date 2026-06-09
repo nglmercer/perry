@@ -19,9 +19,9 @@ use temporal_rs::options::{
     ToStringRoundingOptions, Unit,
 };
 use temporal_rs::parsers::Precision;
-use temporal_rs::partial::PartialTime;
+use temporal_rs::partial::{PartialTime, PartialZonedDateTime};
 use temporal_rs::provider::TransitionDirection;
-use temporal_rs::{MonthCode, PlainTime, TimeZone, TinyAsciiStr};
+use temporal_rs::{Calendar, MonthCode, PlainTime, TimeZone, TinyAsciiStr, UtcOffset};
 
 // ---- low-level JS object field reads --------------------------------------
 
@@ -465,14 +465,51 @@ pub fn datetime_fields(obj: *const crate::object::ObjectHeader) -> DateTimeField
     f
 }
 
-/// Populate a [`ZonedDateTimeFields`] (calendar fields + time) for
-/// `ZonedDateTime.with`. The `offset` partial is left unset (rarely used in
-/// `.with` and would require UTC-offset parsing).
+/// Populate a [`ZonedDateTimeFields`] (calendar fields + time + offset) for
+/// `ZonedDateTime.with`.
 pub fn zoned_fields(obj: *const crate::object::ObjectHeader) -> ZonedDateTimeFields {
     let mut f = ZonedDateTimeFields::new();
     f.calendar_fields = calendar_fields(obj);
     f.time = partial_time(obj);
+    f.offset = offset_field(obj);
     f
+}
+
+/// Read an optional `offset` string field → [`UtcOffset`] (a `RangeError` for a
+/// malformed string).
+fn offset_field(obj: *const crate::object::ObjectHeader) -> Option<UtcOffset> {
+    str_field(obj, "offset").map(|s| ok_or_throw(UtcOffset::from_utf8(s.as_bytes())))
+}
+
+/// Resolve the `timeZone` field of a property bag to a [`TimeZone`] — a
+/// tz-identifier string or another `Temporal.ZonedDateTime` (whose zone is
+/// reused). A missing `timeZone` is a `TypeError` (it is a required field of a
+/// `ZonedDateTime` property bag).
+fn timezone_field(obj: *const crate::object::ObjectHeader) -> TimeZone {
+    let raw = field(obj, "timeZone");
+    if is_undefined(raw) {
+        type_error(
+            "ZonedDateTime property bag is missing a required \"timeZone\" field".to_string(),
+        );
+    }
+    timezone(raw)
+}
+
+/// Build a [`PartialZonedDateTime`] from a JS property bag for
+/// `Temporal.ZonedDateTime.from`. Returns `None` if `v` is not a plain object.
+pub fn zoned_partial(v: f64) -> Option<PartialZonedDateTime> {
+    let obj = as_obj(v)?;
+    let calendar = match str_field(obj, "calendar") {
+        Some(s) => ok_or_throw(s.parse::<Calendar>()),
+        None => Calendar::default(),
+    };
+    let mut p = PartialZonedDateTime::new();
+    p.calendar = calendar;
+    p.fields.calendar_fields = calendar_fields(obj);
+    p.fields.time = partial_time(obj);
+    p.fields.offset = offset_field(obj);
+    p.timezone = Some(timezone_field(obj));
+    Some(p)
 }
 
 // ---- conversion helpers ---------------------------------------------------
@@ -522,12 +559,16 @@ pub fn optional_instant_timezone(arg: f64) -> Option<TimeZone> {
 /// `Temporal.ZonedDateTime` whose zone is reused.
 pub fn timezone(v: f64) -> TimeZone {
     if JSValue::from_bits(v.to_bits()).is_string() {
+        // A string identifier: an invalid one is a `RangeError`.
         return ok_or_throw(TimeZone::try_from_str(&read_string(v)));
     }
     if let Some(super::TemporalValue::ZonedDateTime(z)) = super::temporal_value_ref(v) {
         return *z.time_zone();
     }
-    range("expected a time-zone identifier string");
+    // `ToTemporalTimeZoneIdentifier`: a non-string, non-Temporal value (symbol,
+    // plain object, number, boolean, null, bigint) is never a valid time-zone
+    // identifier and cannot convert to one → `TypeError` (not `RangeError`).
+    type_error("time zone must be a string identifier or Temporal.ZonedDateTime".to_string());
 }
 
 /// Parse a `getTimeZoneTransition` direction argument — a `"next"`/`"previous"`
