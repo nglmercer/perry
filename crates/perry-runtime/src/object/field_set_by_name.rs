@@ -479,10 +479,14 @@ pub extern "C" fn js_object_set_field_by_name(
                 let name_len = (*key).byte_len as usize;
                 let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
                 if let Ok(name_str) = std::str::from_utf8(name_bytes) {
+                    // ECMAScript "poison pill" — assigning `caller`/`arguments`
+                    // on any strict-mode function (Perry compiles everything
+                    // strict: declarations, expressions, bound and built-in
+                    // closures, arrows) throws via the %ThrowTypeError%
+                    // accessor's missing setter. A genuine own data prop of
+                    // that name (defineProperty round-trip) still wins.
                     if matches!(name_str, "caller" | "arguments")
-                        && crate::closure::closure_is_arrow(
-                            obj as *const crate::closure::ClosureHeader,
-                        )
+                        && !crate::closure::closure_has_own_dynamic_prop(obj as usize, name_str)
                     {
                         crate::fs::validate::throw_type_error_with_code(
                             "Restricted function property assignment",
@@ -512,10 +516,14 @@ pub extern "C" fn js_object_set_field_by_name(
                 let name_len = (*key).byte_len as usize;
                 let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
                 if let Ok(name_str) = std::str::from_utf8(name_bytes) {
+                    // ECMAScript "poison pill" — assigning `caller`/`arguments`
+                    // on any strict-mode function (Perry compiles everything
+                    // strict: declarations, expressions, bound and built-in
+                    // closures, arrows) throws via the %ThrowTypeError%
+                    // accessor's missing setter. A genuine own data prop of
+                    // that name (defineProperty round-trip) still wins.
                     if matches!(name_str, "caller" | "arguments")
-                        && crate::closure::closure_is_arrow(
-                            obj as *const crate::closure::ClosureHeader,
-                        )
+                        && !crate::closure::closure_has_own_dynamic_prop(obj as usize, name_str)
                     {
                         crate::fs::validate::throw_type_error_with_code(
                             "Restricted function property assignment",
