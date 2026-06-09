@@ -140,6 +140,55 @@ pub extern "C" fn js_object_freeze(obj_value: f64) -> f64 {
             (*gc)._reserved |= crate::gc::OBJ_FLAG_FROZEN
                 | crate::gc::OBJ_FLAG_SEALED
                 | crate::gc::OBJ_FLAG_NO_EXTEND;
+            // TypedArray receivers are NOT `ObjectHeader`s — the key walk
+            // below would read a garbage `keys_array` off the TA header and
+            // can fault depending on heap layout. The GC flags above are the
+            // entire integrity state for them.
+            if crate::typedarray::lookup_typed_array_kind(obj as usize).is_some()
+                || crate::typedarray_props::typed_array_addr_from_value(obj_value).is_some()
+            {
+                return obj_value;
+            }
+            // Closures: own props are `name`/`length` + dynamic props — the
+            // keys_array walk below would read garbage off the ClosureHeader.
+            // Record explicit non-writable/non-configurable attrs.
+            if crate::closure::is_closure_ptr(obj as usize) {
+                let owner = obj as usize;
+                for builtin in ["name", "length"] {
+                    super::set_property_attrs(
+                        owner,
+                        builtin.to_string(),
+                        PropertyAttrs::new(false, false, false),
+                    );
+                }
+                for (name, _) in crate::closure::closure_dynamic_props_snapshot(owner) {
+                    let cur = super::get_property_attrs(owner, &name)
+                        .unwrap_or(PropertyAttrs::new(true, true, true));
+                    super::set_property_attrs(
+                        owner,
+                        name,
+                        PropertyAttrs::new(false, cur.enumerable(), false),
+                    );
+                }
+                mark_all_symbol_keys(
+                    obj, /*drop_writable=*/ true, /*drop_configurable=*/ true,
+                );
+                return obj_value;
+            }
+            // Date / RegExp / Error exotic instances: their own props live in
+            // the side tables, so freeze them there instead of the key walk.
+            if let Some(kind) = super::exotic_expando::exotic_expando_kind(obj as usize) {
+                for key in super::exotic_expando::exotic_own_keys(kind, obj as usize, false) {
+                    let cur = super::get_property_attrs(obj as usize, &key)
+                        .unwrap_or(PropertyAttrs::new(true, true, true));
+                    super::set_property_attrs(
+                        obj as usize,
+                        key,
+                        PropertyAttrs::new(false, cur.enumerable(), false),
+                    );
+                }
+                return obj_value;
+            }
             // Drop writable + configurable for every existing key.
             mark_all_keys(
                 obj, /*drop_writable=*/ true, false, /*drop_configurable=*/ true,
@@ -166,6 +215,53 @@ pub extern "C" fn js_object_seal(obj_value: f64) -> f64 {
         if !obj.is_null() && (obj as usize) > 0x10000 {
             let gc = gc_header_for(obj);
             (*gc)._reserved |= crate::gc::OBJ_FLAG_SEALED | crate::gc::OBJ_FLAG_NO_EXTEND;
+            // TypedArray receivers: GC flags only — see `js_object_freeze`.
+            if crate::typedarray::lookup_typed_array_kind(obj as usize).is_some()
+                || crate::typedarray_props::typed_array_addr_from_value(obj_value).is_some()
+            {
+                return obj_value;
+            }
+            // Closures: seal via the side tables (drop configurable only) —
+            // see the matching arm in `js_object_freeze`.
+            if crate::closure::is_closure_ptr(obj as usize) {
+                let owner = obj as usize;
+                for builtin in ["name", "length"] {
+                    let cur = super::get_property_attrs(owner, builtin)
+                        .unwrap_or(PropertyAttrs::new(false, false, true));
+                    super::set_property_attrs(
+                        owner,
+                        builtin.to_string(),
+                        PropertyAttrs::new(cur.writable(), cur.enumerable(), false),
+                    );
+                }
+                for (name, _) in crate::closure::closure_dynamic_props_snapshot(owner) {
+                    let cur = super::get_property_attrs(owner, &name)
+                        .unwrap_or(PropertyAttrs::new(true, true, true));
+                    super::set_property_attrs(
+                        owner,
+                        name,
+                        PropertyAttrs::new(cur.writable(), cur.enumerable(), false),
+                    );
+                }
+                mark_all_symbol_keys(
+                    obj, /*drop_writable=*/ false, /*drop_configurable=*/ true,
+                );
+                return obj_value;
+            }
+            // Date / RegExp / Error exotic instances: seal via the side
+            // tables (drop configurable only) — see `js_object_freeze`.
+            if let Some(kind) = super::exotic_expando::exotic_expando_kind(obj as usize) {
+                for key in super::exotic_expando::exotic_own_keys(kind, obj as usize, false) {
+                    let cur = super::get_property_attrs(obj as usize, &key)
+                        .unwrap_or(PropertyAttrs::new(true, true, true));
+                    super::set_property_attrs(
+                        obj as usize,
+                        key,
+                        PropertyAttrs::new(cur.writable(), cur.enumerable(), false),
+                    );
+                }
+                return obj_value;
+            }
             // Drop configurable for every existing key (but leave writable intact).
             mark_all_keys(
                 obj, /*drop_writable=*/ false, false, /*drop_configurable=*/ true,
@@ -216,6 +312,61 @@ unsafe fn object_integrity_level(obj: *mut ObjectHeader, frozen: bool) -> bool {
     let gc = gc_header_for(obj);
     if (*gc)._reserved & crate::gc::OBJ_FLAG_NO_EXTEND == 0 {
         return false;
+    }
+    // Closures: own props are `name`/`length` + dynamic props (side-table
+    // attrs), NOT a `keys_array` — the walk below would read garbage off the
+    // ClosureHeader. `name`/`length` are non-writable but configurable by
+    // default, so an un-frozen function fails both levels; `js_object_freeze`
+    // / `seal` record explicit attrs that satisfy them.
+    if (*gc).obj_type == crate::gc::GC_TYPE_CLOSURE || crate::closure::is_closure_ptr(obj as usize)
+    {
+        let owner = obj as usize;
+        for builtin in ["name", "length"] {
+            if crate::closure::closure_is_key_deleted(owner, builtin) {
+                continue;
+            }
+            let attrs = get_property_attrs(owner, builtin)
+                .unwrap_or(PropertyAttrs::new(false, false, true));
+            if attrs.configurable() {
+                return false;
+            }
+        }
+        for (name, _) in crate::closure::closure_dynamic_props_snapshot(owner) {
+            if crate::closure::closure_is_key_deleted(owner, &name) {
+                continue;
+            }
+            let Some(attrs) = get_property_attrs(owner, &name) else {
+                return false;
+            };
+            if attrs.configurable() {
+                return false;
+            }
+            if frozen
+                && get_accessor_descriptor(owner, &name).is_none()
+                && attrs.writable()
+                && name != "prototype"
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    // Date / RegExp / Error exotic instances: own props live in the side
+    // tables; the keys_array walk below would bit-cast the cell.
+    if let Some(kind) = super::exotic_expando::exotic_expando_kind(obj as usize) {
+        let owner = obj as usize;
+        for name in super::exotic_expando::exotic_own_keys(kind, owner, false) {
+            let Some(attrs) = get_property_attrs(owner, &name) else {
+                return false;
+            };
+            if attrs.configurable() {
+                return false;
+            }
+            if frozen && get_accessor_descriptor(owner, &name).is_none() && attrs.writable() {
+                return false;
+            }
+        }
+        return true;
     }
     // Arrays: a non-empty array's dense elements are configurable/writable
     // unless frozen/sealed dropped those bits (tracked by the array flags).

@@ -41,6 +41,9 @@ pub fn alloc_date_cell(ts: f64) -> f64 {
             crate::gc::GC_TYPE_DATE_CELL,
         ) as *mut DateCell;
         (*ptr).ts = ts;
+        // A previous (collected) Date at this address may have left expando
+        // properties in the side table; a fresh Date must start clean.
+        crate::object::exotic_expando::expando_clear_on_alloc(ptr as usize);
         f64::from_bits(crate::value::JSValue::pointer(ptr as *const u8).bits())
     }
 }

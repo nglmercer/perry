@@ -35,6 +35,7 @@ mod date_proto_thunks;
 mod delete_rest;
 mod descriptors;
 mod disposable_proto_thunks;
+pub(crate) mod exotic_expando;
 mod field_get_set;
 mod field_set_by_name;
 mod global_fetch;
@@ -90,6 +91,7 @@ pub(crate) use collection_proto_thunks::{is_builtin_map_set_value, is_builtin_se
 pub(crate) use data_view_registry::extends_builtin_data_view;
 pub use delete_rest::*;
 pub use descriptors::*;
+pub use exotic_expando::scan_exotic_expando_roots_mut;
 pub use field_get_set::*;
 pub use field_set_by_name::*;
 pub use global_this::*;

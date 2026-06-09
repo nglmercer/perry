@@ -838,6 +838,36 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                         &[(I64, &ctor_handle), (I64, &key_raw)],
                     ));
                 }
+                // Object statics read as VALUES (`var f = Object.seal`,
+                // `typeof Object.defineProperties`, `Object.is.length`).
+                // The receiver name is collapsed to GlobalGet(0), so route by
+                // property name — but ONLY names unique to `Object` among the
+                // builtin globals: the Reflect-overlapping ones
+                // (defineProperty / getOwnPropertyDescriptor / getPrototypeOf /
+                // setPrototypeOf / isExtensible / preventExtensions) and
+                // Map-overlapping `groupBy` must keep their current behavior.
+                // Resolves the reified ctor closure installed by
+                // `install_builtin_constructor_statics`.
+                if matches!(
+                    property.as_str(),
+                    "keys"
+                        | "values"
+                        | "entries"
+                        | "fromEntries"
+                        | "assign"
+                        | "create"
+                        | "seal"
+                        | "freeze"
+                        | "isFrozen"
+                        | "isSealed"
+                        | "is"
+                        | "getOwnPropertyNames"
+                        | "getOwnPropertySymbols"
+                        | "getOwnPropertyDescriptors"
+                        | "defineProperties"
+                ) {
+                    return Ok(lower_global_builtin_static_value(ctx, "Object", property));
+                }
                 // #3527: `Object.hasOwn` read as a VALUE (not a direct call) —
                 // e.g. iconv-lite's merge-exports does
                 // `var hasOwn = typeof Object.hasOwn === "undefined" ? … :

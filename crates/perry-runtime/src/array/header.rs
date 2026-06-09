@@ -952,6 +952,11 @@ pub(crate) unsafe fn array_numeric_raw_f64_get(arr: *mut ArrayHeader, index: u32
     if arr.is_null() {
         return None;
     }
+    // An index converted to an accessor (or given custom attrs) via
+    // `Object.defineProperty` must dispatch through the slow path.
+    if array_object_flags(arr) & crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS != 0 {
+        return None;
+    }
     if index >= (*arr).length {
         return None;
     }
@@ -970,6 +975,10 @@ pub(crate) unsafe fn array_numeric_raw_f64_set_inbounds(
 ) -> bool {
     let arr = clean_arr_ptr_mut(arr);
     if arr.is_null() || index >= (*arr).length {
+        return false;
+    }
+    // Accessor setters / non-writable attrs on indices need the slow path.
+    if array_object_flags(arr) & crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS != 0 {
         return false;
     }
     let original_bits = value.to_bits();

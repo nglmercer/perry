@@ -4808,8 +4808,92 @@ extern "C" fn object_freeze_thunk(
 extern "C" fn object_create_thunk(
     _closure: *const crate::closure::ClosureHeader,
     value: f64,
+    props: f64,
 ) -> f64 {
-    super::js_object_create(value)
+    if props.to_bits() == crate::value::TAG_UNDEFINED {
+        super::js_object_create(value)
+    } else {
+        super::js_object_create_with_props(value, props)
+    }
+}
+
+extern "C" fn object_seal_thunk(_closure: *const crate::closure::ClosureHeader, value: f64) -> f64 {
+    super::js_object_seal(value)
+}
+
+extern "C" fn object_is_sealed_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    value: f64,
+) -> f64 {
+    super::js_object_is_sealed(value)
+}
+
+extern "C" fn object_is_frozen_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    value: f64,
+) -> f64 {
+    super::js_object_is_frozen(value)
+}
+
+extern "C" fn object_is_extensible_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    value: f64,
+) -> f64 {
+    super::js_object_is_extensible(value)
+}
+
+extern "C" fn object_prevent_extensions_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    value: f64,
+) -> f64 {
+    super::js_object_prevent_extensions(value)
+}
+
+extern "C" fn object_is_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    a: f64,
+    b: f64,
+) -> f64 {
+    super::js_object_is(a, b)
+}
+
+extern "C" fn object_set_prototype_of_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    obj: f64,
+    proto: f64,
+) -> f64 {
+    super::js_object_set_prototype_of(obj, proto)
+}
+
+extern "C" fn object_get_own_property_symbols_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    value: f64,
+) -> f64 {
+    let arr = unsafe { crate::symbol::js_object_get_own_property_symbols(value) };
+    crate::value::js_nanbox_pointer(arr)
+}
+
+extern "C" fn object_get_own_property_descriptors_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    value: f64,
+) -> f64 {
+    super::js_object_get_own_property_descriptors(value)
+}
+
+extern "C" fn object_define_properties_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    target: f64,
+    descriptors: f64,
+) -> f64 {
+    super::js_object_define_properties(target, descriptors)
+}
+
+extern "C" fn object_group_by_thunk(
+    _closure: *const crate::closure::ClosureHeader,
+    items: f64,
+    callback: f64,
+) -> f64 {
+    super::js_object_group_by(items, callback)
 }
 
 extern "C" fn object_get_prototype_of_thunk(
@@ -5654,7 +5738,72 @@ fn install_builtin_constructor_statics(name: &str, ctor: *mut crate::closure::Cl
                 false,
             );
             install_constructor_static(ctor, "freeze", object_freeze_thunk as *const u8, 1, false);
-            install_constructor_static(ctor, "create", object_create_thunk as *const u8, 1, false);
+            install_constructor_static(ctor, "create", object_create_thunk as *const u8, 2, false);
+            install_constructor_static(ctor, "seal", object_seal_thunk as *const u8, 1, false);
+            install_constructor_static(
+                ctor,
+                "isSealed",
+                object_is_sealed_thunk as *const u8,
+                1,
+                false,
+            );
+            install_constructor_static(
+                ctor,
+                "isFrozen",
+                object_is_frozen_thunk as *const u8,
+                1,
+                false,
+            );
+            install_constructor_static(
+                ctor,
+                "isExtensible",
+                object_is_extensible_thunk as *const u8,
+                1,
+                false,
+            );
+            install_constructor_static(
+                ctor,
+                "preventExtensions",
+                object_prevent_extensions_thunk as *const u8,
+                1,
+                false,
+            );
+            install_constructor_static(ctor, "is", object_is_thunk as *const u8, 2, false);
+            install_constructor_static(
+                ctor,
+                "setPrototypeOf",
+                object_set_prototype_of_thunk as *const u8,
+                2,
+                false,
+            );
+            install_constructor_static(
+                ctor,
+                "getOwnPropertySymbols",
+                object_get_own_property_symbols_thunk as *const u8,
+                1,
+                false,
+            );
+            install_constructor_static(
+                ctor,
+                "getOwnPropertyDescriptors",
+                object_get_own_property_descriptors_thunk as *const u8,
+                1,
+                false,
+            );
+            install_constructor_static(
+                ctor,
+                "defineProperties",
+                object_define_properties_thunk as *const u8,
+                2,
+                false,
+            );
+            install_constructor_static(
+                ctor,
+                "groupBy",
+                object_group_by_thunk as *const u8,
+                2,
+                false,
+            );
             install_constructor_static(
                 ctor,
                 "getPrototypeOf",

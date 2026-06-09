@@ -303,12 +303,12 @@ pub extern "C" fn js_object_set_field_by_name(
             return;
         }
     }
-    // #2089: a `Date` is a NaN-boxed pointer to an 8-byte `DateCell`. Setting
-    // an arbitrary property on it (`date.foo = x`) must NOT deref the small
-    // cell as an `ObjectHeader` below (memory corruption). Perry doesn't model
-    // expando properties on Date objects, so treat it as a no-op — the same
-    // observable result as the old value-type representation (a property set
-    // on a primitive number).
+    // #2089: a `Date` is a NaN-boxed pointer to an 8-byte `DateCell`, and a
+    // RegExp is a `RegExpHeader` — neither is an `ObjectHeader`, so a write
+    // must NOT fall through to the object deref below (memory corruption).
+    // Expando properties on these exotic instances live in the side table
+    // (`object::exotic_expando`), honoring accessor descriptors and
+    // attribute writability installed by `Object.defineProperty`.
     {
         let bits = obj as u64;
         let top16 = bits >> 48;
@@ -319,8 +319,28 @@ pub extern "C" fn js_object_set_field_by_name(
         } else {
             0
         };
-        if addr != 0 && crate::date::is_date_cell_addr(addr) {
-            return;
+        if addr != 0 {
+            if let Some(kind) = super::exotic_expando::exotic_expando_kind(addr) {
+                if !key.is_null() {
+                    unsafe {
+                        let mut sso = [0u8; crate::value::SHORT_STRING_MAX_LEN];
+                        if let Some(name_bytes) = crate::string::js_string_key_bytes(
+                            crate::value::JSValue::string_ptr(key as *mut _),
+                            &mut sso,
+                        ) {
+                            if let Ok(name) = std::str::from_utf8(name_bytes) {
+                                let receiver = f64::from_bits(
+                                    crate::value::JSValue::pointer(addr as *const u8).bits(),
+                                );
+                                let _ = super::exotic_expando::exotic_set_property(
+                                    addr, kind, name, value, receiver,
+                                );
+                            }
+                        }
+                    }
+                }
+                return;
+            }
         }
     }
     // Strip NaN-boxing tags if present (defensive: handle POINTER_TAG, UNDEFINED, NULL, etc.)

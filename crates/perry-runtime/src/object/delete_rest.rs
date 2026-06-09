@@ -78,6 +78,26 @@ pub extern "C" fn js_object_delete_field(
         if let Some(result) = super::arguments_object_before_delete(obj, key) {
             return result;
         }
+        // Date / RegExp / Error exotic instances: expando props live in side
+        // tables; the keys_array scan below would bit-cast the cell. Builtin
+        // own slots (`lastIndex`) are non-configurable → delete fails.
+        if let Some(kind) = super::exotic_expando::exotic_expando_kind(obj as usize) {
+            use super::exotic_expando::ExoticKind;
+            if let Some(name) = super::has_own_helpers::str_from_string_header(key) {
+                if let Some(attrs) = get_property_attrs(obj as usize, name) {
+                    if !attrs.configurable() {
+                        return 0;
+                    }
+                }
+                if kind == ExoticKind::RegExp && name == "lastIndex" {
+                    return 0;
+                }
+                super::exotic_expando::value_remove(kind, obj as usize, name);
+                super::clear_accessor_descriptor(obj as usize, name);
+                super::clear_property_attrs(obj as usize, name);
+            }
+            return 1;
+        }
         if (obj as usize) >= crate::gc::GC_HEADER_SIZE + 0x1000 {
             let gc_header =
                 (obj as *const u8).sub(crate::gc::GC_HEADER_SIZE) as *const crate::gc::GcHeader;

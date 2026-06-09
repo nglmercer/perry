@@ -752,6 +752,29 @@ unsafe fn set_symbol_property(obj_f64: f64, sym_f64: f64, value_f64: f64) -> f64
         return value_f64;
     }
     let has_own_data = object_symbol_data_property_exists(obj_key, sym_key);
+    // Frozen / sealed / non-extensible receivers reject symbol-keyed writes
+    // like string-keyed ones: an existing prop is non-writable when frozen
+    // (or its per-symbol attrs say so), a new prop is forbidden when
+    // non-extensible. Only heap receivers carry the GC flag word.
+    if (obj_f64.to_bits() >> 48) == 0x7FFD
+        && obj_key >= 0x10000
+        && crate::object::is_valid_obj_ptr(obj_key as *const u8)
+    {
+        let gc = (obj_key - crate::gc::GC_HEADER_SIZE) as *const crate::gc::GcHeader;
+        let flags = (*gc)._reserved;
+        if has_own_data {
+            if flags & crate::gc::OBJ_FLAG_FROZEN != 0 {
+                return value_f64;
+            }
+            if let Some(attrs) = get_symbol_property_attrs(obj_key, sym_key) {
+                if !attrs.writable() {
+                    return value_f64;
+                }
+            }
+        } else if flags & crate::gc::OBJ_FLAG_NO_EXTEND != 0 {
+            return value_f64;
+        }
+    }
     if !has_own_data {
         let bits = obj_f64.to_bits();
         if (bits >> 48) == 0x7FFE {

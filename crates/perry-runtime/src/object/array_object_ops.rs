@@ -69,6 +69,13 @@ pub(crate) unsafe fn array_set_length_from_descriptor(
     if desc_ptr.is_null() {
         return true;
     }
+    // A customized `length` (e.g. writable:false) gates the raw numeric
+    // fast paths — see OBJ_FLAG_ARRAY_DESCRIPTORS in define_array_property.
+    // Set here too so the `Reflect.defineProperty` entry point is covered.
+    {
+        let gc = gc_header_for(obj);
+        (*gc)._reserved |= crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS;
+    }
     let arr = obj as *mut crate::array::ArrayHeader;
 
     let read_present = |name: &[u8]| -> bool {
@@ -238,6 +245,15 @@ pub(crate) unsafe fn define_array_property(
         return Some(true);
     };
 
+    // Any explicit per-index/named/length descriptor makes the raw numeric
+    // fast paths ineligible for this array — they can't see accessors or
+    // attribute overrides, so they must decline to the descriptor-aware
+    // element get/set (OBJ_FLAG_ARRAY_DESCRIPTORS gates them).
+    {
+        let gc = gc_header_for(obj);
+        (*gc)._reserved |= crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS;
+    }
+
     if key_name == "length" {
         return Some(array_set_length_from_descriptor(obj, descriptor_value));
     }
@@ -324,6 +340,16 @@ pub(crate) unsafe fn define_array_property(
             } else {
                 prior.map(|a| a.set).unwrap_or(0)
             };
+            // Materialize BEFORE storing the accessor — the extend helper
+            // dispatches accessor setters, so installing the accessor first
+            // would turn this internal materialization into a setter call.
+            if !exists {
+                crate::array::js_array_set_f64_extend(
+                    arr,
+                    index,
+                    f64::from_bits(crate::value::TAG_UNDEFINED),
+                );
+            }
             set_accessor_descriptor(
                 obj as usize,
                 key_name.to_string(),
@@ -332,18 +358,15 @@ pub(crate) unsafe fn define_array_property(
                     set: set_bits,
                 },
             );
-            // Ensure the index counts as an own key for reflection.
-            if !exists {
-                crate::array::js_array_set_f64_extend(
-                    arr,
-                    index,
-                    f64::from_bits(crate::value::TAG_UNDEFINED),
-                );
-            }
             // Retain existing attrs the descriptor omits when redefining; new
-            // accessor defaults to non-enumerable / non-configurable.
+            // accessor defaults to non-enumerable / non-configurable. An
+            // existing dense element with no side-table entry has default
+            // all-true attributes (so data→accessor keeps enumerable:true).
             let cur = if exists {
-                super::get_property_attrs(obj as usize, key_name)
+                Some(
+                    super::get_property_attrs(obj as usize, key_name)
+                        .unwrap_or_else(|| PropertyAttrs::new(true, true, true)),
+                )
             } else {
                 None
             };
@@ -400,11 +423,35 @@ pub(crate) unsafe fn define_array_property(
             }
         }
 
+        // A GENERIC descriptor (attrs only, no value/writable/get/set) on an
+        // existing ACCESSOR property just updates the attributes — it must
+        // NOT convert the accessor back to data (spec ValidateAndApply step:
+        // IsGenericDescriptor → no [[Get]]/[[Set]]/[[Value]] changes).
+        if !has_value
+            && !super::desc_has_field(descriptor_value, b"writable")
+            && super::get_accessor_descriptor(obj as usize, key_name).is_some()
+        {
+            let cur = cur_attrs.unwrap_or(PropertyAttrs::new(false, false, false));
+            let enumerable = read_bool(b"enumerable").unwrap_or_else(|| cur.enumerable());
+            let configurable = read_bool(b"configurable").unwrap_or_else(|| cur.configurable());
+            set_property_attrs(
+                obj as usize,
+                key_name.to_string(),
+                PropertyAttrs::new(false, enumerable, configurable),
+            );
+            return Some(true);
+        }
+
         // Redefining an index that was previously an accessor back to a data
         // property: drop the stale accessor entry.
         ACCESSOR_DESCRIPTORS.with(|m| {
             m.borrow_mut().remove(&(obj as usize, key_name.to_string()));
         });
+        // [[DefineOwnProperty]] writes the slot directly — clear any stale
+        // attrs first so the extend helper's [[Set]]-side writability check
+        // (added for ordinary `arr[i] = v` writes) can't reject this store.
+        // The final attributes are recorded below after the write.
+        super::clear_property_attrs(obj as usize, key_name);
 
         if has_value {
             crate::array::js_array_set_f64_extend(arr, index, value);
@@ -436,6 +483,58 @@ pub(crate) unsafe fn define_array_property(
         );
         let _ = obj_value;
         return Some(true);
+    }
+
+    // Named (non-index) accessor on an array target: store get/set in the
+    // side table, exactly like the index path above. Without this, a
+    // `defineProperty(arr, "prop", {get,set})` silently stored `undefined`
+    // as a data property and dropped the accessors.
+    {
+        let desc_has_get = super::desc_has_field(descriptor_value, b"get");
+        let desc_has_set = super::desc_has_field(descriptor_value, b"set");
+        if desc_has_get || desc_has_set {
+            let get_key = crate::string::js_string_from_bytes(b"get".as_ptr(), 3);
+            let set_key = crate::string::js_string_from_bytes(b"set".as_ptr(), 3);
+            let get_field = js_object_get_field_by_name(desc_ptr as *const ObjectHeader, get_key);
+            let set_field = js_object_get_field_by_name(desc_ptr as *const ObjectHeader, set_key);
+            let recv = crate::value::js_nanbox_pointer(obj as i64);
+            let prior = super::get_accessor_descriptor(obj as usize, key_name);
+            let get_bits = if desc_has_get {
+                if get_field.is_undefined() {
+                    0
+                } else {
+                    crate::closure::clone_closure_rebind_this(get_field.bits(), recv)
+                }
+            } else {
+                prior.map(|a| a.get).unwrap_or(0)
+            };
+            let set_bits = if desc_has_set {
+                if set_field.is_undefined() {
+                    0
+                } else {
+                    crate::closure::clone_closure_rebind_this(set_field.bits(), recv)
+                }
+            } else {
+                prior.map(|a| a.set).unwrap_or(0)
+            };
+            set_accessor_descriptor(
+                obj as usize,
+                key_name.to_string(),
+                AccessorDescriptor {
+                    get: get_bits,
+                    set: set_bits,
+                },
+            );
+            let enumerable = read_bool(b"enumerable").unwrap_or(false);
+            let configurable = read_bool(b"configurable").unwrap_or(false);
+            set_property_attrs(
+                obj as usize,
+                key_name.to_string(),
+                PropertyAttrs::new(false, enumerable, configurable),
+            );
+            let _ = obj_value;
+            return Some(true);
+        }
     }
 
     crate::array::array_named_property_set(arr, key_str, value);

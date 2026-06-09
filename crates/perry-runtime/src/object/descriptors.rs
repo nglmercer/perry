@@ -212,6 +212,68 @@ pub extern "C" fn js_object_get_own_property_descriptor(obj_value: f64, key_valu
             );
         }
 
+        // Date / RegExp / Error exotic instances: own properties live in the
+        // expando side tables (plus a few builtin own slots), never in an
+        // `ObjectHeader` — the ordinary path below would bit-cast the cell.
+        if let Some((addr, kind)) = super::exotic_expando::exotic_expando_kind_of_value(obj_value) {
+            use super::exotic_expando::ExoticKind;
+            let Some(name) = super::metadata_key_to_string(key_value) else {
+                return f64::from_bits(crate::value::TAG_UNDEFINED);
+            };
+            if let Some(acc) = super::get_accessor_descriptor(addr, &name) {
+                let attrs = super::get_property_attrs(addr, &name)
+                    .unwrap_or(PropertyAttrs::new(false, false, false));
+                let undef = crate::value::TAG_UNDEFINED;
+                return build_accessor_descriptor(
+                    f64::from_bits(if acc.get == 0 { undef } else { acc.get }),
+                    f64::from_bits(if acc.set == 0 { undef } else { acc.set }),
+                    attrs.enumerable(),
+                    attrs.configurable(),
+                );
+            }
+            if let Some(bits) = super::exotic_expando::value_lookup(kind, addr, &name) {
+                let attrs = super::get_property_attrs(addr, &name)
+                    .unwrap_or(PropertyAttrs::new(true, true, true));
+                return build_data_descriptor(
+                    f64::from_bits(bits),
+                    attrs.writable(),
+                    attrs.enumerable(),
+                    attrs.configurable(),
+                );
+            }
+            // Builtin own slots: RegExp `lastIndex` (writable, non-enum,
+            // non-config) and Error `message`/`stack` (writable, non-enum,
+            // configurable).
+            if kind == ExoticKind::RegExp && name == "lastIndex" {
+                let attrs = super::get_property_attrs(addr, &name)
+                    .unwrap_or(PropertyAttrs::new(true, false, false));
+                let re = addr as *const crate::regex::RegExpHeader;
+                return build_data_descriptor(
+                    f64::from_bits((*re).last_index),
+                    attrs.writable(),
+                    attrs.enumerable(),
+                    attrs.configurable(),
+                );
+            }
+            if kind == ExoticKind::Error && matches!(name.as_str(), "message" | "stack") {
+                let attrs = super::get_property_attrs(addr, &name)
+                    .unwrap_or(PropertyAttrs::new(true, false, true));
+                let err = addr as *mut crate::error::ErrorHeader;
+                let s = if name == "message" {
+                    crate::error::js_error_get_message(err)
+                } else {
+                    crate::error::js_error_get_stack(err)
+                };
+                return build_data_descriptor(
+                    f64::from_bits(crate::js_nanbox_string(s as i64).to_bits()),
+                    attrs.writable(),
+                    attrs.enumerable(),
+                    attrs.configurable(),
+                );
+            }
+            return f64::from_bits(crate::value::TAG_UNDEFINED);
+        }
+
         if let Some(class_id) = class_ref_id(obj_value) {
             let method_name = metadata_key_to_string(key_value);
             if let Some(method_name) = method_name {
@@ -477,9 +539,15 @@ pub extern "C" fn js_object_get_own_property_descriptor(obj_value: f64, key_valu
                 };
                 let is_frozen = crate::array::array_is_frozen(arr);
                 if name == "length" {
+                    // `defineProperty(arr, "length", {writable:false})` records
+                    // the flag in the attrs side table — honor it here.
+                    let writable = !is_frozen
+                        && get_property_attrs(obj as usize, "length")
+                            .map(|a| a.writable())
+                            .unwrap_or(true);
                     return build_data_descriptor(
                         crate::array::js_array_length(arr) as f64,
-                        !is_frozen,
+                        writable,
                         false,
                         false,
                     );
@@ -524,6 +592,18 @@ pub extern "C" fn js_object_get_own_property_descriptor(obj_value: f64, key_valu
                         );
                     }
                     return f64::from_bits(crate::value::TAG_UNDEFINED);
+                }
+                // Named (non-index) accessor installed via defineProperty.
+                if let Some(acc) = get_accessor_descriptor(obj as usize, name) {
+                    let attrs = get_property_attrs(obj as usize, name)
+                        .unwrap_or(PropertyAttrs::new(false, false, false));
+                    let undef = crate::value::TAG_UNDEFINED;
+                    return build_accessor_descriptor(
+                        f64::from_bits(if acc.get == 0 { undef } else { acc.get }),
+                        f64::from_bits(if acc.set == 0 { undef } else { acc.set }),
+                        attrs.enumerable(),
+                        attrs.configurable(),
+                    );
                 }
                 if let Some(value) = crate::array::array_named_property_get(arr, key_str) {
                     let attrs = get_property_attrs(obj as usize, name)
@@ -806,6 +886,28 @@ pub extern "C" fn js_object_get_own_property_names(obj_value: f64) -> f64 {
             );
             return f64::from_bits((result as u64) | 0x7FFD_0000_0000_0000);
         }
+        // Date / RegExp / Error exotic instances: expando keys (including
+        // non-enumerable ones) + per-kind builtin own slots.
+        if let Some((addr, kind)) = super::exotic_expando::exotic_expando_kind_of_value(obj_value) {
+            use super::exotic_expando::ExoticKind;
+            let mut names = match kind {
+                ExoticKind::RegExp => vec!["lastIndex".to_string()],
+                ExoticKind::Error => vec!["message".to_string(), "stack".to_string()],
+                ExoticKind::Date => Vec::new(),
+            };
+            for key in super::exotic_expando::exotic_own_keys(kind, addr, false) {
+                if !names.contains(&key) {
+                    names.push(key);
+                }
+            }
+            let arr = crate::array::js_array_alloc(names.len().max(1) as u32);
+            let mut out = arr;
+            for name in names {
+                let key = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+                out = crate::array::js_array_push(out, crate::value::JSValue::string_ptr(key));
+            }
+            return f64::from_bits((out as u64) | 0x7FFD_0000_0000_0000);
+        }
         if let Some(class_id) = class_ref_id(obj_value) {
             let is_prototype_ref = super::class_prototype_ref_id(obj_value).is_some();
             let mut names: Vec<String> = if is_prototype_ref {
@@ -921,10 +1023,27 @@ pub extern "C" fn js_object_get_own_property_names(obj_value: f64) -> f64 {
                     }
                     let lk = crate::string::js_string_from_bytes(b"length".as_ptr(), 6);
                     crate::array::js_array_push(result, JSValue::string_ptr(lk));
-                    for name in crate::array::array_named_property_names(ap, false) {
+                    let named = crate::array::array_named_property_names(ap, false);
+                    for name in &named {
                         let k =
                             crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
                         crate::array::js_array_push(result, JSValue::string_ptr(k));
+                    }
+                    // Accessor-only named properties (defineProperty {get/set})
+                    // are own keys too (gOPN includes non-enumerable).
+                    if super::descriptors_in_use() {
+                        for name in super::accessor_descriptor_keys_for_obj(ap as usize) {
+                            if super::canonical_array_index(&name).is_some()
+                                || named.contains(&name)
+                            {
+                                continue;
+                            }
+                            let k = crate::string::js_string_from_bytes(
+                                name.as_ptr(),
+                                name.len() as u32,
+                            );
+                            crate::array::js_array_push(result, JSValue::string_ptr(k));
+                        }
                     }
                 } else {
                     for i in 0..n {

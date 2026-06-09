@@ -433,6 +433,9 @@ pub extern "C" fn js_regexp_new(
             panic!("Failed to allocate RegExp");
         }
         let ptr = raw as *mut RegExpHeader;
+        // A previous (collected) RegExp at this address may have left expando
+        // properties in the side table; a fresh RegExp must start clean.
+        crate::object::exotic_expando::expando_clear_on_alloc(ptr as usize);
 
         (*ptr).regex_ptr = regex_ptr;
         (*ptr).pattern_ptr = pattern;

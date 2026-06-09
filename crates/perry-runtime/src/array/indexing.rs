@@ -195,6 +195,11 @@ pub extern "C" fn js_array_get_f64_unchecked(arr: *const ArrayHeader, index: u32
     if arr.is_null() {
         return f64::NAN;
     }
+    // Index accessors / custom attrs installed via `Object.defineProperty`
+    // need the descriptor-aware getter.
+    if array_object_flags(arr) & crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS != 0 {
+        return js_array_get_f64(arr, index);
+    }
     const TAG_UNDEFINED_F64: f64 = f64::from_bits(0x7FFC_0000_0000_0001u64);
     unsafe {
         let length = (*arr).length;
@@ -368,6 +373,11 @@ pub extern "C" fn js_array_set_f64_unchecked(arr: *mut ArrayHeader, index: u32, 
     if array_is_frozen(arr) {
         return;
     }
+    // Index accessors / non-writable attrs need the descriptor-aware setter.
+    if array_object_flags(arr) & crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS != 0 {
+        js_array_set_f64_extend(arr, index, value);
+        return;
+    }
     unsafe {
         let length = (*arr).length;
         if index >= length {
@@ -497,6 +507,38 @@ pub extern "C" fn js_array_set_f64_extend(
 
         if index == u32::MAX {
             return arr;
+        }
+
+        // Index properties customized via `Object.defineProperty`: dispatch
+        // accessor setters and honor non-writable data attributes before the
+        // dense-element store. Gated on the per-array descriptor flag so the
+        // common fast path pays one header-flag test.
+        if flags & crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS != 0 {
+            let key = index.to_string();
+            if let Some(acc) = crate::object::get_accessor_descriptor(arr as usize, &key) {
+                if acc.set != 0 {
+                    crate::object::invoke_accessor_setter(
+                        acc.set,
+                        crate::value::js_nanbox_pointer(arr as i64),
+                        value_handle.get_nanbox_f64(),
+                    );
+                }
+                return arr;
+            }
+            if let Some(attrs) = crate::object::get_property_attrs(arr as usize, &key) {
+                if !attrs.writable() {
+                    return arr;
+                }
+            }
+            // Extending past `length` requires a writable `length`.
+            if index >= length {
+                let len_writable = crate::object::get_property_attrs(arr as usize, "length")
+                    .map(|a| a.writable())
+                    .unwrap_or(true);
+                if !len_writable {
+                    return arr;
+                }
+            }
         }
 
         // If index is within bounds, just set it
@@ -655,6 +697,22 @@ pub extern "C" fn js_array_set_string_key(
     let existing = unsafe { array_named_property_get(arr, key).is_some() };
     if !existing && array_is_sealed_or_no_extend(arr) {
         return arr;
+    }
+    // Named accessor installed via `Object.defineProperty(arr, "prop",
+    // {get,set})`: dispatch the setter instead of the expando store.
+    if crate::object::descriptors_in_use() {
+        if let Some(acc) = crate::object::get_accessor_descriptor(arr as usize, key_str) {
+            if acc.set != 0 {
+                unsafe {
+                    crate::object::invoke_accessor_setter(
+                        acc.set,
+                        crate::value::js_nanbox_pointer(arr as i64),
+                        value,
+                    );
+                }
+            }
+            return arr;
+        }
     }
     if let Some(attrs) = crate::object::get_property_attrs(arr as usize, key_str) {
         if !attrs.writable() {
