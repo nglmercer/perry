@@ -14,7 +14,7 @@ Linux C toolchain by distribution:
 # Debian / Ubuntu / Pop!_OS / Mint
 sudo apt install build-essential
 
-# Arch / Manjaro / Cachy OS / EndeavourOS
+# Arch / Manjaro / CachyOS / EndeavourOS
 sudo pacman -S base-devel gcc
 
 # Fedora / RHEL / CentOS Stream
