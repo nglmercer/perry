@@ -37,7 +37,7 @@ const re4 = /(\d+)(\.(\d+))?/d;
 const m4 = re4.exec("integer: 42");
 console.log("Test 4: Unmatched optional group");
 console.log(m4 !== null); // true
-console.log(JSON.stringify(m4!.indices)); // [[10,12],[10,12],null,null]
+console.log(JSON.stringify(m4!.indices)); // [[9,11],[9,11],null,null]
 console.log(m4!.indices[0] !== null); // true - full match
 console.log(m4!.indices[1] !== null); // true - group 1 matched
 console.log(m4!.indices[2] === undefined); // true - group 2 unmatched
@@ -113,7 +113,7 @@ const re11 = /(?=hello)/d;
 const m11 = re11.exec("say hello");
 console.log("Test 11: Zero-width assertion with d flag");
 console.log(m11 !== null); // true
-console.log(JSON.stringify(m11!.indices)); // [[0,0]]
+console.log(JSON.stringify(m11!.indices)); // [[4,4]]
 
 // Test 12: Lookbehind with d flag
 const re12 = /(?<=\$)\d+/d;
@@ -138,7 +138,7 @@ console.log(m14!.indices !== undefined); // true
 console.log(m14!.indices.groups !== undefined); // true
 console.log(JSON.stringify(m14!.indices.groups!.protocol)); // [5,10]
 console.log(JSON.stringify(m14!.indices.groups!.host)); // [13,24]
-console.log(JSON.stringify(m14!.indices.groups!.path)); // [24,43]
+console.log(JSON.stringify(m14!.indices.groups!.path)); // [24,41]
 
 // Test 15: indices property is own property
 const re15 = /test/d;
@@ -192,7 +192,7 @@ console.log(JSON.stringify(m18!.indices)); // [[0,4]]
 // [14,16]
 // Test 4: Unmatched optional group
 // true
-// [[10,12],[10,12],null,null]
+// [[9,11],[9,11],null,null]
 // true
 // true
 // true
@@ -228,7 +228,7 @@ console.log(JSON.stringify(m18!.indices)); // [[0,4]]
 // [[0,0]]
 // Test 11: Zero-width assertion with d flag
 // true
-// [[0,0]]
+// [[4,4]]
 // Test 12: Lookbehind with d flag
 // true
 // [[8,11]]
@@ -241,7 +241,7 @@ console.log(JSON.stringify(m18!.indices)); // [[0,4]]
 // true
 // [5,10]
 // [13,24]
-// [24,43]
+// [24,41]
 // Test 15: indices is own property
 // true
 // true

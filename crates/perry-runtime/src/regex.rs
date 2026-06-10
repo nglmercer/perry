@@ -850,6 +850,18 @@ pub extern "C" fn js_string_match(
                             arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
                             groups_obj,
                         );
+                        // Build `indices` if the `d` flag (hasIndices) is set —
+                        // non-global `String.prototype.match` delegates to
+                        // RegExpExec, so it carries the same `indices` as exec().
+                        if (*re).has_indices {
+                            set_exec_array_indices_fancy(
+                                arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                                str_data,
+                                0,
+                                &fre,
+                                &caps,
+                            );
+                        }
                         return arr_handle.get_raw_mut_ptr::<ArrayHeader>();
                     }
                     _ => {
@@ -978,6 +990,19 @@ pub extern "C" fn js_string_match(
                         set_exec_array_groups(
                             arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
                             ptr::null_mut(),
+                        );
+                    }
+
+                    // Build `indices` if the `d` flag (hasIndices) is set —
+                    // non-global `String.prototype.match` delegates to
+                    // RegExpExec, so it carries the same `indices` as exec().
+                    if (*re).has_indices {
+                        set_exec_array_indices(
+                            arr_handle.get_raw_mut_ptr::<ArrayHeader>(),
+                            str_data,
+                            0,
+                            &caps,
+                            regex,
                         );
                     }
 
