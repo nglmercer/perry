@@ -159,6 +159,11 @@ pub fn alloc_temporal_cell(value: TemporalValue) -> f64 {
         // box pointer in without dropping the (garbage) prior contents.
         // GC_STORE_AUDIT(INIT): fresh cell; the Box payload is malloc-owned, not a GC edge.
         std::ptr::write(ptr, TemporalCell { value: boxed });
+        // Address reuse after a sweep must not leak a collected cell's expando
+        // properties (`Object.defineProperty` / plain assignment) onto this
+        // fresh one — clear any stale side-table slot at this address, exactly
+        // as Date/RegExp allocation does.
+        crate::object::exotic_expando::expando_clear_on_alloc(ptr as usize);
         f64::from_bits(JSValue::pointer(ptr as *const u8).bits())
     }
 }
