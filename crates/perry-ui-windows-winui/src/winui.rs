@@ -9,33 +9,193 @@
 /// Windows App SDK bootstrap (#4680 step 2).
 ///
 /// A WinUI 3 / unpackaged app must initialize the Windows App SDK runtime
-/// before any `Microsoft.UI.Xaml` type is constructed — normally via the
-/// bootstrapper API (`MddBootstrapInitialize2` from
-/// `Microsoft.WindowsAppRuntime.Bootstrap`, acquired as a redistributable, not
-/// a cargo crate).
+/// before any `Microsoft.UI.Xaml` type is constructed. The runtime ships the
+/// bootstrapper entry points (`MddBootstrapInitialize2` /
+/// `MddBootstrapInitialize`) in `Microsoft.WindowsAppRuntime.Bootstrap.dll`.
 ///
-/// This is a **stub**: it links nothing and is a no-op, so the scaffold builds
-/// and runs anywhere (the Win32 re-export path needs no runtime). When the
-/// XAML mapping lands, this becomes the real `MddBootstrapInitialize2` call,
-/// gated behind the WinAppSDK link dependency, and is invoked from app startup
-/// before the first XAML object is created.
+/// # Why dynamic loading (not a link dependency)
+///
+/// Perry's defining constraint is the single self-contained `.exe`. Linking
+/// `Microsoft.WindowsAppRuntime.Bootstrap.lib` would make *every*
+/// `windows-winui` binary hard-require the Windows App SDK at load time — the
+/// process would fail to start on a machine that doesn't have it, even though
+/// the scaffold can fall back to the Win32 backend and run fine. So instead of
+/// a link-time import we resolve the bootstrapper at runtime with
+/// `LoadLibraryW` + `GetProcAddress`. If the DLL isn't present (no Windows App
+/// SDK installed), [`initialize`] reports [`InitStatus::RuntimeMissing`] and
+/// the caller falls back to Win32 rather than crashing. This keeps the binary
+/// dependency-free; the SDK is consumed only when the host actually has it.
+///
+/// The result is cached after the first call: the runtime is process-wide and
+/// initialized at most once, so repeated [`initialize`] calls are cheap and
+/// return a stable answer.
 pub mod bootstrap {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
     /// Outcome of attempting to initialize the Windows App SDK runtime.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum InitStatus {
-        /// Runtime is ready (or not yet required — current scaffold state).
+        /// The Windows App SDK runtime is present and initialized — the WinUI
+        /// (XAML) rendering path is usable.
         Ready,
-        /// The Windows App SDK runtime is not installed; the caller should
-        /// fall back to the Win32 backend rather than crash.
+        /// The Windows App SDK runtime is not installed (or failed to
+        /// initialize); the caller should fall back to the Win32 backend
+        /// rather than crash.
         RuntimeMissing,
     }
 
-    /// Initialize the Windows App SDK runtime. Currently a no-op returning
-    /// [`InitStatus::Ready`] because the scaffold renders through Win32 and
-    /// needs no WinAppSDK runtime. Replaced by the real bootstrapper call in
-    /// #4680 step 2.
+    // Cached outcome of the one-time initialize() probe. The runtime is
+    // process-wide, so we resolve + bootstrap it at most once and memoize the
+    // verdict. 0 = not yet attempted, 1 = Ready, 2 = RuntimeMissing.
+    const CACHE_UNINIT: u8 = 0;
+    const CACHE_READY: u8 = 1;
+    const CACHE_MISSING: u8 = 2;
+    static CACHED: AtomicU8 = AtomicU8::new(CACHE_UNINIT);
+
+    /// Initialize the Windows App SDK runtime, returning whether the WinUI
+    /// (XAML) path is usable. On Windows this dynamically loads the
+    /// bootstrapper and calls `MddBootstrapInitialize2` (falling back to
+    /// `MddBootstrapInitialize`); if the runtime is absent or initialization
+    /// fails it returns [`InitStatus::RuntimeMissing`] so the caller can fall
+    /// back to Win32. Off Windows it is always [`InitStatus::RuntimeMissing`].
+    ///
+    /// The result is cached: subsequent calls return the first verdict without
+    /// re-loading the DLL. This is the #4680 step-2 deliverable; the XAML
+    /// widget mapping (step 3) consults this before constructing any
+    /// `Microsoft.UI.Xaml` object.
     pub fn initialize() -> InitStatus {
-        InitStatus::Ready
+        match CACHED.load(Ordering::Acquire) {
+            CACHE_READY => return InitStatus::Ready,
+            CACHE_MISSING => return InitStatus::RuntimeMissing,
+            _ => {}
+        }
+        let status = init_uncached();
+        CACHED.store(
+            match status {
+                InitStatus::Ready => CACHE_READY,
+                InitStatus::RuntimeMissing => CACHE_MISSING,
+            },
+            Ordering::Release,
+        );
+        status
+    }
+
+    #[cfg(target_os = "windows")]
+    fn init_uncached() -> InitStatus {
+        windows_impl::bootstrap_initialize()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn init_uncached() -> InitStatus {
+        // There is no Windows App SDK off Windows. The crate still compiles for
+        // host tooling (the workspace builds it on every platform); callers get
+        // RuntimeMissing and fall back to the Win32 path.
+        InitStatus::RuntimeMissing
+    }
+
+    #[cfg(target_os = "windows")]
+    mod windows_impl {
+        use super::InitStatus;
+
+        type HModule = *mut core::ffi::c_void;
+        type FarProc = *const core::ffi::c_void;
+
+        extern "system" {
+            fn LoadLibraryW(name: *const u16) -> HModule;
+            fn GetProcAddress(module: HModule, name: *const u8) -> FarProc;
+            fn FreeLibrary(module: HModule) -> i32;
+        }
+
+        // Bootstrapper entry points (`MddBootstrap.h`). `PACKAGE_VERSION` is a
+        // union over a single `UINT64`, so on x64 it is ABI-identical to a
+        // by-value `u64`; `versionTag` is a `PCWSTR`; `options` is an `enum`
+        // (`int`). The `2`-suffixed variant (Windows App SDK 1.2+) takes the
+        // extra `options` argument; the original is the fallback for older
+        // bootstrappers.
+        type PfnInitialize2 = unsafe extern "system" fn(u32, *const u16, u64, i32) -> i32;
+        type PfnInitialize = unsafe extern "system" fn(u32, *const u16, u64) -> i32;
+
+        /// `MddBootstrapInitializeOptions_None`.
+        const MDD_BOOTSTRAP_OPTIONS_NONE: i32 = 0;
+
+        /// Packed `major << 16 | minor` Windows App SDK release the binary was
+        /// built against. Defaults to 1.6 (the current servicing baseline) and
+        /// is overridable at runtime with `PERRY_WINAPPSDK_VERSION="major.minor"`
+        /// so a host with a different SDK can be targeted without a rebuild.
+        fn target_major_minor() -> u32 {
+            const DEFAULT_MAJOR: u32 = 1;
+            const DEFAULT_MINOR: u32 = 6;
+            if let Ok(raw) = std::env::var("PERRY_WINAPPSDK_VERSION") {
+                if let Some((maj, min)) = raw.split_once('.') {
+                    if let (Ok(maj), Ok(min)) =
+                        (maj.trim().parse::<u16>(), min.trim().parse::<u16>())
+                    {
+                        return ((maj as u32) << 16) | (min as u32);
+                    }
+                }
+            }
+            (DEFAULT_MAJOR << 16) | DEFAULT_MINOR
+        }
+
+        fn wide_nul(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        pub fn bootstrap_initialize() -> InitStatus {
+            let dll = wide_nul("Microsoft.WindowsAppRuntime.Bootstrap.dll");
+            // SAFETY: `dll` is a NUL-terminated UTF-16 buffer that outlives the
+            // call. A missing DLL returns NULL (no Windows App SDK) — we never
+            // dereference the handle in that case.
+            let module = unsafe { LoadLibraryW(dll.as_ptr()) };
+            if module.is_null() {
+                return InitStatus::RuntimeMissing;
+            }
+
+            let major_minor = target_major_minor();
+            // Stable release channel uses an empty version tag; minimum package
+            // version 0 accepts any installed framework at/above major_minor.
+            let version_tag = wide_nul("");
+            let min_version: u64 = 0;
+
+            // SAFETY: the function pointers come from this freshly-loaded module
+            // and are transmuted to the documented `MddBootstrap.h` signatures.
+            // Both pointer arguments outlive the synchronous call. If neither
+            // entry point resolves the DLL is not a usable bootstrapper, so we
+            // free it and report the runtime missing.
+            let hr = unsafe {
+                let init2 = GetProcAddress(module, b"MddBootstrapInitialize2\0".as_ptr());
+                if !init2.is_null() {
+                    let f: PfnInitialize2 = core::mem::transmute(init2);
+                    f(
+                        major_minor,
+                        version_tag.as_ptr(),
+                        min_version,
+                        MDD_BOOTSTRAP_OPTIONS_NONE,
+                    )
+                } else {
+                    let init1 = GetProcAddress(module, b"MddBootstrapInitialize\0".as_ptr());
+                    if init1.is_null() {
+                        FreeLibrary(module);
+                        return InitStatus::RuntimeMissing;
+                    }
+                    let f: PfnInitialize = core::mem::transmute(init1);
+                    f(major_minor, version_tag.as_ptr(), min_version)
+                }
+            };
+
+            if hr == 0 {
+                // Success: the runtime must stay mapped for the process
+                // lifetime, so we deliberately do NOT FreeLibrary here.
+                InitStatus::Ready
+            } else {
+                // S_OK is the only success; any failure HRESULT (e.g. the
+                // framework not being present at the requested version) means
+                // we fall back to Win32. Release the handle we won't use.
+                // SAFETY: `module` is the handle we just loaded.
+                unsafe { FreeLibrary(module) };
+                InitStatus::RuntimeMissing
+            }
+        }
     }
 }
 
@@ -44,9 +204,27 @@ mod tests {
     use super::bootstrap::{initialize, InitStatus};
 
     #[test]
-    fn bootstrap_scaffold_is_ready() {
-        // The scaffold must never report a missing runtime — it renders via
-        // the re-exported Win32 backend, which has no WinAppSDK dependency.
-        assert_eq!(initialize(), InitStatus::Ready);
+    fn initialize_is_total_and_idempotent() {
+        // initialize() must never panic and must return a stable, cached
+        // verdict regardless of whether the Windows App SDK is installed on the
+        // test host. (On CI without the SDK, that verdict is RuntimeMissing.)
+        let first = initialize();
+        let second = initialize();
+        assert_eq!(
+            first, second,
+            "cached bootstrap verdict must be stable across calls"
+        );
+        assert!(matches!(
+            first,
+            InitStatus::Ready | InitStatus::RuntimeMissing
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn missing_off_windows() {
+        // There is no Windows App SDK off Windows, so the verdict is always
+        // RuntimeMissing — the caller falls back to Win32.
+        assert_eq!(initialize(), InitStatus::RuntimeMissing);
     }
 }

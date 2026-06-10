@@ -30,7 +30,10 @@
 //! projections, until the whole ~40-widget set is Fluent. Steps, in order:
 //!
 //! 1. WinAppSDK + `Microsoft.UI.Xaml` projections wired in (`Cargo.toml`).
-//! 2. Bootstrapper / runtime acquisition ([`winui::bootstrap`]).
+//! 2. Bootstrapper / runtime acquisition ([`winui::bootstrap`]) — **done**:
+//!    [`winui::bootstrap::initialize`] dynamically loads the Windows App SDK
+//!    bootstrapper and reports whether the WinUI path is usable, falling back
+//!    to Win32 (this re-export) when the runtime is absent.
 //! 3. Widget mapping layer (perry-ui widget set → XAML controls).
 //! 4. Window chrome: Mica/Acrylic backdrop, Fluent title bar, light/dark/system.
 //! 5. Packaging: MSIX or unpackaged WinAppSDK bootstrap; document the runtime.

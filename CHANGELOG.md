@@ -1,3 +1,47 @@
+## v0.5.1154 — feat(ui-windows-winui): real Windows App SDK bootstrap probe (#4680 step 2)
+
+**WinUI 3 backend, step 2 of 6.** `--target windows-winui` already builds, links,
+and runs (the `perry-ui-windows-winui` crate re-exports the Win32 backend and
+shares its Fluent DWM chrome — Mica, rounded corners, theme-aware title bar). The
+one piece that was still a no-op lie was the Windows App SDK bootstrap:
+`winui::bootstrap::initialize()` unconditionally returned `Ready` whether or not
+the runtime existed. This turns it into a real runtime probe.
+
+`crates/perry-ui-windows-winui/src/winui.rs` now resolves the bootstrapper at
+**runtime via dynamic loading** — `LoadLibraryW("Microsoft.WindowsAppRuntime.Bootstrap.dll")`
++ `GetProcAddress` — and calls `MddBootstrapInitialize2` (falling back to
+`MddBootstrapInitialize` on older SDKs). `S_OK` → `InitStatus::Ready`; a missing
+DLL, missing entry points, or any failure HRESULT → `InitStatus::RuntimeMissing`,
+so the caller falls back to Win32 instead of crashing.
+
+Dynamic loading (not a link-time import of `Microsoft.WindowsAppRuntime.Bootstrap.lib`)
+is deliberate: it preserves Perry's single self-contained `.exe` model. A
+`windows-winui` binary starts on a host *without* the Windows App SDK and degrades
+to the Win32 path, rather than failing to load against an unresolved import. No new
+cargo dependency is added — the bootstrapper is bound with raw `extern "system"`
+declarations against `kernel32`, mirroring the existing `dwm.rs`/`crash_handler`
+FFI style.
+
+Details:
+- Result is memoized in an `AtomicU8` (the runtime is process-wide and initialized
+  at most once); repeated `initialize()` calls are cheap and stable.
+- Target SDK release defaults to 1.6, overridable at runtime with
+  `PERRY_WINAPPSDK_VERSION="major.minor"` so a host with a different SDK can be
+  targeted without a rebuild.
+- `PACKAGE_VERSION` is passed as a by-value `u64` (ABI-identical to the single-`UINT64`
+  union on x64); `versionTag` empty (stable channel); `minVersion` 0 (any installed
+  framework at/above the requested major.minor).
+- Off Windows the probe is a compile-time `RuntimeMissing` (the crate still builds
+  everywhere for host tooling).
+- Tests: `initialize()` is total (never panics) and idempotent on any host; off
+  Windows it must report `RuntimeMissing`. The `RuntimeMissing` path is fully
+  covered on a host without the SDK; the success path runs only where the runtime
+  is installed.
+
+Step 3 (the XAML widget mapping) consults this probe before constructing any
+`Microsoft.UI.Xaml` object; that work is still ahead. Win32 (`--target windows`)
+remains the default and is unaffected.
+
 ## v0.5.1153 — fix: keep `js_promise_report_unhandled_rejections` alive through auto-optimize LTO (#4876)
 
 **Regression fix (v0.5.1151 → all native links broken).** Codegen emits an

@@ -22,15 +22,18 @@ crate-type = ["rlib", "staticlib"]
 # The entire current Windows backend. Re-exported wholesale (see src/lib.rs).
 perry-ui-windows = { path = "../perry-ui-windows" }
 
-# Future (XAML widget mapping, #4680 steps 1-6): driving WinAppSDK +
-# Microsoft.UI.Xaml through the windows-rs WinRT projections. Intentionally
-# NOT added yet — the WinAppSDK runtime + bootstrapper
-# (Microsoft.WindowsAppRuntime.Bootstrap) is acquired out-of-band (NuGet /
-# redistributable), not as a cargo dependency, so wiring it is its own step.
-# When that lands, add:
+# Step 2 (#4680) — Windows App SDK bootstrap — is implemented in
+# `src/winui.rs` via *runtime* dynamic loading (LoadLibraryW + GetProcAddress
+# on Microsoft.WindowsAppRuntime.Bootstrap.dll), NOT a link dependency. That
+# deliberately keeps the single self-contained .exe model: a windows-winui
+# binary starts fine on a host without the SDK and falls back to Win32 instead
+# of failing to load. So no bootstrap .lib / cargo crate is needed for it.
+#
+# Future (XAML widget mapping, #4680 step 3+): driving Microsoft.UI.Xaml
+# controls through the windows-rs WinRT projections. When that lands, add:
 #   windows = { version = "0.58", features = [
 #       "UI_Xaml", "UI_Xaml_Controls", "UI_Xaml_Hosting", ... ] }
-# and the bootstrap link to Microsoft.WindowsAppRuntime.Bootstrap.lib.
+# gated so it is constructed only after bootstrap::initialize() reports Ready.
 
 [features]
 geisterhand = ["perry-ui-windows/geisterhand"]
