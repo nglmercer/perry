@@ -2,11 +2,23 @@
 # Perry installer — downloads the latest release from GitHub
 # Usage: curl -fsSL https://perryts.com/install.sh | sh
 
-set -e
+set -eu
 
 REPO="PerryTS/perry"
 INSTALL_DIR="/usr/local/bin"
 LIB_DIR="/usr/local/lib"
+
+# Only show progress bars on interactive terminals
+if [ -t 2 ]; then
+  CURL_PROGRESS="--progress-bar"
+  PV=""
+  if command -v pv >/dev/null 2>&1; then
+    PV="pv"
+  fi
+else
+  CURL_PROGRESS="-fsS"
+  PV=""
+fi
 
 # Detect platform
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -36,17 +48,8 @@ ARTIFACT="perry-${OS}-${ARCH}.tar.gz"
 echo "Detecting platform: ${OS}/${ARCH}"
 
 # Find the most recent release that actually has our platform asset.
-#
-# We can't blindly use `releases/latest`: when the release-packages workflow
-# fails its test gate (or hasn't finished yet), the tag still publishes but
-# arrives with zero assets. Pre-fix the script downloaded `releases/latest`
-# unconditionally and 404'd on every Linux install when the most recent
-# tagged release happened to have no assets. Instead, list recent tags and
-# probe each tarball URL until one returns 200/302.
 echo "Locating most recent release with $ARTIFACT..."
 
-# Pull the tag_name of the 30 most recent releases. Stays POSIX (sed + grep)
-# rather than relying on jq/gawk so the script runs on any /bin/sh.
 TAGS=$(
   curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30" \
     | grep '"tag_name":' \
@@ -56,16 +59,8 @@ TAGS=$(
 LATEST=""
 for tag in $TAGS; do
   url="https://github.com/$REPO/releases/download/$tag/$ARTIFACT"
-  # -I = HEAD, -L = follow redirects, -o /dev/null + -w "%{http_code}"
-  # gives just the final status. 200 (direct) and 302 (the GitHub release
-  # download → S3 redirect, when followed lands on 200) both mean asset
-  # present. We accept 200 only since -L was passed.
-  # `curl -L -I` issues HEAD against each redirect hop; -w "%{http_code}"
-  # then prints every hop's status concatenated (e.g. "404000" if the first
-  # response is 404 and curl continues). The final hop's status is always
-  # the last 3 chars; "200" there means "asset exists and downloads cleanly".
   status=$(curl -fsSLI -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
-  final="${status#"${status%???}"}"  # last 3 chars, POSIX-portable
+  final="${status#"${status%???}"}"
   if [ "$final" = "200" ]; then
     LATEST="$tag"
     break
@@ -83,21 +78,29 @@ echo "Using version: $LATEST"
 
 URL="https://github.com/$REPO/releases/download/$LATEST/$ARTIFACT"
 
-echo "Downloading $ARTIFACT..."
-
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-curl -fsSL "$URL" -o "$TMPDIR/perry.tar.gz"
+echo "Downloading $ARTIFACT..."
+START=$(date +%s 2>/dev/null || echo 0)
+curl -L $CURL_PROGRESS -o "$TMPDIR/perry.tar.gz" "$URL"
+END=$(date +%s 2>/dev/null || echo 0)
+
+if [ "$END" -gt "$START" ] && [ "$START" -gt 0 ]; then
+  echo "  Done in $((END - START))s ($(ls -lh "$TMPDIR/perry.tar.gz" | awk '{print $5}'))"
+fi
 
 echo "Extracting..."
-tar xzf "$TMPDIR/perry.tar.gz" -C "$TMPDIR"
+if [ -n "$PV" ]; then
+  pv "$TMPDIR/perry.tar.gz" | tar xz -C "$TMPDIR"
+else
+  tar xzf "$TMPDIR/perry.tar.gz" -C "$TMPDIR"
+fi
 
 # Install binary
 if [ -w "$INSTALL_DIR" ]; then
   cp "$TMPDIR/perry" "$INSTALL_DIR/perry"
   chmod 755 "$INSTALL_DIR/perry"
-  # Install libraries alongside binary
   for lib in "$TMPDIR"/libperry_*.a; do
     [ -f "$lib" ] && cp "$lib" "$LIB_DIR/"
   done
