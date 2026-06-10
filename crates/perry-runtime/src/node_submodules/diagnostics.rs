@@ -576,6 +576,21 @@ pub fn error_user_prop(error_ptr: usize, key: &str) -> Option<f64> {
     })
 }
 
+/// Remove a user-assigned own property from an Error object. Returns true
+/// when the property existed (used by `delete err.prop` and data↔accessor
+/// descriptor conversions).
+pub fn remove_error_user_prop(error_ptr: usize, key: &str) -> bool {
+    if error_ptr == 0 {
+        return false;
+    }
+    ERROR_USER_PROPS.with(|m| {
+        m.borrow_mut()
+            .get_mut(&error_ptr)
+            .map(|props| props.remove(key).is_some())
+            .unwrap_or(false)
+    })
+}
+
 /// Return user-assigned own properties on an Error object as materialized JS
 /// values so util.inspect/console formatting can show them.
 pub fn error_user_props(error_ptr: usize) -> Vec<(String, f64)> {

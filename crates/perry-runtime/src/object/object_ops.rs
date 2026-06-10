@@ -828,6 +828,25 @@ pub extern "C" fn js_object_has_own(obj_value: f64, key_value: f64) -> f64 {
                 );
                 return f64::from_bits(if present { TAG_TRUE } else { TAG_FALSE });
             }
+            // Date / RegExp / Error exotic instances: own expando props
+            // (side tables) + per-kind builtin own slots.
+            if let Some(kind) = super::exotic_expando::exotic_expando_kind(ptr) {
+                use super::exotic_expando::ExoticKind;
+                let present = super::has_own_helpers::str_from_string_header(key_str)
+                    .map(|key| {
+                        super::exotic_expando::exotic_has_own_property(kind, ptr, key)
+                            || match kind {
+                                ExoticKind::RegExp => key == "lastIndex",
+                                ExoticKind::Error => crate::error::js_error_has_own_property(
+                                    ptr as *mut crate::error::ErrorHeader,
+                                    key,
+                                ),
+                                ExoticKind::Date => false,
+                            }
+                    })
+                    .unwrap_or(false);
+                return f64::from_bits(if present { TAG_TRUE } else { TAG_FALSE });
+            }
             if crate::closure::is_closure_ptr(ptr) {
                 let present = super::has_own_helpers::str_from_string_header(key_str)
                     .map(|k| super::has_own_helpers::closure_own_key_present(ptr, k))
@@ -980,6 +999,22 @@ pub extern "C" fn js_object_property_is_enumerable(obj_value: f64, key_value: f6
                 addr as *const crate::typedarray::TypedArrayHeader,
                 key_str,
             );
+            return f64::from_bits(if enumerable { TAG_TRUE } else { TAG_FALSE });
+        }
+
+        // Date / RegExp / Error exotic instances: expando/accessor own props
+        // report their side-table enumerability (default true for plain
+        // expando writes); builtin own slots are non-enumerable.
+        if let Some((addr, kind)) = super::exotic_expando::exotic_expando_kind_of_value(obj_value) {
+            let Some(key_name) = super::has_own_helpers::str_from_string_header(key_str) else {
+                return f64::from_bits(TAG_FALSE);
+            };
+            if !super::exotic_expando::exotic_has_own_property(kind, addr, key_name) {
+                return f64::from_bits(TAG_FALSE);
+            }
+            let enumerable = super::get_property_attrs(addr, key_name)
+                .map(|a| a.enumerable())
+                .unwrap_or(true);
             return f64::from_bits(if enumerable { TAG_TRUE } else { TAG_FALSE });
         }
 
@@ -1233,6 +1268,31 @@ pub extern "C" fn js_object_define_property(
                 throw_object_type_error(b"Cannot redefine property")
             }
             super::TypedArrayDefineOutcome::NotTypedArray => {}
+        }
+
+        // Date / RegExp / Error instances are exotic cells, not
+        // `ObjectHeader`s — the ordinary define path below would bit-cast
+        // them and corrupt memory. Route through the expando-aware
+        // [[DefineOwnProperty]] (side-table storage + attrs + accessors).
+        if let Some((addr, kind)) = super::exotic_expando::exotic_expando_kind_of_value(obj_value) {
+            if crate::symbol::js_is_symbol(key_value) != 0 {
+                let value_field = desc_read_field(descriptor_value, b"value");
+                crate::symbol::js_object_set_symbol_property(
+                    obj_value,
+                    key_value,
+                    f64::from_bits(value_field.bits()),
+                );
+                return obj_value;
+            }
+            if let Some(name) = super::metadata_key_to_string(key_value) {
+                super::exotic_expando::exotic_define_own_property(
+                    addr,
+                    kind,
+                    &name,
+                    descriptor_value,
+                );
+            }
+            return obj_value;
         }
 
         // #2159: when the receiver is a class-ref (`Class.prototype` evaluates
@@ -1712,8 +1772,21 @@ pub extern "C" fn js_object_define_property(
         // `writable`; for a brand-new accessor we leave it `true` (via
         // `has_accessor`) so data lookups before the accessor override don't
         // reject a legitimate fallthrough write.
-        let writable = read_bool(b"writable")
-            .unwrap_or_else(|| existing_attrs.map(|a| a.writable()).unwrap_or(has_accessor));
+        //
+        // Accessor → data conversion: the current property has no
+        // [[Writable]], so an omitted `writable` defaults to FALSE (the
+        // retained-attrs rule doesn't apply across the kind switch).
+        let accessor_to_data = existing_accessor.is_some()
+            && !has_accessor
+            && (desc_has_field(descriptor_value, b"value")
+                || desc_has_field(descriptor_value, b"writable"));
+        let writable = read_bool(b"writable").unwrap_or_else(|| {
+            if accessor_to_data {
+                false
+            } else {
+                existing_attrs.map(|a| a.writable()).unwrap_or(has_accessor)
+            }
+        });
         let enumerable = read_bool(b"enumerable")
             .unwrap_or_else(|| existing_attrs.map(|a| a.enumerable()).unwrap_or(false));
         let configurable = read_bool(b"configurable")
@@ -2239,6 +2312,38 @@ pub extern "C" fn js_object_get_prototype_of(obj_value: f64) -> f64 {
     // than faulting on the cell.
     if crate::temporal::is_temporal_value(obj_value) {
         return f64::from_bits(TAG_NULL);
+    }
+    // ES2015 ToObject(primitive): `Object.getPrototypeOf(0 | "s" | true |
+    // 1n | sym)` resolves to the wrapper class prototype, not a TypeError /
+    // null (15.2.3.2-1*).
+    {
+        let jv = crate::value::JSValue::from_bits(obj_value.to_bits());
+        // An INT32-tagged value may be a class ref (same 0x7FFE tag as small
+        // integers) — those must keep flowing to the class resolution below.
+        let is_class_ref =
+            (obj_value.to_bits() >> 48) == 0x7FFE && super::class_ref_id(obj_value).is_some();
+        let wrapper = if is_class_ref {
+            None
+        } else if jv.is_number() {
+            Some("Number")
+        } else if jv.is_any_string() {
+            Some("String")
+        } else if jv.is_bool() {
+            Some("Boolean")
+        } else if jv.is_bigint() {
+            Some("BigInt")
+        } else if unsafe { crate::symbol::js_is_symbol(obj_value) } != 0 {
+            Some("Symbol")
+        } else {
+            None
+        };
+        if let Some(name) = wrapper {
+            let proto = crate::object::builtin_prototype_value(name);
+            if proto.to_bits() != crate::value::TAG_UNDEFINED {
+                return proto;
+            }
+            return f64::from_bits(TAG_NULL);
+        }
     }
     let bits = obj_value.to_bits();
     let top16 = bits >> 48;

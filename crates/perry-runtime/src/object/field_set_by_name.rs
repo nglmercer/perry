@@ -303,12 +303,12 @@ pub extern "C" fn js_object_set_field_by_name(
             return;
         }
     }
-    // #2089: a `Date` is a NaN-boxed pointer to an 8-byte `DateCell`. Setting
-    // an arbitrary property on it (`date.foo = x`) must NOT deref the small
-    // cell as an `ObjectHeader` below (memory corruption). Perry doesn't model
-    // expando properties on Date objects, so treat it as a no-op — the same
-    // observable result as the old value-type representation (a property set
-    // on a primitive number).
+    // #2089: a `Date` is a NaN-boxed pointer to an 8-byte `DateCell`, and a
+    // RegExp is a `RegExpHeader` — neither is an `ObjectHeader`, so a write
+    // must NOT fall through to the object deref below (memory corruption).
+    // Expando properties on these exotic instances live in the side table
+    // (`object::exotic_expando`), honoring accessor descriptors and
+    // attribute writability installed by `Object.defineProperty`.
     {
         let bits = obj as u64;
         let top16 = bits >> 48;
@@ -319,8 +319,28 @@ pub extern "C" fn js_object_set_field_by_name(
         } else {
             0
         };
-        if addr != 0 && crate::date::is_date_cell_addr(addr) {
-            return;
+        if addr != 0 {
+            if let Some(kind) = super::exotic_expando::exotic_expando_kind(addr) {
+                if !key.is_null() {
+                    unsafe {
+                        let mut sso = [0u8; crate::value::SHORT_STRING_MAX_LEN];
+                        if let Some(name_bytes) = crate::string::js_string_key_bytes(
+                            crate::value::JSValue::string_ptr(key as *mut _),
+                            &mut sso,
+                        ) {
+                            if let Ok(name) = std::str::from_utf8(name_bytes) {
+                                let receiver = f64::from_bits(
+                                    crate::value::JSValue::pointer(addr as *const u8).bits(),
+                                );
+                                let _ = super::exotic_expando::exotic_set_property(
+                                    addr, kind, name, value, receiver,
+                                );
+                            }
+                        }
+                    }
+                }
+                return;
+            }
         }
     }
     // Strip NaN-boxing tags if present (defensive: handle POINTER_TAG, UNDEFINED, NULL, etc.)
@@ -479,10 +499,17 @@ pub extern "C" fn js_object_set_field_by_name(
                 let name_len = (*key).byte_len as usize;
                 let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
                 if let Ok(name_str) = std::str::from_utf8(name_bytes) {
+                    // ECMAScript poison pill: `fn.caller = v` / `fn.arguments
+                    // = v` hits the setter-less %ThrowTypeError% accessor on
+                    // Function.prototype — a TypeError in strict mode (all
+                    // Perry-compiled code). Applies to every closure, not just
+                    // arrows. An explicitly defined own property (via
+                    // Object.defineProperty → dynamic-prop side table) still
+                    // wins, matching the read path. Refs test262 13.2-*-s.
                     if matches!(name_str, "caller" | "arguments")
-                        && crate::closure::closure_is_arrow(
-                            obj as *const crate::closure::ClosureHeader,
-                        )
+                        && crate::closure::closure_get_dynamic_prop(obj as usize, name_str)
+                            .to_bits()
+                            == crate::value::TAG_UNDEFINED
                     {
                         crate::fs::validate::throw_type_error_with_code(
                             "Restricted function property assignment",
@@ -512,10 +539,17 @@ pub extern "C" fn js_object_set_field_by_name(
                 let name_len = (*key).byte_len as usize;
                 let name_bytes = std::slice::from_raw_parts(name_ptr, name_len);
                 if let Ok(name_str) = std::str::from_utf8(name_bytes) {
+                    // ECMAScript poison pill: `fn.caller = v` / `fn.arguments
+                    // = v` hits the setter-less %ThrowTypeError% accessor on
+                    // Function.prototype — a TypeError in strict mode (all
+                    // Perry-compiled code). Applies to every closure, not just
+                    // arrows. An explicitly defined own property (via
+                    // Object.defineProperty → dynamic-prop side table) still
+                    // wins, matching the read path. Refs test262 13.2-*-s.
                     if matches!(name_str, "caller" | "arguments")
-                        && crate::closure::closure_is_arrow(
-                            obj as *const crate::closure::ClosureHeader,
-                        )
+                        && crate::closure::closure_get_dynamic_prop(obj as usize, name_str)
+                            .to_bits()
+                            == crate::value::TAG_UNDEFINED
                     {
                         crate::fs::validate::throw_type_error_with_code(
                             "Restricted function property assignment",

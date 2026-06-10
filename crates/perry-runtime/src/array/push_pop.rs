@@ -297,6 +297,17 @@ pub extern "C" fn js_array_set_length(arr: *mut ArrayHeader, new_length: f64) {
         if flags & (crate::gc::OBJ_FLAG_SEALED | crate::gc::OBJ_FLAG_NO_EXTEND) != 0 && n != cur {
             return;
         }
+        // `defineProperty(arr, "length", {writable:false})` records the flag
+        // in the attrs side table; an ordinary `arr.length = n` write must
+        // then no-op (strict-mode throw is handled by the caller's PutValue).
+        if n != cur
+            && flags & crate::gc::OBJ_FLAG_ARRAY_DESCRIPTORS != 0
+            && crate::object::get_property_attrs(arr as usize, "length")
+                .map(|a| !a.writable())
+                .unwrap_or(false)
+        {
+            return;
+        }
         if n < cur {
             // Truncate: clear elements at indices [n..cur) to TAG_HOLE so
             // any code that resurrects the slot via `arr[i]` reads `undefined`,

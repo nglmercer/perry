@@ -4037,6 +4037,25 @@ pub unsafe extern "C" fn js_native_call_method(
                         .unwrap_or(false);
                     return f64::from_bits(JSValue::bool(present).bits());
                 }
+                // Date / RegExp / Error exotic receivers: own expando props
+                // (side tables) + per-kind builtin own slots.
+                if let Some(kind) = super::exotic_expando::exotic_expando_kind(raw) {
+                    use super::exotic_expando::ExoticKind;
+                    let present = super::has_own_helpers::str_from_string_header(key_str)
+                        .map(|key| {
+                            super::exotic_expando::exotic_has_own_property(kind, raw, key)
+                                || match kind {
+                                    ExoticKind::RegExp => key == "lastIndex",
+                                    ExoticKind::Error => crate::error::js_error_has_own_property(
+                                        raw as *mut crate::error::ErrorHeader,
+                                        key,
+                                    ),
+                                    ExoticKind::Date => false,
+                                }
+                        })
+                        .unwrap_or(false);
+                    return f64::from_bits(JSValue::bool(present).bits());
+                }
                 if raw >= crate::gc::GC_HEADER_SIZE + 0x1000 {
                     let gc_header = (raw as *const u8).sub(crate::gc::GC_HEADER_SIZE)
                         as *const crate::gc::GcHeader;

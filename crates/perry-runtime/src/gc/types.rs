@@ -804,6 +804,14 @@ pub const OBJ_FLAG_NO_EXTEND: u16 = 0x04;
 // (`GC_COPY_SURVIVAL_AGE_MASK = 0x0038`) and bits 14..15 the layout state,
 // so 0x08 would be clobbered on every minor GC. Bits 6..13 are free.
 pub const OBJ_FLAG_NULL_PROTO: u16 = 0x40;
+// Array carries per-index property descriptors (accessors or custom attrs
+// installed via `Object.defineProperty`, or a non-writable `length`). The
+// raw-f64 numeric fast paths must decline and route through the
+// descriptor-aware element get/set. Bit 10 — bits 7/8/9 are taken by
+// `GC_ARRAY_RAW_F64_LAYOUT` (0x80), `OBJ_FLAG_TYPED_ARRAY_PROTO` (0x100),
+// and `GC_ARRAY_ARGUMENTS_OBJECT` (0x200). Only meaningful for
+// `GC_TYPE_ARRAY`.
+pub const OBJ_FLAG_ARRAY_DESCRIPTORS: u16 = 0x400;
 // #2145: this object is a per-kind `<TypedArrayCtor>.prototype` whose
 // `[[Prototype]]` is the shared `%TypedArray%.prototype` intrinsic.
 // `Object.getPrototypeOf(Int8Array.prototype)` returns the cached

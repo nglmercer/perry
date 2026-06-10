@@ -480,6 +480,23 @@ pub(crate) unsafe fn invoke_accessor_getter(get_bits: u64, receiver: f64) -> JSV
     JSValue::from_bits(result_f64.to_bits())
 }
 
+/// Setter analog of [`invoke_accessor_getter`]: rebinds `this` to the
+/// receiver and invokes the setter closure with the assigned value.
+pub(crate) unsafe fn invoke_accessor_setter(set_bits: u64, receiver: f64, value: f64) {
+    let closure = (set_bits & crate::value::POINTER_MASK) as *const crate::closure::ClosureHeader;
+    if closure.is_null() {
+        return;
+    }
+    let call_bits = crate::closure::clone_closure_rebind_this(set_bits, receiver);
+    let closure = (call_bits & crate::value::POINTER_MASK) as *const crate::closure::ClosureHeader;
+    if closure.is_null() {
+        return;
+    }
+    let prev = super::js_implicit_this_set(receiver);
+    let _ = crate::closure::js_closure_call1(closure, value);
+    super::js_implicit_this_set(prev);
+}
+
 /// #4140: builtin *reflection-only* accessors — most prominently the four
 /// `%TypedArray%.prototype` getters (`length`/`byteLength`/`byteOffset`/
 /// `buffer`) — are installed via [`super::set_builtin_accessor_descriptor`],
@@ -1168,22 +1185,17 @@ pub extern "C" fn js_object_keys_value(value: f64) -> *mut ArrayHeader {
         if crate::closure::is_closure_ptr(ptr) {
             return js_closure_dynamic_keys(ptr);
         }
-        if ptr >= crate::gc::GC_HEADER_SIZE + 0x1000 {
-            unsafe {
-                let gc_header =
-                    (ptr as *const u8).sub(crate::gc::GC_HEADER_SIZE) as *const crate::gc::GcHeader;
-                if (*gc_header).obj_type == crate::gc::GC_TYPE_ERROR {
-                    let props = crate::node_submodules::error_user_props(ptr);
-                    let arr = crate::array::js_array_alloc(props.len() as u32);
-                    let mut out = arr;
-                    for (name, _) in props {
-                        let key =
-                            crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
-                        out = crate::array::js_array_push(out, JSValue::string_ptr(key));
-                    }
-                    return out;
-                }
+        // Date / RegExp / Error exotic instances: enumerable own expando
+        // keys from the side tables (the cell is not an `ObjectHeader`).
+        if let Some(kind) = super::exotic_expando::exotic_expando_kind(ptr) {
+            let keys = super::exotic_expando::exotic_own_keys(kind, ptr, true);
+            let arr = crate::array::js_array_alloc(keys.len().max(1) as u32);
+            let mut out = arr;
+            for name in keys {
+                let key = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+                out = crate::array::js_array_push(out, JSValue::string_ptr(key));
             }
+            return out;
         }
         return js_object_keys(ptr as *const ObjectHeader);
     }
@@ -1676,9 +1688,28 @@ pub extern "C" fn js_object_keys(obj: *const ObjectHeader) -> *mut ArrayHeader {
                     let key_box = crate::string::js_string_new_sso(s.as_ptr(), s.len() as u32);
                     crate::array::js_array_push_f64(result, key_box);
                 }
-                for name in crate::array::array_named_property_names(arr, true) {
+                let named = crate::array::array_named_property_names(arr, true);
+                for name in &named {
                     let key = crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
                     crate::array::js_array_push(result, JSValue::string_ptr(key));
+                }
+                // Accessor-only named properties (defineProperty {get/set})
+                // live solely in the accessor side table — include the
+                // enumerable ones.
+                if super::descriptors_in_use() {
+                    for name in accessor_descriptor_keys_for_obj(owner) {
+                        if super::canonical_array_index(&name).is_some()
+                            || named.contains(&name)
+                            || !get_property_attrs(owner, &name)
+                                .map(|a| a.enumerable())
+                                .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        let key =
+                            crate::string::js_string_from_bytes(name.as_ptr(), name.len() as u32);
+                        crate::array::js_array_push(result, JSValue::string_ptr(key));
+                    }
                 }
                 return result;
             }
@@ -2160,6 +2191,43 @@ pub extern "C" fn js_object_has_property(obj: f64, key: f64) -> f64 {
     }
 
     let obj_addr = obj_val.bits() & 0x0000_FFFF_FFFF_FFFF;
+    // Date / RegExp / Error exotic instances: own expando props + builtin
+    // slots + prototype methods. The generic pointer path below would
+    // bit-cast the cell as an `ObjectHeader`.
+    if let Some(kind) = super::exotic_expando::exotic_expando_kind(obj_addr as usize) {
+        use super::exotic_expando::ExoticKind;
+        let mut sso = [0u8; crate::value::SHORT_STRING_MAX_LEN];
+        let Some(kb) = (unsafe { crate::string::js_string_key_bytes(key_val, &mut sso) }) else {
+            return nanbox_false;
+        };
+        let Ok(name) = std::str::from_utf8(kb) else {
+            return nanbox_false;
+        };
+        if super::exotic_expando::exotic_has_own_property(kind, obj_addr as usize, name) {
+            return nanbox_true;
+        }
+        let builtin_own = match kind {
+            ExoticKind::RegExp => name == "lastIndex",
+            ExoticKind::Error => matches!(name, "message" | "stack"),
+            ExoticKind::Date => false,
+        };
+        if builtin_own {
+            return nanbox_true;
+        }
+        // Inherited prototype members (`"getTime" in date`, `"exec" in re`,
+        // `"name" in err`, `"toString" in any`): the per-kind get arms in
+        // `js_object_get_field_by_name` already resolve prototype methods,
+        // so reuse them via a value-level read.
+        let key_hdr =
+            crate::value::js_get_string_pointer_unified(key) as *const crate::StringHeader;
+        if !key_hdr.is_null() {
+            let v = js_object_get_field_by_name(obj_addr as *const ObjectHeader, key_hdr);
+            if !v.is_undefined() {
+                return nanbox_true;
+            }
+        }
+        return nanbox_false;
+    }
     if obj_addr >= 0x10000 {
         if crate::typedarray::lookup_typed_array_kind(obj_addr as usize).is_some() {
             let ta = obj_addr as *const crate::typedarray::TypedArrayHeader;
@@ -2366,6 +2434,15 @@ pub extern "C" fn js_object_has_property(obj: f64, key: f64) -> f64 {
                     crate::value::js_get_string_pointer_unified(key) as *const crate::StringHeader;
                 if key_str.is_null() {
                     return nanbox_false;
+                }
+                // `'caller' in fn` / `'arguments' in fn` — HasProperty must
+                // NOT run the poisoned getter (which throws). The accessor
+                // exists on Function.prototype, so the answer is true.
+                // Refs test262 S13.2_A8_T1/T2.
+                if let Some(key_name) = super::has_own_helpers::str_from_string_header(key_str) {
+                    if matches!(key_name, "caller" | "arguments") {
+                        return nanbox_true;
+                    }
                 }
                 let v = js_object_get_field_by_name(obj_ptr, key_str);
                 return if v.is_undefined() {
@@ -2817,6 +2894,20 @@ pub extern "C" fn js_object_get_field_by_name(
                         (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
                     let key_len = (*key).byte_len as usize;
                     let key_bytes = std::slice::from_raw_parts(key_ptr, key_len);
+                    // User expando / defineProperty'd own properties first.
+                    if let Ok(name) = std::str::from_utf8(key_bytes) {
+                        let receiver = f64::from_bits(
+                            crate::value::JSValue::pointer(addr as *const u8).bits(),
+                        );
+                        if let Some(v) = super::exotic_expando::exotic_get_own_property(
+                            addr,
+                            super::exotic_expando::ExoticKind::Date,
+                            name,
+                            receiver,
+                        ) {
+                            return JSValue::from_bits(v.to_bits());
+                        }
+                    }
                     if key_bytes == b"constructor" {
                         let v = js_get_global_this_builtin_value(b"Date".as_ptr(), 4);
                         return JSValue::from_bits(v.to_bits());
@@ -3853,11 +3944,18 @@ pub extern "C" fn js_object_get_field_by_name(
                 // User-assigned own properties (`err.code = "X"`,
                 // `err.errno = -2`, custom fields) take precedence over the
                 // built-in accessors below — they were recorded in the
-                // per-error side table by the setter (#2014).
+                // per-error side table by the setter (#2014). Routed through
+                // the exotic helper so `Object.defineProperty(err, k, {get})`
+                // accessors fire too.
                 if let Ok(key_str) = std::str::from_utf8(key_bytes) {
-                    if let Some(v) =
-                        crate::node_submodules::error_user_prop(err_ptr as usize, key_str)
-                    {
+                    let receiver =
+                        f64::from_bits(crate::value::js_nanbox_pointer(obj as i64).to_bits());
+                    if let Some(v) = super::exotic_expando::exotic_get_own_property(
+                        err_ptr as usize,
+                        super::exotic_expando::ExoticKind::Error,
+                        key_str,
+                        receiver,
+                    ) {
                         return JSValue::from_bits(v.to_bits());
                     }
                 }
@@ -3969,7 +4067,32 @@ pub extern "C" fn js_object_get_field_by_name(
                         }
                         return JSValue::undefined();
                     }
-                    _ => return JSValue::undefined(),
+                    _ => {
+                        // Inherited members: user-defined props/accessors on
+                        // `Error.prototype` (or the kind-specific prototype)
+                        // resolve through the prototype object — e.g.
+                        // `Object.defineProperty(Error.prototype, "prop",
+                        // {value}); new Error().prop`.
+                        let kind_name =
+                            crate::error::error_kind_constructor_name((*err_ptr).error_kind);
+                        for proto_name in [kind_name, "Error"] {
+                            let proto = crate::object::builtin_prototype_value(proto_name);
+                            let pv = JSValue::from_bits(proto.to_bits());
+                            if pv.is_pointer() {
+                                let proto_ptr = pv.as_pointer::<ObjectHeader>();
+                                if !proto_ptr.is_null() {
+                                    let v = js_object_get_field_by_name(proto_ptr, key);
+                                    if !v.is_undefined() {
+                                        return JSValue::from_bits(v.bits());
+                                    }
+                                }
+                            }
+                            if proto_name == "Error" {
+                                break;
+                            }
+                        }
+                        return JSValue::undefined();
+                    }
                 }
             }
             return JSValue::undefined();
@@ -4029,6 +4152,17 @@ pub extern "C" fn js_object_get_field_by_name(
                             return v;
                         }
                         return JSValue::undefined();
+                    }
+                    // Named (non-index) accessor installed via
+                    // `Object.defineProperty(arr, "prop", {get,set})`.
+                    if ACCESSORS_IN_USE.with(|c| c.get()) {
+                        if let Some(acc) = get_accessor_descriptor(obj as usize, name) {
+                            if acc.get != 0 {
+                                let receiver = crate::value::js_nanbox_pointer(obj as i64);
+                                return invoke_accessor_getter(acc.get, receiver);
+                            }
+                            return JSValue::undefined();
+                        }
                     }
                     if let Some(v) = own_data_field_by_name(obj, key) {
                         return v;
@@ -4198,6 +4332,35 @@ pub extern "C" fn js_object_get_field_by_name(
                 let key_len = (*key).byte_len as usize;
                 let key_bytes = std::slice::from_raw_parts(key_ptr, key_len);
                 let re = obj as *const crate::regex::RegExpHeader;
+                // User expando / defineProperty'd own properties shadow the
+                // prototype fallthrough but NOT the spec header props above
+                // (source/flags/lastIndex/... are non-configurable).
+                if !matches!(
+                    key_bytes,
+                    b"source"
+                        | b"flags"
+                        | b"lastIndex"
+                        | b"global"
+                        | b"ignoreCase"
+                        | b"multiline"
+                        | b"sticky"
+                        | b"unicode"
+                        | b"dotAll"
+                        | b"hasIndices"
+                ) {
+                    if let Ok(name) = std::str::from_utf8(key_bytes) {
+                        let receiver =
+                            f64::from_bits(crate::value::JSValue::pointer(obj as *const u8).bits());
+                        if let Some(v) = super::exotic_expando::exotic_get_own_property(
+                            obj as usize,
+                            super::exotic_expando::ExoticKind::RegExp,
+                            name,
+                            receiver,
+                        ) {
+                            return JSValue::from_bits(v.to_bits());
+                        }
+                    }
+                }
                 match key_bytes {
                     b"source" => {
                         let s = crate::regex::js_regexp_get_source(re);
