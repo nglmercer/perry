@@ -262,10 +262,24 @@ pub extern "C" fn js_http_client_request_get_headers(handle: Handle) -> f64 {
 #[no_mangle]
 pub extern "C" fn js_http_client_request_abort(handle: Handle) -> f64 {
     if is_client_request_handle(handle) {
-        with_state_mut(handle, |state| {
+        let already = with_state_mut(handle, |state| {
+            let was = state.aborted;
             state.aborted = true;
             state.destroyed = true;
+            was
         });
+        if !already {
+            // Node: `abort()` tears the exchange down — a later `end()`
+            // must not dispatch, no `'error'` fires, and the (legacy)
+            // `'abort'` event precedes the once-only `'close'`.
+            with_handle_mut::<ClientRequestHandle, _, _>(handle, |req| {
+                req.completed = true;
+            });
+            unsafe {
+                client_events::fire_request_event_listeners(handle, "abort");
+            }
+            client_events::fire_request_close_once(handle);
+        }
     }
     undefined_value()
 }
@@ -317,6 +331,21 @@ pub extern "C" fn js_http_client_request_noop_undefined(
     _arg1: f64,
 ) -> f64 {
     let _ = handle;
+    undefined_value()
+}
+
+/// Static-dispatch route for `req.flushHeaders()` — dispatch the exchange
+/// now for body-less requests (Node puts the head on the wire immediately).
+///
+/// # Safety
+/// FFI entry; `handle` must be a live `ClientRequestHandle` id (or absent).
+#[no_mangle]
+pub unsafe extern "C" fn js_http_client_request_flush_headers(
+    handle: Handle,
+    _arg0: f64,
+    _arg1: f64,
+) -> f64 {
+    crate::client_request_flush_headers(handle);
     undefined_value()
 }
 
@@ -569,9 +598,11 @@ fn dispatch_method(handle: Handle, method: &str, args: &[f64]) -> Option<f64> {
             });
             handle_value(handle)
         }
-        "flushHeaders" | "cork" | "uncork" | "setNoDelay" | "setSocketKeepAlive" => {
+        "flushHeaders" => {
+            unsafe { crate::client_request_flush_headers(handle) };
             undefined_value()
         }
+        "cork" | "uncork" | "setNoDelay" | "setSocketKeepAlive" => undefined_value(),
         _ => return None,
     })
 }
