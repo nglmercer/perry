@@ -1,3 +1,29 @@
+## v0.5.1166 — Node-parity & robustness sweep (10 fixes)
+
+Rolls up the issue-fix batch merged on top of 0.5.1165. Per-PR detail lives on
+each GitHub PR; the headline changes:
+
+- **fix(http):** `res.headers['set-cookie']` is now an array, and repeated
+  headers fold per Node's `matchKnownFields` rules (set-cookie → array, cookie →
+  `"; "`, others → `", "`, single-value keeps first). (#5079 / #5102)
+- **fix(runtime):** over-large `TypedArray`/`Buffer`/`Map`/`Set`/array
+  allocations now throw a catchable `RangeError` instead of aborting the
+  process. (#5067 / #5103)
+- **fix(reflect):** `Reflect.construct` error-message wording matches Node.
+  (#2768 / #5105)
+- **fix(util):** `util.format` `%o`/`%O` quote top-level strings, and
+  `util.inspect` renders the `[Object: null prototype]` prefix. (#5106, #5107)
+- **perf(compile):** oversized modules compile at `-O0` to fix the
+  wide-object-literal codegen blowup (env override
+  `PERRY_LL_O0_THRESHOLD_BYTES`). (#4880 / #5109)
+- **fix(url):** `String()`, template interpolation, and `+`-concat of `URL` /
+  `URLSearchParams` yield `href` / query string (Node parity). (#5108)
+- **fix(hir):** in-function classes now run their static field initializers and
+  static blocks. (#5110)
+- **fix(fs):** `fsPromises.watch()` re-baselines its snapshot at the first
+  `.next()` so writes after the call are delivered (#5099 regression). (#5117)
+- **fix(runtime,codegen,hir):** Next.js standalone compile walls 31–35. (#5112)
+
 ## v0.5.1165 — fix(json): `JSON.stringify` of a TypedArray no longer SIGSEGVs (#5111)
 
 `JSON.stringify(new Int32Array([1,2,3]).map(x => x*2))` segfaulted, as did
