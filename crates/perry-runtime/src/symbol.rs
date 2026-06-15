@@ -2351,6 +2351,10 @@ pub unsafe extern "C" fn js_object_get_own_property_symbols(obj_f64: f64) -> i64
         .cloned()
         .unwrap_or_default();
     drop(guard);
+    // `entries[..data_len]` are the data-valued symbol properties from
+    // `SYMBOL_PROPERTIES`, already in their true insertion order. Everything
+    // appended after `data_len` is an accessor-only symbol.
+    let data_len = entries.len();
     for sym_key in accessors::owner_symbol_accessor_keys(obj_key) {
         if !entries.iter().any(|(existing, _)| *existing == sym_key) {
             entries.push((sym_key, 0));
@@ -2359,6 +2363,25 @@ pub unsafe extern "C" fn js_object_get_own_property_symbols(obj_f64: f64) -> i64
     if entries.is_empty() {
         return crate::array::js_array_alloc(0) as i64;
     }
+    // `[[OwnPropertyKeys]]` reports symbol keys in property-creation order.
+    // Data-valued symbols already arrive in insertion order, so we must NOT
+    // reorder them (an unconditional sort by creation id would reorder e.g.
+    // `obj[b]=…; obj[a]=…` when `a` was created before `b`). Accessor-only
+    // symbols, however, are appended from a HashMap (`owner_symbol_accessor_keys`)
+    // in nondeterministic order, so a `defineProperty(o, sym, {get})` pair came
+    // out unstable (test262 assign/strings-and-symbol-order,
+    // getOwnPropertyDescriptors/order-after-define-property). Sort ONLY that
+    // appended accessor-only tail by the symbol's monotonic creation id (the
+    // convention the class-ref symbol path already uses), leaving the data-symbol
+    // insertion order intact.
+    entries[data_len..].sort_by_key(|(sym_ptr_usize, _)| {
+        let ptr = *sym_ptr_usize as *const SymbolHeader;
+        if ptr.is_null() {
+            u64::MAX
+        } else {
+            (*ptr).id
+        }
+    });
     let mut arr = crate::array::js_array_alloc(entries.len() as u32);
     for (sym_ptr_usize, _val_bits) in entries.iter() {
         // Re-NaN-box each symbol pointer with POINTER_TAG so the array
