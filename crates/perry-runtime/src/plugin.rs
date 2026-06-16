@@ -473,6 +473,92 @@ pub extern "C" fn perry_plugin_emit(api_handle: i64, event: f64, data: f64) -> f
     perry_plugin_emit_event(event, data)
 }
 
+/// Unregister a previously-registered hook handler. Removes the entry whose
+/// closure bits match `handler` (closure-identity match). No-op if the
+/// caller is not the registering plugin or no such entry exists.
+#[no_mangle]
+pub extern "C" fn perry_plugin_unregister_hook(
+    api_handle: i64,
+    hook_name: f64,
+    handler: f64,
+) -> f64 {
+    let name = unsafe { extract_string(hook_name) };
+    let target_bits = handler.to_bits();
+    let mut reg = REGISTRY.lock().unwrap();
+    if let Some(plugin_id) = reg.plugin_id_for_handle(api_handle) {
+        if let Some(hooks) = reg.hooks.get_mut(&name) {
+            hooks.retain(|h| !(h.plugin_id == plugin_id && h.handler_closure == target_bits));
+        }
+        reg.hooks.retain(|_, v| !v.is_empty());
+    }
+    f64::from_bits(JSValue::undefined().bits())
+}
+
+/// Unregister a tool by name. No-op if the caller didn't register it.
+#[no_mangle]
+pub extern "C" fn perry_plugin_unregister_tool(api_handle: i64, name: f64) -> f64 {
+    let tool_name = unsafe { extract_string(name) };
+    let mut reg = REGISTRY.lock().unwrap();
+    if let Some(plugin_id) = reg.plugin_id_for_handle(api_handle) {
+        reg.tools.retain(|t| !(t.plugin_id == plugin_id && t.name == tool_name));
+    }
+    f64::from_bits(JSValue::undefined().bits())
+}
+
+/// Unregister a service by name. The service's `stopFn` is invoked before
+/// the entry is removed (matches the lifecycle contract of `registerService`).
+#[no_mangle]
+pub extern "C" fn perry_plugin_unregister_service(api_handle: i64, name: f64) -> f64 {
+    let svc_name = unsafe { extract_string(name) };
+    let mut reg = REGISTRY.lock().unwrap();
+    if let Some(plugin_id) = reg.plugin_id_for_handle(api_handle) {
+        if let Some(idx) = reg
+            .services
+            .iter()
+            .position(|s| s.plugin_id == plugin_id && s.name == svc_name)
+        {
+            let svc = reg.services.remove(idx);
+            let ptr_mask: u64 = 0x0000_FFFF_FFFF_FFFF;
+            let stop_ptr = (svc.stop_fn & ptr_mask) as *const crate::closure::ClosureHeader;
+            if !stop_ptr.is_null() {
+                drop(reg);
+                unsafe {
+                    crate::closure::js_closure_call0(stop_ptr);
+                }
+            }
+        }
+    }
+    f64::from_bits(JSValue::undefined().bits())
+}
+
+/// Unregister a route by path. No-op if the caller didn't register it.
+#[no_mangle]
+pub extern "C" fn perry_plugin_unregister_route(api_handle: i64, path: f64) -> f64 {
+    let route_path = unsafe { extract_string(path) };
+    let mut reg = REGISTRY.lock().unwrap();
+    if let Some(plugin_id) = reg.plugin_id_for_handle(api_handle) {
+        reg.routes
+            .retain(|r| !(r.plugin_id == plugin_id && r.path == route_path));
+    }
+    f64::from_bits(JSValue::undefined().bits())
+}
+
+/// Unsubscribe a previously-registered event handler. Removes the entry
+/// whose closure bits match `handler`. No-op otherwise.
+#[no_mangle]
+pub extern "C" fn perry_plugin_off(api_handle: i64, event: f64, handler: f64) -> f64 {
+    let event_name = unsafe { extract_string(event) };
+    let target_bits = handler.to_bits();
+    let mut reg = REGISTRY.lock().unwrap();
+    if let Some(plugin_id) = reg.plugin_id_for_handle(api_handle) {
+        if let Some(handlers) = reg.events.get_mut(&event_name) {
+            handlers.retain(|e| !(e.plugin_id == plugin_id && e.handler_closure == target_bits));
+        }
+        reg.events.retain(|_, v| !v.is_empty());
+    }
+    f64::from_bits(JSValue::undefined().bits())
+}
+
 // ============================================================================
 // Host-side functions — called by the host application
 // ============================================================================
