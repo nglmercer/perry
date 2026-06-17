@@ -41,38 +41,6 @@ pub(crate) const MAX_EXPR_CHAIN_LOWER_DEPTH: u32 = 512;
 const EXPR_LOWER_STACK_RED_ZONE: usize = 256 * 1024;
 const EXPR_LOWER_STACK_SEGMENT: usize = 2 * 1024 * 1024;
 
-fn class_computed_member_registration_expr(class_name: &str, member: &ClassComputedMember) -> Expr {
-    match member.kind {
-        ClassComputedMemberKind::Method => Expr::RegisterClassComputedMethod {
-            class_name: class_name.to_string(),
-            key_expr: Box::new(member.key_expr.clone()),
-            method_name: member.function.name.clone(),
-            is_static: member.is_static,
-            param_count: member.function.params.len() as u32,
-            has_rest: member
-                .function
-                .params
-                .last()
-                .map(|p| p.is_rest)
-                .unwrap_or(false),
-        },
-        ClassComputedMemberKind::Getter => Expr::RegisterClassComputedAccessor {
-            class_name: class_name.to_string(),
-            key_expr: Box::new(member.key_expr.clone()),
-            getter_name: Some(member.function.name.clone()),
-            setter_name: None,
-            is_static: member.is_static,
-        },
-        ClassComputedMemberKind::Setter => Expr::RegisterClassComputedAccessor {
-            class_name: class_name.to_string(),
-            key_expr: Box::new(member.key_expr.clone()),
-            getter_name: None,
-            setter_name: Some(member.function.name.clone()),
-            is_static: member.is_static,
-        },
-    }
-}
-
 pub(crate) fn throw_reference_error_expr(helper_name: &str) -> Expr {
     Expr::Call {
         callee: Box::new(Expr::ExternFuncRef {
