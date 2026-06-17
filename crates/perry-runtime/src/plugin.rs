@@ -490,7 +490,12 @@ pub extern "C" fn perry_plugin_unregister_hook(
     let mut reg = REGISTRY.lock().unwrap();
     if let Some(plugin_id) = reg.plugin_id_for_handle(api_handle) {
         if let Some(hooks) = reg.hooks.get_mut(&name) {
-            hooks.retain(|h| !(h.plugin_id == plugin_id && h.handler_closure == target_bits));
+            if let Some(pos) = hooks
+                .iter()
+                .position(|h| h.plugin_id == plugin_id && h.handler_closure == target_bits)
+            {
+                hooks.remove(pos);
+            }
         }
         reg.hooks.retain(|_, v| !v.is_empty());
     }
@@ -521,13 +526,23 @@ pub extern "C" fn perry_plugin_unregister_service(api_handle: i64, name: f64) ->
             .iter()
             .position(|s| s.plugin_id == plugin_id && s.name == svc_name)
         {
-            let svc = reg.services.remove(idx);
             let ptr_mask: u64 = 0x0000_FFFF_FFFF_FFFF;
-            let stop_ptr = (svc.stop_fn & ptr_mask) as *const crate::closure::ClosureHeader;
-            if !stop_ptr.is_null() {
+            let stop_bits = reg.services[idx].stop_fn;
+            let stop_ptr = (stop_bits & ptr_mask) as *const crate::closure::ClosureHeader;
+            if stop_ptr.is_null() {
+                reg.services.remove(idx);
+            } else {
                 drop(reg);
                 unsafe {
                     crate::closure::js_closure_call0(stop_ptr);
+                }
+                let mut reg = REGISTRY.lock().unwrap();
+                if let Some(idx2) = reg
+                    .services
+                    .iter()
+                    .position(|s| s.plugin_id == plugin_id && s.name == svc_name)
+                {
+                    reg.services.remove(idx2);
                 }
             }
         }
@@ -556,7 +571,12 @@ pub extern "C" fn perry_plugin_off(api_handle: i64, event: f64, handler: f64) ->
     let mut reg = REGISTRY.lock().unwrap();
     if let Some(plugin_id) = reg.plugin_id_for_handle(api_handle) {
         if let Some(handlers) = reg.events.get_mut(&event_name) {
-            handlers.retain(|e| !(e.plugin_id == plugin_id && e.handler_closure == target_bits));
+            if let Some(pos) = handlers
+                .iter()
+                .position(|e| e.plugin_id == plugin_id && e.handler_closure == target_bits)
+            {
+                handlers.remove(pos);
+            }
         }
         reg.events.retain(|_, v| !v.is_empty());
     }
