@@ -5294,7 +5294,19 @@ pub fn run_with_parse_cache(
 
     // For dylib output, skip runtime/stdlib linking — symbols resolve from host at dlopen time
     if is_dylib {
-        let mut cmd = if is_linux {
+        let is_dylib_windows = matches!(target.as_deref(), Some("windows") | Some("windows-winui"))
+            || (target.is_none() && cfg!(target_os = "windows"));
+        let mut cmd = if is_dylib_windows {
+            // Windows — emit a .dll via lld-link / link.exe. The plugin DLL's
+            // external references to `perry_*` / `js_*` resolve against the
+            // host process at LoadLibrary time, just like macOS
+            // `-flat_namespace -undefined dynamic_lookup`. No /DEF file is
+            // needed here — that's only required on the *host* side, see
+            // `link::build_and_run_link`'s `needs_plugins` branch.
+            let mut c = Command::new("link");
+            c.arg("/NOLOGO").arg("/DLL");
+            c
+        } else if is_linux {
             let mut c = Command::new("cc");
             c.arg("-shared");
             c
@@ -5312,7 +5324,12 @@ pub fn run_with_parse_cache(
             cmd.arg(obj_path);
         }
 
-        cmd.arg("-o").arg(&exe_path);
+        if is_dylib_windows {
+            // MSVC link.exe takes the output path as `/OUT:<path>`, not `-o`.
+            cmd.arg(format!("/OUT:{}", exe_path.display()));
+        } else {
+            cmd.arg("-o").arg(&exe_path);
+        }
 
         let status = cmd.status()?;
         if !status.success() {

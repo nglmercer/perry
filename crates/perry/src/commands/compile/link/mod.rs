@@ -24,10 +24,83 @@
 
 use anyhow::{anyhow, Result};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::OutputFormat;
+
+/// Symbols a plugin host must export so `dlopen`'d / `LoadLibrary`'d plugin
+/// shared libraries can resolve them against the host process at load time.
+///
+/// Plugins (`.dylib` / `.so` / `.dll`) link against the host's copies of
+/// these symbols rather than bringing their own — see
+/// `crates/perry-runtime/src/plugin.rs::perry_plugin_load`. On macOS we
+/// use `-Wl,-u,_<sym>` to force the linker to keep them past dead-strip;
+/// on Linux `-rdynamic` exports the whole set; on Windows we write a
+/// `.def` file and pass `/DEF:<path>` to `link.exe` (the MSVC equivalent
+/// of `-rdynamic`).
+const PLUGIN_HOST_SYMBOLS: &[&str] = &[
+    // Runtime allocation / value primitives
+    "js_array_alloc",
+    "js_array_from_f64",
+    "js_array_push_f64",
+    "js_bigint_is_zero",
+    "js_closure_alloc",
+    "js_console_log_spread",
+    "js_dynamic_object_get_property",
+    "js_dynamic_string_equals",
+    "js_gc_register_global_root",
+    "js_is_truthy",
+    "js_jsvalue_compare",
+    "js_jsvalue_equals",
+    "js_nanbox_get_pointer",
+    "js_nanbox_pointer",
+    "js_nanbox_string",
+    "js_native_call_method",
+    "js_object_alloc_class_with_keys",
+    "js_object_alloc_with_shape",
+    "js_register_class_method",
+    "js_string_char_code_at",
+    "js_string_from_bytes",
+    "js_string_length",
+    // Runtime init / guards
+    "perry_debug_trace_init",
+    "perry_debug_trace_init_done",
+    "perry_init_guard_check_and_set",
+    // Plugin manager FFI surface (plugins call into the host's plugin
+    // registry — the same `perry_plugin_*` symbols the host's own
+    // perry/plugin import resolves against). Without these in the host
+    // .exe's export table, a plugin DLL's `import "perry/plugin"` calls
+    // fail to resolve at LoadLibrary time.
+    "perry_plugin_count",
+    "perry_plugin_discover",
+    "perry_plugin_emit",
+    "perry_plugin_emit_event",
+    "perry_plugin_emit_hook",
+    "perry_plugin_get_config",
+    "perry_plugin_init",
+    "perry_plugin_invoke_tool",
+    "perry_plugin_list_hooks",
+    "perry_plugin_list_plugins",
+    "perry_plugin_list_tools",
+    "perry_plugin_load",
+    "perry_plugin_log",
+    "perry_plugin_off",
+    "perry_plugin_on",
+    "perry_plugin_register_hook",
+    "perry_plugin_register_hook_ex",
+    "perry_plugin_register_route",
+    "perry_plugin_register_service",
+    "perry_plugin_register_tool",
+    "perry_plugin_set_config",
+    "perry_plugin_set_metadata",
+    "perry_plugin_unload",
+    "perry_plugin_unregister_hook",
+    "perry_plugin_unregister_route",
+    "perry_plugin_unregister_service",
+    "perry_plugin_unregister_tool",
+];
 
 use super::{
     apple_sdk_version, build_geisterhand_libs, dedup_native_lib_for_tier3, dedup_runtime_for_tier3,
@@ -469,7 +542,18 @@ pub(super) fn build_and_run_link(
         // These are documented as defaults under /RELEASE, but Perry doesn't
         // pass /RELEASE so the linker falls back to /OPT:NOREF, pulling in the
         // entire perry-stdlib archive even when only a fraction is used.
-        cmd.arg("/OPT:REF");
+        if ctx.needs_plugins {
+            // Plugin hosts need to keep their runtime/plugin-manager exports
+            // alive so LoadLibrary'd plugin DLLs can resolve them. The /DEF
+            // file lists exactly which symbols must survive; pair /OPT:REF
+            // (dead-strip) with /OPT:NOREF in the wrong combination would
+            // strip our exports before the .def filter sees them. We
+            // override to NOREF here so dead-strip honors the .def list
+            // instead of over-eagerly dropping unreferenced-by-host code.
+            cmd.arg("/OPT:NOREF");
+        } else {
+            cmd.arg("/OPT:REF");
+        }
         if debug_symbols {
             // `/DEBUG` makes lld-link emit a PDB next to the .exe from the
             // debug info already present in the input objects/libs. Without
@@ -616,12 +700,18 @@ pub(super) fn build_and_run_link(
         cmd.arg("-o").arg(exe_path).arg("-lc");
     }
 
-    // For plugin hosts, export symbols so dlopen'd plugins can resolve them.
-    // Plugins are dylibs loaded via dlopen — they need to resolve:
-    //   1. hone_host_api_* (plugin→host calls)
-    //   2. js_*/perry_* (Perry runtime used by compiled plugin code)
-    // We use -u to prevent dead_strip from removing these, keeping binary size small.
-    if ctx.needs_plugins && !is_windows {
+    // For plugin hosts, export symbols so dlopen'd / LoadLibrary'd plugins
+    // can resolve them. Plugins are dylibs loaded against the host process
+    // at runtime — they need to bind:
+    //   1. perry_plugin_* — the runtime's plugin-manager FFI surface
+    //      (called from the plugin's own `import "perry/plugin"` codegen)
+    //   2. js_*/perry_*  — the runtime primitives the compiled plugin
+    //      code reaches through NaN-boxing / object headers
+    // We use -u to prevent dead_strip from removing these on macOS,
+    // -rdynamic on Linux, and a `.def` file with /DEF on Windows (the
+    // MSVC equivalent of `-rdynamic`). The shared `PLUGIN_HOST_SYMBOLS`
+    // const at module top is the single source of truth.
+    if ctx.needs_plugins {
         #[cfg(target_os = "macos")]
         {
             // Force-keep all functions from plugin-related native libraries
@@ -632,43 +722,37 @@ pub(super) fn build_and_run_link(
                     }
                 }
             }
-            // Force-keep Perry runtime symbols that plugin dylibs reference.
-            // These are collected from the Perry runtime's public API.
-            // Using -u tells the linker "treat as referenced" so dead_strip keeps them.
-            let runtime_syms = [
-                "js_array_alloc",
-                "js_array_from_f64",
-                "js_array_push_f64",
-                "js_bigint_is_zero",
-                "js_closure_alloc",
-                "js_console_log_spread",
-                "js_dynamic_object_get_property",
-                "js_dynamic_string_equals",
-                "js_gc_register_global_root",
-                "js_is_truthy",
-                "js_jsvalue_compare",
-                "js_jsvalue_equals",
-                "js_nanbox_get_pointer",
-                "js_nanbox_pointer",
-                "js_nanbox_string",
-                "js_native_call_method",
-                "js_object_alloc_class_with_keys",
-                "js_object_alloc_with_shape",
-                "js_register_class_method",
-                "js_string_char_code_at",
-                "js_string_from_bytes",
-                "js_string_length",
-                "perry_debug_trace_init",
-                "perry_debug_trace_init_done",
-                "perry_init_guard_check_and_set",
-            ];
-            for sym in &runtime_syms {
+            // Force-keep Perry runtime + plugin-manager symbols. -u tells
+            // the linker "treat as referenced" so dead_strip keeps them.
+            for sym in PLUGIN_HOST_SYMBOLS {
                 cmd.arg(format!("-Wl,-u,_{}", sym));
             }
         }
         #[cfg(target_os = "linux")]
         {
             cmd.arg("-rdynamic");
+        }
+        if is_windows {
+            // MSVC's equivalent of `-rdynamic` is a module-definition
+            // (.def) file passed via `/DEF:<path>`. Writing the file
+            // is cheap and keeps `link.exe`'s command line short.
+            // `lld-link` accepts the same flag, so this works for both
+            // the lightweight (`perry setup windows`) and full Visual
+            // Studio toolchains.
+            let def_path = std::env::temp_dir().join(format!(
+                "perry_plugin_host_{}.def",
+                std::process::id()
+            ));
+            if let Ok(mut def_file) = fs::File::create(&def_path) {
+                let _ = writeln!(def_file, "LIBRARY {}", exe_path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("perry_host"));
+                let _ = writeln!(def_file, "EXPORTS");
+                for sym in PLUGIN_HOST_SYMBOLS {
+                    let _ = writeln!(def_file, "    {}", sym);
+                }
+            }
+            cmd.arg(format!("/DEF:{}", def_path.display()));
         }
     }
 
