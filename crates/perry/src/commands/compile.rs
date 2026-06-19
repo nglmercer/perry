@@ -5296,15 +5296,60 @@ pub fn run_with_parse_cache(
     if is_dylib {
         let is_dylib_windows = matches!(target.as_deref(), Some("windows") | Some("windows-winui"))
             || (target.is_none() && cfg!(target_os = "windows"));
+        let has_plugin_deactivate = ctx
+            .native_modules
+            .values()
+            .any(|m| m.exported_functions.iter().any(|(n, _)| n == "deactivate"));
         let mut cmd = if is_dylib_windows {
-            // Windows — emit a .dll via lld-link / link.exe. The plugin DLL's
-            // external references to `perry_*` / `js_*` resolve against the
-            // host process at LoadLibrary time, just like macOS
-            // `-flat_namespace -undefined dynamic_lookup`. No /DEF file is
-            // needed here — that's only required on the *host* side, see
-            // `link::build_and_run_link`'s `needs_plugins` branch.
-            let mut c = Command::new("link");
-            c.arg("/NOLOGO").arg("/DLL");
+            // Windows — emit a .dll via lld-link. The plugin DLL's external
+            // references to `perry_*` / `js_*` resolve against the host
+            // process at LoadLibrary time, just like macOS
+            // `-flat_namespace -undefined dynamic_lookup`.
+            //
+            // A .def file IS still needed here — lld-link's default is to
+            // emit an empty export table, and the host's `loadPlugin` calls
+            // `GetProcAddress(handle, "plugin_activate")` to find the
+            // plugin's entry point. The `LIBRARY` directive names the DLL
+            // and the `EXPORTS` section lists the three plugin ABI symbols
+            // that the codegen layer emits for the dylib's entry module
+            // (see `compile_module_entry`). `plugin_deactivate` is
+            // optional and only listed when the user's `deactivate`
+            // function is actually exported.
+            //
+            // `/FORCE:UNRESOLVED` lets the linker produce the DLL even though
+            // every `perry_*` / `js_*` symbol is undefined; the loader fills
+            // them in from the host at LoadLibrary time. Without it, the
+            // link fails with LNK2019 on the first unresolved `js_*` symbol
+            // and no DLL is emitted.
+            //
+            // We use lld-link rather than MSVC link.exe here: lld-link honors
+            // /FORCE:UNRESOLVED on the LLVM .o files that Perry emits (treating
+            // the missing symbols as warnings that produce a runnable DLL),
+            // whereas MSVC link.exe returns 0 without writing the DLL — see
+            // the cross-linker note in `select_linker_command`.
+            let linker = find_lld_link().unwrap_or_else(|| PathBuf::from("lld-link"));
+            let mut c = Command::new(linker);
+            c.arg("/NOLOGO").arg("/DLL").arg("/FORCE:UNRESOLVED");
+            let stem = exe_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("perry_plugin");
+            let def_path = std::env::temp_dir().join(format!(
+                "perry_plugin_dylib_{}_{}.def",
+                std::process::id(),
+                stem
+            ));
+            if let Ok(mut def_file) = std::fs::File::create(&def_path) {
+                use std::io::Write;
+                let _ = writeln!(def_file, "LIBRARY {}", stem);
+                let _ = writeln!(def_file, "EXPORTS");
+                let _ = writeln!(def_file, "    plugin_activate");
+                let _ = writeln!(def_file, "    perry_plugin_abi_version");
+                if has_plugin_deactivate {
+                    let _ = writeln!(def_file, "    plugin_deactivate");
+                }
+            }
+            c.arg(format!("/DEF:{}", def_path.display()));
             c
         } else if is_linux {
             let mut c = Command::new("cc");
