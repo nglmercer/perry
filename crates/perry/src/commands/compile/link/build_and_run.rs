@@ -425,54 +425,60 @@ pub(crate) fn build_and_run_link(
     //   1. hone_host_api_* (plugin→host calls)
     //   2. js_*/perry_* (Perry runtime used by compiled plugin code)
     // We use -u to prevent dead_strip from removing these, keeping binary size small.
-    if ctx.needs_plugins && !is_windows {
-        #[cfg(target_os = "macos")]
-        {
-            // Force-keep all functions from plugin-related native libraries
-            for native_lib in &ctx.native_libraries {
-                if native_lib.module.contains("plugin") {
-                    for func in &native_lib.functions {
-                        cmd.arg(format!("-Wl,-u,_{}", func.name));
-                    }
+    if ctx.needs_plugins {
+        if is_windows {
+            // Windows: write a per-build `.def` file listing the runtime +
+            // plugin-manager exports and pass `/DEF:<path>` to link.exe. This
+            // is the MSVC equivalent of `-rdynamic` / `-Wl,-u,_<sym>` —
+            // symbols listed in EXPORTS survive dead-strip and become visible
+            // to `LoadLibraryW`'d plugin DLLs via `GetProcAddress`.
+            //
+            // Use `NAME <exe>` rather than `LIBRARY <dll>`: this code path
+            // links a host .exe, and `LIBRARY` tells link.exe the output is
+            // a DLL named `<stem>.dll`. link.exe would then emit a
+            // `<stem>.exp` carrying `/OUT:<stem>.dll` and reject the
+            // resulting .exe as a non-Win32 application (LNK4070 is
+            // emitted and ignored, but the EXE itself is broken). `NAME`
+            // declares the output file name without that side effect.
+            let def_path =
+                std::env::temp_dir().join(format!("perry_plugin_host_{}.def", std::process::id()));
+            if let Ok(mut def_file) = fs::File::create(&def_path) {
+                let _ = writeln!(
+                    def_file,
+                    "NAME {}",
+                    exe_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("perry_host")
+                );
+                let _ = writeln!(def_file, "EXPORTS");
+                for sym in PLUGIN_HOST_SYMBOLS {
+                    let _ = writeln!(def_file, "    {}", sym);
                 }
             }
-            // Force-keep Perry runtime symbols that plugin dylibs reference.
-            // These are collected from the Perry runtime's public API.
-            // Using -u tells the linker "treat as referenced" so dead_strip keeps them.
-            let runtime_syms = [
-                "js_array_alloc",
-                "js_array_from_f64",
-                "js_array_push_f64",
-                "js_bigint_is_zero",
-                "js_closure_alloc",
-                "js_console_log_spread",
-                "js_dynamic_object_get_property",
-                "js_dynamic_string_equals",
-                "js_gc_register_global_root",
-                "js_is_truthy",
-                "js_jsvalue_compare",
-                "js_jsvalue_equals",
-                "js_nanbox_get_pointer",
-                "js_nanbox_pointer",
-                "js_nanbox_string",
-                "js_native_call_method",
-                "js_object_alloc_class_with_keys",
-                "js_object_alloc_with_shape",
-                "js_register_class_method",
-                "js_string_char_code_at",
-                "js_string_from_bytes",
-                "js_string_length",
-                "perry_debug_trace_init",
-                "perry_debug_trace_init_done",
-                "perry_init_guard_check_and_set",
-            ];
-            for sym in &runtime_syms {
-                cmd.arg(format!("-Wl,-u,_{}", sym));
+            cmd.arg(format!("/DEF:{}", def_path.display()));
+        } else {
+            #[cfg(target_os = "macos")]
+            {
+                // Force-keep all functions from plugin-related native libraries
+                for native_lib in &ctx.native_libraries {
+                    if native_lib.module.contains("plugin") {
+                        for func in &native_lib.functions {
+                            cmd.arg(format!("-Wl,-u,_{}", func.name));
+                        }
+                    }
+                }
+                // Force-keep Perry runtime symbols that plugin dylibs reference.
+                // These are collected from the Perry runtime's public API.
+                // Using -u tells the linker "treat as referenced" so dead_strip keeps them.
+                for sym in PLUGIN_HOST_SYMBOLS {
+                    cmd.arg(format!("-Wl,-u,_{}", sym));
+                }
             }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            cmd.arg("-rdynamic");
+            #[cfg(target_os = "linux")]
+            {
+                cmd.arg("-rdynamic");
+            }
         }
     }
 
