@@ -1,3 +1,11 @@
+## v0.5.1193 — feat(compile): lower static literal require in user modules (#5447) — clears Next.js W6
+
+Static-literal `require(...)` in user-compiled modules now lowers into Perry's normal import graph *before* HIR lowering, instead of being left as kept-local `let` bindings. Supported forms: `const mod = require("./local")`, `const { value } = require("./local")`, `require("allowed-package").member`, and `createRequire(import.meta.url)` (incl. renamed `createRequire as makeRequire`). Builtins stay on the native path; package specifiers are gated on `perry.compilePackages`; local `require` shadowing and comments/strings are respected. Replaces the old createRequire-only transform with a broader `static_require_transform` pass.
+
+Clears the Next.js 16 standalone app-router **W6** wall (#5437): `IncrementalCache`'s `new uw.SharedCacheControls(...)` no longer throws `undefined is not a constructor`, because `const uw = require(".../shared-cache-controls.external.js")` now resolves through the module getter (a live binding) instead of a captured pre-init snapshot thunk. Validated against the live standalone bundle (error count 18 → 0); the render advances to the next wall (server boot: `getStore is not a function`).
+
+Authored by @JagritGumber (#5447).
+
 ## v0.5.1192 — feat(sharp): metadata/toFile objects, Buffer-input factory, `.extract()`/`.sharpen()`, SIMD resize
 
 Four sharp improvements toward real-world parity, all pure-Rust (no libvips):
