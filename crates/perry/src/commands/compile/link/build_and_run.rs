@@ -424,15 +424,16 @@ pub(crate) fn build_and_run_link(
             // resulting .exe as a non-Win32 application (LNK4070 is
             // emitted and ignored, but the EXE itself is broken). `NAME`
             // declares the output file name without that side effect.
-            let def_path = std::env::temp_dir().join(format!(
-                "perry_plugin_host_{}.def",
-                std::process::id()
-            ));
+            let def_path =
+                std::env::temp_dir().join(format!("perry_plugin_host_{}.def", std::process::id()));
             if let Ok(mut def_file) = fs::File::create(&def_path) {
                 let _ = writeln!(
                     def_file,
                     "NAME {}",
-                    exe_path.file_stem().and_then(|s| s.to_str()).unwrap_or("perry_host")
+                    exe_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("perry_host")
                 );
                 let _ = writeln!(def_file, "EXPORTS");
                 for sym in PLUGIN_HOST_SYMBOLS {

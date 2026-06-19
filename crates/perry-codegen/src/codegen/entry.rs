@@ -982,7 +982,10 @@ pub(super) fn compile_module_entry(
         let pending = std::mem::take(&mut ctx.pending_declares);
         let buffer_alias_used = ctx.buffer_data_slots.len() as u32;
         let native_rep_records = std::mem::take(&mut ctx.native_rep_records);
-        let has_plugin_activate = hir.exported_functions.iter().any(|(name, _)| name == "activate");
+        let has_plugin_activate = hir
+            .exported_functions
+            .iter()
+            .any(|(name, _)| name == "activate");
         let has_plugin_deactivate = hir
             .exported_functions
             .iter()
