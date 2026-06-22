@@ -63,7 +63,8 @@ pub use dynamic_props::{
     closure_delete_own_dynamic_prop, closure_dynamic_props_snapshot, closure_get_dynamic_prop,
     closure_get_own_dynamic_prop, closure_has_own_dynamic_prop, closure_is_key_deleted,
     closure_mark_key_deleted, closure_set_dynamic_prop, closure_set_static_prototype,
-    closure_static_prototype, is_closure_ptr, js_closure_unbind_this,
+    closure_static_prototype, is_closure_ptr, is_module_default_wrapper, js_closure_unbind_this,
+    js_register_module_default_wrapper_value, module_default_wrapper_exports,
     scan_closure_dynamic_props_roots_mut,
 };
 

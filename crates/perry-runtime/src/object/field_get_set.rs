@@ -3833,6 +3833,55 @@ pub extern "C" fn js_object_get_field_by_name(
                 if val.to_bits() != crate::value::TAG_UNDEFINED {
                     return JSValue::from_bits(val.to_bits());
                 }
+                // #5437 (Next.js W6): the receiver is a REGISTERED
+                // module-default-export wrapper closure (`const uw =
+                // require('S')` materialized + captured by-value). A member
+                // read like `uw.SharedCacheControls` should resolve against
+                // `module.exports`, not the wrapper function itself. Call the
+                // wrapper once to obtain `module.exports` and re-read the
+                // property off that object. Gated to wrappers codegen
+                // explicitly registered (so an arbitrary user closure is never
+                // auto-called) and to non-function-meta names (`constructor`,
+                // `prototype`, `name`, `length`, `caller`, `arguments`, well-
+                // known symbols) so a genuine function-property read still
+                // takes its dedicated path below.
+                if !matches!(
+                    name_str,
+                    "constructor"
+                        | "prototype"
+                        | "name"
+                        | "length"
+                        | "caller"
+                        | "arguments"
+                        | "apply"
+                        | "call"
+                        | "bind"
+                ) && !name_str.starts_with("@@")
+                    && !name_str.starts_with("Symbol(")
+                {
+                    if let Some(exports) =
+                        crate::closure::module_default_wrapper_exports(obj as usize)
+                    {
+                        let exports_bits = exports.to_bits();
+                        // Guard against the wrapper returning itself (would
+                        // recurse) or undefined/null (nothing to read from).
+                        let exports_jsv = JSValue::from_bits(exports_bits);
+                        if exports_bits != (obj as u64)
+                            && exports_bits != crate::value::js_nanbox_pointer(obj as i64).to_bits()
+                            && !exports_jsv.is_undefined()
+                            && !exports_jsv.is_null()
+                        {
+                            let exports_ptr =
+                                crate::value::js_nanbox_get_pointer(exports) as *const ObjectHeader;
+                            if !exports_ptr.is_null() {
+                                let result = js_object_get_field_by_name(exports_ptr, key);
+                                if !result.is_undefined() {
+                                    return result;
+                                }
+                            }
+                        }
+                    }
+                }
                 if name_str == "constructor" {
                     if let Some(ctor) =
                         crate::object::generator_function_constructor_of(obj as usize)

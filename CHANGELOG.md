@@ -1,3 +1,11 @@
+## v0.5.1200 — fix(codegen+runtime): #5437 Next.js W6 — captured CJS module-default wrapper closure resolves exports
+
+The Next.js standalone (turbopack `app-page-turbo`) render threw `TypeError: undefined is not a constructor` at `new uw.SharedCacheControls(...)` inside the `IncrementalCache` constructor. Root: `let uw = require(".../shared-cache-controls.external.js")` is a lazy/function-local require whose value-read takes the `imported_vars` default-getter path (`dyn_extern_i18n.rs`), which for a CJS `Object.defineProperty(exports, …)` module returns the module-default **wrapper closure** (the un-called IIFE), not `module.exports`. The class captured that closure by-value into a `__perry_cap_` field, so `uw.SharedCacheControls` read the closure → `undefined` → `new undefined()` threw. (Diverged only at giant-bundle scale; the import getter resolves the real object everywhere else.)
+
+Fix (5 files, +235): a `MODULE_DEFAULT_WRAPPER_FUNCPTRS` runtime registry + `js_register_module_default_wrapper_value` FFI; codegen at the imported-var default-getter site registers the wrapper, **gated to `origin_suffix == "default" && name.starts_with("_lazyreq_")`** so a genuine `export default <function>` is never auto-called; and a runtime fallback in the closure property-read path that, for a *registered* wrapper closure on a property miss, calls it once (`js_closure_call0`) → `module.exports` → re-reads the property (guarded against self-return / undefined / null). Regression test `module_default_wrapper_property_read_resolves_exports`.
+
+Bundle: the W6 render throw is eliminated (undefined-ctor 1→0, deterministic); the render now advances past W6 to a separate downstream wall (a `.length` read on undefined). Code-only; no behavioral change for non-`defineProperty`-CJS default imports.
+
 ## v0.5.1199 — feat(ui): BloomView live-render plumbing on every backend (#5519)
 
 Perry-UI side of #5519 (live `BloomView` rendering on all platforms; the engine
