@@ -483,38 +483,37 @@ pub(crate) fn build_and_run_link(
                         {
                             if out.status.success() {
                                 let text = String::from_utf8_lossy(&out.stdout);
-                            for line in text.lines() {
-                                // llvm-nm format: "<addr> <type> <name>" e.g.
-                                //   "00000000 T _js_array_alloc"
-                                //   "00000000 B PERRY_CLASS_FIELD_INLINE_GUARD_DISABLED"
-                                //   "00000000 D __imp_PERRY_CLASS_FIELD_INLINE_GUARD_DISABLED"
-                                // We capture T (text), B (BSS), D (data), R (rodata) and
-                                // skip the __imp_ PE-import stubs (the leading-underscore
-                                // non-prefixed name is the actual export).
-                                let mut parts = line.split_whitespace();
-                                let _addr = parts.next();
-                                let ty = parts.next();
-                                let name_field = parts.next();
-                                if let (Some(ty), Some(rest)) = (ty, name_field) {
-                                    if !matches!(ty, "T" | "B" | "D" | "R") {
-                                        continue;
-                                    }
-                                    let bare = rest.strip_prefix('_').unwrap_or(rest);
-                                    let export_name = if let Some(stripped) =
-                                        bare.strip_prefix("__imp_")
-                                    {
-                                        stripped
-                                    } else {
-                                        bare
-                                    };
-                                    if export_name.starts_with("js_")
-                                        || export_name.starts_with("perry_")
-                                        || export_name.starts_with("PERRY_")
-                                    {
-                                        all_syms.insert(export_name.to_string());
+                                for line in text.lines() {
+                                    // llvm-nm format: "<addr> <type> <name>" e.g.
+                                    //   "00000000 T _js_array_alloc"
+                                    //   "00000000 B PERRY_CLASS_FIELD_INLINE_GUARD_DISABLED"
+                                    //   "00000000 D __imp_PERRY_CLASS_FIELD_INLINE_GUARD_DISABLED"
+                                    // We capture T (text), B (BSS), D (data), R (rodata) and
+                                    // skip the __imp_ PE-import stubs (the leading-underscore
+                                    // non-prefixed name is the actual export).
+                                    let mut parts = line.split_whitespace();
+                                    let _addr = parts.next();
+                                    let ty = parts.next();
+                                    let name_field = parts.next();
+                                    if let (Some(ty), Some(rest)) = (ty, name_field) {
+                                        if !matches!(ty, "T" | "B" | "D" | "R") {
+                                            continue;
+                                        }
+                                        let bare = rest.strip_prefix('_').unwrap_or(rest);
+                                        let export_name =
+                                            if let Some(stripped) = bare.strip_prefix("__imp_") {
+                                                stripped
+                                            } else {
+                                                bare
+                                            };
+                                        if export_name.starts_with("js_")
+                                            || export_name.starts_with("perry_")
+                                            || export_name.starts_with("PERRY_")
+                                        {
+                                            all_syms.insert(export_name.to_string());
+                                        }
                                     }
                                 }
-                            }
                             }
                         }
                     }
