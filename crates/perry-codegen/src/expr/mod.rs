@@ -110,7 +110,7 @@ pub(crate) use write_barrier::{
     emit_array_numeric_write_note_on_block, emit_jsvalue_slot_store_on_block,
     emit_jsvalue_slot_store_scalar_aware_on_block, emit_layout_note_slot_on_block,
     emit_root_heap_word_store_on_block, emit_root_nanbox_store_on_block, emit_write_barrier,
-    emit_write_barrier_slot_on_block, lower_event_emitter_subclass_init,
+    emit_write_barrier_slot_on_block, lower_array_super_init, lower_event_emitter_subclass_init,
     lower_node_stream_super_init, lower_stream_super_init,
 };
 
@@ -493,6 +493,11 @@ pub(crate) struct FnCtx<'a> {
     /// Used by `lower_builtin_new` to disambiguate ambiguously-named
     /// built-in constructors. See issue #602.
     pub imported_class_sources: &'a std::collections::HashMap<String, String>,
+    /// Per-module alias → original imported export name (renamed named imports
+    /// only). Used by `lower_new` to recover the canonical built-in constructor
+    /// name when a bundle aliases the import (`import { AsyncLocalStorage as xQ5
+    /// }`). See `CompileOptions::imported_class_original_names`.
+    pub imported_class_original_names: &'a std::collections::HashMap<String, String>,
     /// Number of currently-open `try { ... }` blocks at the current
     /// lowering position. Incremented before lowering a try body,
     /// decremented after. `Stmt::Return` emits `js_try_end()` this many
@@ -1551,6 +1556,7 @@ pub(crate) fn lower_expr(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
         | Expr::SetNewFromArray(..) => logical_collections::lower(ctx, expr),
         Expr::StaticMethodCall { .. } => static_method::lower(ctx, expr),
         Expr::SuperMethodCall { .. }
+        | Expr::SuperMethodCallSpread { .. }
         | Expr::SuperPropertyGet { .. }
         | Expr::SuperPropertySet { .. }
         | Expr::ObjectSuperPropertyGet { .. }

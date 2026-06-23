@@ -67,7 +67,7 @@ use helpers::{
 };
 
 // Collector and boxing-analysis walkers live in dedicated modules.
-use crate::boxed_vars::{collect_boxed_vars, collect_let_types_in_stmts};
+use crate::boxed_vars::{collect_boxed_param_ids, collect_boxed_vars, collect_let_types_in_stmts};
 use crate::collectors::{collect_closures_in_stmts, collect_let_ids, collect_ref_ids_in_stmts};
 
 pub(super) fn spec_function_length(params: &[perry_hir::Param]) -> usize {
@@ -1336,6 +1336,25 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             }
             map
         },
+        // Per-module alias → original imported export name. Only renamed named
+        // imports (`local != imported`) are recorded; this lets `lower_new`
+        // recover the canonical built-in constructor name when a bundle aliases
+        // the import (e.g. `import { AsyncLocalStorage as xQ5 }`). See the
+        // field doc on `CompileOptions::imported_class_original_names`.
+        imported_class_original_names: {
+            let mut map: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for import in &hir.imports {
+                for spec in &import.specifiers {
+                    if let perry_hir::ImportSpecifier::Named { imported, local } = spec {
+                        if local != imported {
+                            map.insert(local.clone(), imported.clone());
+                        }
+                    }
+                }
+            }
+            map
+        },
         interfaces: hir
             .interfaces
             .iter()
@@ -1619,6 +1638,12 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // <class>__<field>` initialized to 0.0. The init expression runs
     // in compile_module_entry's main/init function before user code.
     let mut static_field_globals: HashMap<(String, String), String> = HashMap::new();
+    // Track which `@perry_static_*` globals we've already emitted (defining or
+    // external) so a repeated symbol — a duplicate static field name within one
+    // class (#5345), or the same imported class pulled in twice — never emits a
+    // second LLVM global, which clang rejects as a redefinition.
+    let mut external_globals_emitted: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for c in &hir.classes {
         for sf in &c.static_fields {
             // Computed-key static fields (`static [Symbol.for(...)] = init`)
@@ -1642,7 +1667,17 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             // when Sub is in a different file from Base; without external
             // linkage, the importing module's `StaticFieldGet { Base, Symbol }`
             // had no symbol to resolve and silently produced 0.0.
-            llmod.add_global(&name, DOUBLE, "0.0");
+            //
+            // #5345: a class may declare the SAME static field name twice
+            // (`static f = 'a'; static f = this.f + 'b';`) — both initializers
+            // run in declaration order against one shared slot (last write
+            // wins). They mangle to the same global symbol, so emit the
+            // defining global only once; clang rejects a redefined `@…__f`.
+            // The init loop still walks every `c.static_fields` entry, so both
+            // assignments execute against this single slot.
+            if external_globals_emitted.insert(name.clone()) {
+                llmod.add_global(&name, DOUBLE, "0.0");
+            }
             static_field_globals.insert((c.name.clone(), sf.name.clone()), name);
         }
     }
@@ -1650,9 +1685,8 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // module emits the defining external global (above); the consumer just
     // declares a reference and adds it to its own `static_field_globals` map
     // so `Expr::StaticFieldGet/Set` lowering finds it.
-    // Track which globals we've already emitted to avoid double-declarations.
-    let mut external_globals_emitted: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    // (external_globals_emitted is declared above, shared with the local-class
+    // loop, to avoid double-declarations.)
     for ic in &opts.imported_classes {
         let effective_name = ic.local_alias.as_deref().unwrap_or(&ic.name);
         // Skip imported-class entries whose source matches this module's
@@ -2026,25 +2060,37 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     let mut module_boxed_vars: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for f in &hir.functions {
         module_boxed_vars.extend(collect_boxed_vars(&f.body));
+        // #5521: box captured+mutated params (never in the Stmt::Let
+        // `declared` set, so missed by `collect_boxed_vars`).
+        module_boxed_vars.extend(collect_boxed_param_ids(&f.params, &f.body));
     }
     for c in &hir.classes {
         for m in &c.methods {
             module_boxed_vars.extend(collect_boxed_vars(&m.body));
+            module_boxed_vars.extend(collect_boxed_param_ids(&m.params, &m.body));
         }
         for (_, getter_fn) in &c.getters {
             module_boxed_vars.extend(collect_boxed_vars(&getter_fn.body));
+            module_boxed_vars.extend(collect_boxed_param_ids(&getter_fn.params, &getter_fn.body));
         }
         for (_, setter_fn) in &c.setters {
             module_boxed_vars.extend(collect_boxed_vars(&setter_fn.body));
+            module_boxed_vars.extend(collect_boxed_param_ids(&setter_fn.params, &setter_fn.body));
         }
         for sm in &c.static_methods {
             module_boxed_vars.extend(collect_boxed_vars(&sm.body));
+            module_boxed_vars.extend(collect_boxed_param_ids(&sm.params, &sm.body));
         }
         for member in &c.computed_members {
             module_boxed_vars.extend(collect_boxed_vars(&member.function.body));
+            module_boxed_vars.extend(collect_boxed_param_ids(
+                &member.function.params,
+                &member.function.body,
+            ));
         }
         if let Some(ctor) = &c.constructor {
             module_boxed_vars.extend(collect_boxed_vars(&ctor.body));
+            module_boxed_vars.extend(collect_boxed_param_ids(&ctor.params, &ctor.body));
         }
     }
     module_boxed_vars.extend(collect_boxed_vars(&hir.init));

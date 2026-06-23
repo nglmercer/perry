@@ -68,7 +68,7 @@ pub use self::immutable::{
 pub(crate) use self::indexing::{
     array_has_own_index, array_iteration_is_exotic, array_proto_iterator_modified,
     array_prototype_addr, array_prototype_has_index_flag, array_spec_get, array_spec_has_index,
-    note_array_proto_iterator_write, note_object_prototype_index_write,
+    note_array_proto_iterator_write, note_object_prototype_index_write, object_prototype_addr,
     object_prototype_addr_matches, object_prototype_has_index_flag,
 };
 pub use self::indexing::{
@@ -93,6 +93,7 @@ pub use self::iter_object::{
     ARRAY_ITERATOR_CLASS_ID,
 };
 pub(crate) use self::iterator::is_builtin_iterator_class_id;
+pub(crate) use self::iterator::iter_bt_dump;
 pub use self::iterator::{
     js_array_spread_append, js_for_of_to_array, js_get_async_iterator, js_iterator_to_array,
 };

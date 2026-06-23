@@ -35,7 +35,7 @@ static ARRAY_PROTO_HAS_INDEX: AtomicBool = AtomicBool::new(false);
 static OBJECT_PROTO_ADDR: AtomicUsize = AtomicUsize::new(usize::MAX);
 static OBJECT_PROTO_HAS_INDEX: AtomicBool = AtomicBool::new(false);
 
-fn object_prototype_addr() -> usize {
+pub(crate) fn object_prototype_addr() -> usize {
     let cached = OBJECT_PROTO_ADDR.load(Ordering::Relaxed);
     if cached != usize::MAX {
         return cached;
@@ -757,6 +757,10 @@ pub extern "C" fn js_array_numeric_set_f64_unboxed(
 /// Note: This does NOT extend the array if index >= length
 #[no_mangle]
 pub extern "C" fn js_array_set_f64(arr: *mut ArrayHeader, index: u32, value: f64) {
+    // A uniquely-owned string assigned to an element (`arr[i] = s`) aliases this
+    // slot — demote it to shared so a later `s += x` doesn't mutate the stored
+    // element in place. No-op for SSO / non-string.
+    crate::string::js_string_addref_if_heap_string(value);
     let arr = clean_arr_ptr_mut(arr);
     if arr.is_null() {
         return;
@@ -809,6 +813,8 @@ pub extern "C" fn js_array_set_f64_extend(
     index: u32,
     value: f64,
 ) -> *mut ArrayHeader {
+    // Demote a uniquely-owned string source — see `js_array_set_f64`.
+    crate::string::js_string_addref_if_heap_string(value);
     let arr = clean_arr_ptr_mut(arr);
     if arr.is_null() {
         return js_array_alloc(0);

@@ -70,6 +70,18 @@ extern "C" fn process_stream_on_once_stub(
     f64::from_bits(crate::value::TAG_UNDEFINED)
 }
 
+/// `setEncoding` impl for `process.stdin`. A Readable's `setEncoding(enc)`
+/// returns the stream itself so callers can chain
+/// (`process.stdin.setEncoding("utf8").on("data", …)`). The receiver is the
+/// `IMPLICIT_THIS` bound by the method-dispatch path, so returning it mirrors
+/// Node's `this`-returning contract. Encoding-aware reads remain future work.
+extern "C" fn process_stream_set_encoding_stub(
+    _closure: *const crate::closure::ClosureHeader,
+    _arg: f64,
+) -> f64 {
+    crate::object::js_implicit_this_get()
+}
+
 /// #3962: set when a TUI tears down stdin via `process.stdin.destroy()`,
 /// `.pause()`, or `.unref()`. `perry-stdlib`'s readline `has_active` consults
 /// `stdin_is_detached()` so the runtime stops holding the event loop open for
@@ -177,7 +189,7 @@ fn build_stream_object_with_write(
     // stdin shapes. The TTY *write* stream keeps its existing shape; generic
     // non-TTY streams keep `main`'s no-op teardown surface.
     const STDIN_TEARDOWN_KEYS: &[u8] =
-        b"addListener\0removeListener\0off\0removeAllListeners\0pause\0resume\0unref\0ref\0destroy\0";
+        b"addListener\0removeListener\0off\0removeAllListeners\0pause\0resume\0unref\0ref\0destroy\0setEncoding\0";
     const GENERIC_TEARDOWN_KEYS: &[u8] =
         b"addListener\0removeListener\0off\0removeAllListeners\0pause\0resume\0unref\0destroy\0";
     let is_stdin = fd_i == 0;
@@ -192,7 +204,7 @@ fn build_stream_object_with_write(
                     0
                 },
                 keys,
-                21,
+                22,
                 Some(12),
             )
         } else if is_tty {
@@ -312,6 +324,7 @@ fn build_stream_object_with_write(
         if is_stdin {
             set_field_with_stub(start + 7, process_stream_on_once_stub); // ref
             set_field_with_stub(start + 8, lifecycle); // destroy
+            set_field_with_stub(start + 9, process_stream_set_encoding_stub); // setEncoding
         } else {
             set_field_with_stub(start + 7, lifecycle); // destroy
         }

@@ -1983,6 +1983,34 @@ pub const PERRY_UI_TABLE: &[MethodRow] = &[
         args: &[ArgKind::F64, ArgKind::F64],
         ret: ReturnKind::Widget,
     },
+    // ---- BloomView (issue #2395 / #5519) ----
+    // A render-surface host: `BloomView(width, height)` reserves a native view
+    // the Bloom engine draws into. `bloomViewGetNativeHandle(view)` returns the
+    // platform handle (HWND / NSView* / UIView* / GtkWidget* / ANativeWindow*)
+    // as a JS number so user TS can call the engine's attach (`attachToNSView`
+    // / `attachToSurface` / …, all forwarding to `bloom_attach_native`).
+    MethodRow {
+        method: "BloomView",
+        runtime: "perry_ui_bloomview_create",
+        args: &[ArgKind::F64, ArgKind::F64],
+        ret: ReturnKind::Widget,
+    },
+    // Canonical name since #5519 — platform-neutral now that the handle is an
+    // NSView*/UIView*/GtkWidget*/ANativeWindow*, not only an HWND.
+    MethodRow {
+        method: "bloomViewGetNativeHandle",
+        runtime: "perry_ui_bloomview_get_hwnd",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::I64AsF64,
+    },
+    // Deprecated alias — kept so existing code keeps working. Same runtime
+    // symbol as `bloomViewGetNativeHandle`.
+    MethodRow {
+        method: "bloomViewGetHwnd",
+        runtime: "perry_ui_bloomview_get_hwnd",
+        args: &[ArgKind::Widget],
+        ret: ReturnKind::I64AsF64,
+    },
     // ---- Drag & drop (issue #4773) ----
     // Widget-level setters that attach drag/drop behavior to an existing
     // widget handle. `widgetOnDrop` registers a drop destination; the

@@ -106,7 +106,14 @@ pub unsafe fn dispatch_bound_function(closure: *const ClosureHeader, args: &[f64
 /// elsewhere), as do existing objects.
 pub(crate) fn coerce_call_this(target: f64, this_arg: f64) -> f64 {
     let jv = crate::value::JSValue::from_bits(this_arg.to_bits());
-    if jv.is_undefined() || jv.is_null() || jv.is_pointer() {
+    // A class ref (#5515) is an INT32-tagged class id but is the constructor
+    // OBJECT, not a primitive — `f.call(C)` binds `this` to C, so leave it
+    // unchanged rather than boxing it as a Number alongside undefined/null/ptr.
+    if jv.is_undefined()
+        || jv.is_null()
+        || jv.is_pointer()
+        || crate::object::class_ref_id(this_arg).is_some()
+    {
         return this_arg;
     }
     let tj = crate::value::JSValue::from_bits(target.to_bits());
@@ -1330,6 +1337,30 @@ pub unsafe extern "C" fn js_native_call_value(
         let arr_box = f64::from_bits(0x7FFD_0000_0000_0000 | (a as u64 & 0x0000_FFFF_FFFF_FFFF));
         let this_arg = f64::from_bits(crate::value::TAG_UNDEFINED);
         return crate::proxy::js_proxy_apply(func_value, this_arg, arr_box);
+    }
+
+    // Dynamic `super()` for `class X extends <runtime value holding
+    // events.EventEmitter>` (an import alias `import { EventEmitter as E }` or a
+    // local `const E = EventEmitter`): the parent is a bound-native EventEmitter
+    // export reached through a runtime value, so codegen's compile-time
+    // extends-NAME machinery — which emits `js_event_emitter_subclass_init` for
+    // the direct `class X extends EventEmitter` form (#5137) — never fires, and
+    // `js_register_class_parent_dynamic` early-returns for bound native parents.
+    // The dynamic super lowering (expr/this_super_call.rs) dispatches the parent
+    // VALUE here with IMPLICIT_THIS bound to the fresh subclass instance. Install
+    // the EventEmitter listener/emit methods onto that instance, exactly as the
+    // direct form does, so `this.setMaxListeners(…)`/`.on`/`.emit` resolve.
+    if let Some((module, method)) =
+        unsafe { crate::object::bound_native_callable_module_and_method(func_value) }
+    {
+        if module.trim_start_matches("node:") == "events"
+            && (method == "EventEmitter" || method == "EventEmitterAsyncResource")
+        {
+            let this_val = crate::object::js_implicit_this_get();
+            if JSValue::from_bits(this_val.to_bits()).is_pointer() {
+                return crate::node_stream::js_event_emitter_subclass_init(this_val);
+            }
+        }
     }
 
     // Get the closure pointer from the value

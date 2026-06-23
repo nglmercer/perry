@@ -1,3 +1,121 @@
+## v0.5.1203 — fix(inline): never inline a function whose only param-capturing closure lives in an array-method callback (caps `can()` 500 on `GET /admin`)
+
+Layout-sensitive miscompile in the same family as #5485: an authenticated `GET /admin` in the perry-compiled Skelpo CMS returned HTTP 500 — `TypeError: Cannot read properties of undefined (reading 'includes')` in `permissions/check.ts` `can()`, because `ctx.caps` was read as a **number** on a subsequent `can()` call (the first call saw it as an object). Adding any `console.log` to `admin/layout.tsx` made the bug vanish — the classic "perturb codegen, heisenbug hides" tell.
+
+Root cause — three facts that only bite in combination:
+
+1. The `{ userId: 0, caps: c }` object literals in `layout.tsx` lower to a synthesized shape class `new __AnonShape_…(0, c)`; reading `ctx.caps` is a class-field GET.
+2. `AdminPage` is `async` and uses `c` (the `caps ?? {…}` local) **after an `await`**, so the async-state-machine transform heap-**boxes** `c` (it must survive the await; reads go through `js_box_get`). The sidebar's `visibleTypes(c, allTypes)` filter callback `(t) => can({ userId: 0, caps: allCaps }, 'read', t.slug)` is a closure capturing the (un-boxed) param `allCaps`.
+3. `visibleTypes`'s body is `return xs.filter(…).filter(…).map(…)` — its only param-capturing closure lives inside an **array-method callback**, lowered to dedicated `Expr::ArrayFilter` / `Expr::ArrayMap` HIR nodes (not `Expr::Call`).
+
+`is_inlinable` (`inline/analysis.rs`) is supposed to reject any function whose body contains a closure capturing one of its params — when such a function is inlined, the closure literal is duplicated with its captures remapped to the caller's locals, but codegen compiles the closure body **once**, keyed on its `func_id`, under the **original** capture ids (so it bakes in a fixed value-representation per capture: boxed iff that id is in the module-wide boxed set). But the gate's helper `body_contains_closure_capturing` (`inline/closure_analysis.rs`) was a hand-rolled `Expr` walker that only matched a fixed set of variants (`Call`, `Binary`, `PropertyGet`, …) and silently returned `false` for `Expr::ArrayFilter`/`ArrayMap`/etc. So `visibleTypes` slipped through and got inlined into the async `AdminPage`. The inlined copy remapped the closure capture `allCaps` (unboxed) → the caller's `c` (boxed across the await), so the closure-creation site forwarded a **raw box pointer** (the "transitively-captured box" path) while the single shared closure body still read its capture as a plain value. That untagged heap address was then stored into the AnonShape's `caps` slot and read back as an `f64` → `typeof === 'number'`, and `ctx.caps.global` was `undefined`. (Confirmed via `--trace llvm`: the inlined closure-creation does `js_closure_get_capture_f64(idx=c)` with **no** `js_box_get`, then stores the box pointer into the capture buffer; the shared body reads it back without `js_box_get`. Decoding the bad `f64` gave `0x000005019bfef758` — a heap address with the `POINTER_TAG` 0x7ffd… stripped.) `console.log` in `layout.tsx` masked it by perturbing escape/box analysis so the closure was no longer singleton-shared the same way.
+
+Fix (transform-only, `inline/closure_analysis.rs`): reimplement `body_contains_closure_capturing` on top of the existing exhaustive `collect_closure_captured_local_ids` (which walks the HIR via `perry_hir::walker` and therefore sees closures inside **any** Expr, present and future) and test for an intersection with the param ids. `is_inlinable` now correctly rejects `visibleTypes`, so it stays a real (non-inlined) call whose closure body and creation site agree on the capture's box-state. `GET /admin` → 200, the dashboard + caps-gated sidebar render, with **no** CMS changes and no logging hacks. Regression: `inline::closure_analysis::tests::{detects_capture_inside_array_filter_callback, detects_capture_inside_array_map_callback, detects_capture_inside_plain_call_arg, ignores_closure_not_capturing_any_param}`. Minimal standalone repro: an `async` FC that, after an `await`, calls a helper whose body is `xs.filter(t => can({ caps: c }, …))` capturing the boxed local — reproduces the exact "caps read as number" before the fix, prints correctly after.
+## v0.5.1202 — revert: #5546 + #5553 (#5437 module-default wrapper auto-call machinery) — wrong layer, proven cannot close W6
+
+Reverts the auto-call wrapper-resolve machinery (#5546) and its boot-crash patch (#5553). A rigorous follow-up disproved the approach: the #5437 throw (`new uw.SharedCacheControls`) fails because the captured `uw` reads a **mis-boxed closure** at request time, whereas `uw` is a correct `module.exports` **object** at every point where the registration/auto-call could fire (the `require`, the class-capture store). So registering module-default wrappers is a guaranteed no-op for this bug — the value that throws never passes through a registration site. The machinery also introduced a regression (auto-calling a CJS function-export wrapper, e.g. `debug`, on the `_interop_require_default` `.__esModule` probe → boot crash; #5553 patched that symptom but the core approach can't close W6). Removing it cleans the dead + risky auto-call path off `main`. The real root — the class-capture materialization mis-boxing the pointer (the scale-emergent captured-pointer mis-box class, CLAUDE.md "captured pointer values must be NaN-boxed before storing") — is tracked under #5437 for a dedicated fix at the capture-store layer.
+
+## v0.5.1201 — fix(runtime): #5437 — CJS-interop probe on a module-default wrapper must not auto-call it (boot-crash fix for #5546)
+
+Follow-up to #5546. That change registers CJS module-default wrapper closures and, on a property miss, auto-calls the wrapper (`js_closure_call0`) to obtain `module.exports`. But for a CJS module whose `module.exports` **is a function** (e.g. `debug` → `createDebug`), the wrapper *is* that function, and the ubiquitous `_interop_require_default(require("debug"))` interop reads `.__esModule` off it → property miss → the fallback **called the module's function with no args** as a side effect → e.g. `enabled(undefined)` → `undefined.length` → threw at module-init (server exits at boot). This regressed the Next.js bundle from serving (HTTP 500) to crashing at boot (HTTP 000) and could break other SWC/Babel-compiled-CJS programs.
+
+Fix (runtime-only, `object/field_get_set.rs`): on a registered module-default wrapper, short-circuit the two CJS-interop probe keys **before** the auto-call — `.__esModule` → `undefined` (a function-export CJS module is not an ES module), `.default` → the wrapper itself (interop default of a non-ESM module is `module.exports`); both also added to the auto-call exclusion list. Genuine non-`default` member reads (the #5437 `SharedCacheControls` path) are unaffected. Regression test `module_default_wrapper_interop_probe_does_not_call_wrapper` (a wrapper that `panic!`s if called, asserting the probe keys resolve without invoking it). Bundle: server boots/serves again (the `.length` boot crash is gone).
+
+## v0.5.1200 — fix(codegen+runtime): #5437 Next.js W6 — captured CJS module-default wrapper closure resolves exports
+
+The Next.js standalone (turbopack `app-page-turbo`) render threw `TypeError: undefined is not a constructor` at `new uw.SharedCacheControls(...)` inside the `IncrementalCache` constructor. Root: `let uw = require(".../shared-cache-controls.external.js")` is a lazy/function-local require whose value-read takes the `imported_vars` default-getter path (`dyn_extern_i18n.rs`), which for a CJS `Object.defineProperty(exports, …)` module returns the module-default **wrapper closure** (the un-called IIFE), not `module.exports`. The class captured that closure by-value into a `__perry_cap_` field, so `uw.SharedCacheControls` read the closure → `undefined` → `new undefined()` threw. (Diverged only at giant-bundle scale; the import getter resolves the real object everywhere else.)
+
+Fix (5 files, +235): a `MODULE_DEFAULT_WRAPPER_FUNCPTRS` runtime registry + `js_register_module_default_wrapper_value` FFI; codegen at the imported-var default-getter site registers the wrapper, **gated to `origin_suffix == "default" && name.starts_with("_lazyreq_")`** so a genuine `export default <function>` is never auto-called; and a runtime fallback in the closure property-read path that, for a *registered* wrapper closure on a property miss, calls it once (`js_closure_call0`) → `module.exports` → re-reads the property (guarded against self-return / undefined / null). Regression test `module_default_wrapper_property_read_resolves_exports`.
+
+Bundle: the W6 render throw is eliminated (undefined-ctor 1→0, deterministic); the render now advances past W6 to a separate downstream wall (a `.length` read on undefined). Code-only; no behavioral change for non-`defineProperty`-CJS default imports.
+
+## v0.5.1199 — feat(ui): BloomView live-render plumbing on every backend (#5519)
+
+Perry-UI side of #5519 (live `BloomView` rendering on all platforms; the engine
+side landed in Bloom-Engine/engine#71 as the platform-neutral `bloom_attach_native`).
+
+- **Rename** `bloomViewGetHwnd` → `bloomViewGetNativeHandle`, keeping
+  `bloomViewGetHwnd` as a deprecated alias (both dispatch rows route to the same
+  `perry_ui_bloomview_get_hwnd` runtime symbol). The name is platform-neutral now
+  that the handle is an `NSView*` / `UIView*` / `GtkWidget*` / `ANativeWindow*`,
+  not only an HWND. Updated `crates/perry-dispatch/src/ui_table.rs`,
+  `crates/perry-api-manifest/src/entries.rs`, `types/perry/ui/index.d.ts`, and
+  regenerated `docs/api/perry.d.ts` + `docs/src/api/reference.md`.
+- **Sizing**: the non-Windows backends created the view but ignored the requested
+  size, so the renderer's surface came up 0×0 and nothing drew. `BloomView(w, h)`
+  now pins the size — macOS/iOS/visionOS/tvOS via Auto Layout
+  (`set_width`/`set_height` + `translatesAutoresizingMaskIntoConstraints = false`),
+  GTK4 already used `set_size_request`, Android via `LayoutParams`, Windows already
+  reserved a fixed-size child window.
+- **tvOS**: promoted the 0-handle stub to a real `UIView` (new
+  `crates/perry-ui-tvos/src/widgets/bloomview.rs`), mirroring iOS.
+- **Android**: switched the host widget from `android.view.View` to
+  `android.view.SurfaceView`, and `bloomViewGetNativeHandle` now returns the real
+  `ANativeWindow*` (via NDK `ANativeWindow_fromSurface` on the view's
+  `SurfaceHolder.getSurface()`) instead of echoing the registry token. Returns 0
+  until the surface is ready (laid out / `surfaceCreated`).
+- **Input/focus**: the host view is now focusable so a focused `BloomView` can
+  receive keyboard/pointer events for the attached engine to consume (macOS
+  `acceptsFirstResponder` via a `PerryBloomView` subclass; iOS/tvOS/visionOS
+  `userInteractionEnabled`; GTK `set_focusable`/`set_can_target`; Android
+  `setFocusable`/`setFocusableInTouchMode`).
+- **Demo**: `examples/bloomview_embed_demo.ts` renders a live Bloom scene inside a
+  Perry UI window — `BloomView` + `bloomViewGetNativeHandle` + the engine's
+  `attachToNSView`, driven from `onFrame`. Verified on macOS: the integrated
+  binary (Perry UI + Bloom engine) links and runs the attach/frame loop; iOS
+  cross-compiles. Android/GTK/Windows/tvOS/visionOS are best-effort (no local
+  cross-toolchain), mirroring established per-backend patterns.
+
+## v0.5.1198 — fix(packaging): ship `libperry_ui_android.a` to Windows installs so `perry/ui` android apps link (#4823)
+
+A Windows user (discussion #4823) with the NDK/SDK and Rust android targets
+installed could not build a `perry/ui` app for android — `perry --target
+android` got through the "runtime-only" link step and then failed with:
+
+```
+Error: perry/ui imported but libperry_ui_android.a not found. Build with:
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z tls-model=global-dynamic" cargo build --release -p perry-ui-android --target aarch64-linux-android
+```
+
+Root cause was a packaging gap, not user error. Two distinct holes:
+
+- **WinGet/Scoop zip** — the Windows release leg cross-compiled and staged
+  only `libperry_runtime.a` / `libperry_stdlib.a` for `aarch64-linux-android`
+  (#872), never `libperry_ui_android.a`. So the runtime-only link succeeded
+  but any app importing `perry/ui` couldn't resolve the UI backend. The UI lib
+  *was* built — but only inside the standalone `perry-cross-aarch64-linux-android`
+  bundle (#1083), which a binary-install user has no reason to know about.
+- **npm** — `stage-npm.sh` flattened libs into `lib/` and dropped the
+  `aarch64-linux-android/release/` subdir entirely, so npm packages shipped
+  *no* android cross-libs at all; android builds from an npm install were
+  wholly unsupported.
+
+Fixes (the two options the maintainer approved):
+
+1. **(`release-packages.yml`)** The Windows `build:` leg now also cross-builds
+   `perry-ui-android` (`cargo build --profile dist` for the staticlib — the
+   global-dynamic TLS rustflag only matters at the consumer's final cdylib
+   link, mirroring the ubuntu cross-bundle leg; the UI crate is already a
+   staticlib so it needs no `-static` wrapper) and stages
+   `libperry_ui_android.a` into the zip's `aarch64-linux-android/release/`.
+   It is **best-effort**: a native non-zero exit is caught via `$LASTEXITCODE`
+   (pwsh native failures aren't terminating errors) so a finicky aws-lc-rs
+   cross-build can't sink the release; the staging is `Test-Path`-guarded.
+2. **(`stage-npm.sh`)** A new `stage_android_cross_libs` helper stages all
+   three android archives into the Windows npm package under
+   `bin/aarch64-linux-android/release/` (the layout `library_search.rs` probes,
+   already inside the `files` allowlist), compressed to `.a.zst` like the rest.
+   Each lib is sourced from the Windows build artifact first, falling back to
+   the `perry-cross-aarch64-linux-android` bundle the npm-publish job already
+   downloads — so the UI lib is backfilled from the authoritative ubuntu build
+   even if the best-effort Windows cross-build was skipped. This also enables
+   npm-installed android builds for the first time.
+
+Also improved the link-time error message (`link/mod.rs`) for android: it now
+points binary-install users (no source tree) at dropping the prebuilt
+`libperry_ui_android.a` from `perry-cross-aarch64-linux-android.tar.gz` before
+falling back to the from-source `cargo build` instruction.
+
 ## v0.5.1197 — feat(runtime): #2656 — make WeakMap/WeakSet actually weak
 
 WeakMap/WeakSet previously stored entries as plain `[key, value]` pair arrays that the

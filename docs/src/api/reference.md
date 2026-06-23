@@ -2,7 +2,7 @@
 
 This page is auto-generated from Perry's compile-time API manifest (`perry-api-manifest::API_MANIFEST`). It is the source of truth for what `perry compile` accepts; references to symbols not listed here produce `R005 UnimplementedApi` (issue #463). Stubs (#464) are flagged ⚠ — they link cleanly but no-op at runtime on the chosen target.
 
-Total: 2815 entries across 115 modules.
+Total: 2820 entries across 115 modules.
 
 ## Modules
 
@@ -2525,6 +2525,7 @@ Total: 2815 entries across 115 modules.
 
 - `App` — module
 - `AttributedText` — module
+- `BloomView` — module
 - `BottomNavigation` — module
 - `Button` — module
 - `CameraView` — module
@@ -2567,6 +2568,8 @@ Total: 2815 entries across 115 modules.
 - `appSetTimer` — module
 - `attributedTextAppend` — module
 - `attributedTextClear` — module
+- `bloomViewGetHwnd` — module
+- `bloomViewGetNativeHandle` — module
 - `blur` — module
 - `bottomNavAddItem` — module
 - `bottomNavSetBadge` — module
@@ -3674,6 +3677,7 @@ Total: 2815 entries across 115 modules.
 
 - `BroadcastChannel` — module
 - `MessageChannel` — module
+- `addEventListener` — instance
 - `cpuUsage` — instance *(class: `Worker`)*
 - `getEnvironmentData` — module
 - `getHeapSnapshot` — instance *(class: `Worker`)*
@@ -3688,6 +3692,7 @@ Total: 2815 entries across 115 modules.
 - `postMessageToThread` — module
 - `receiveMessageOnPort` — module
 - `ref` — instance *(class: `Worker`)*
+- `removeEventListener` — instance
 - `setEnvironmentData` — module
 - `startCpuProfile` — instance *(class: `Worker`)*
 - `startHeapProfile` — instance *(class: `Worker`)*
